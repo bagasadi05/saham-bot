@@ -17,13 +17,22 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
    Bisa multi emiten: `/analisis BBCA TLKM BBRI` (maks 5).
 - **/skor TLKM BBRI** — ringkasan cepat skor teknikal tanpa chart.
 - **/berita BBCA** — 7 berita terbaru + skor sentimen per judul (ML lokal, fallback lexicon).
-- **/fundamental BBRI** — PER/PBV/ROE/dividen/DER + penilaian valuasi.
+- **/fundamental BBRI** — PER/PBV/ROE/dividen/DER + penilaian valuasi, plus
+   **tren 4 kuartal terakhir** pendapatan & laba bersih + tanggal data
+   ("data per Q3 2026", jujur soal delay laporan keuangan)
 - **/backtest BBCA** — dua-duanya: backtest statistik 5 tahun + **simulasi
    transaksi nyata** (`backtesting.py`): biaya 0,25%/transaksi, fill bar berikutnya,
    entry sinyal BUY (skip jebakan momentum >15%/bulanan), SL 1×ATR, TP 2×ATR,
    maksimal tahan 20 hari. CLI: `python backtest.py BBCA` & `python backtest_real.py BBCA`.
 - **Watchlist & alert** — `/watch`, `/alert add BBCA jump breakout`: dicek tiap 30 menit saat bursa buka (Senin–Jumat 09:00–16:00 WIB).
 - **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**, disimpan sebagai posisi latihan (paper trading) dan dilacak otomatis — kalau TP/SL kena, bot kabari beserta hasil %-nya. `/saran list` = rekap.
+- **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, 4–6 menit, progres bertahap tiap 10 emiten).
+- **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
+- **/banding BBCA BBRI BMRI** — tabel pembanding PER/PBV/ROE/dividend yield/return 1 thn/20 hari/PowerScore + fakta "paling murah/mahal menurut PBV" (deskriptif). Data pembanding yang gagal dilaporkan jujur.
+- **/agenda BBCA** — ex-date dividen (terakhir/berikutnya) + split & aksi korporasi dari Yahoo (bisa telat — cek juga situs emiten).
+- **/belajar RSI** — kamus istilah dalam bahasa sederhana (18 topik: RSI, MACD, MA20/50/200, Bollinger, ATR, OBV, StochRSI, PER, PBV, ROE, dividend yield, DER, volume, breakout, IHSG, PowerScore + alias).
+- **/auto on** — ringkasan `/saran` + rekap watchlist dikirim otomatis tiap hari bursa ±08:30 WIB (Senin–Jumat, default off).
+- Setiap sinyal di `/analisis` kini diberi **penjelasan 1 baris** ("MA20 < MA50 → tren jangka pendek di bawah tren menengah — harga sedang downtrend") + laporan menyertakan **konteks IHSG** (20 hari & 1 tahun, berapa poin unggul/tertinggal).
 - **/bandar [TICKER]** — data **resmi BEI (idx.co.id)**: IHSG & indeks sektor, top gainer/loser; per emiten: OHLC + nilai transaksi + field asing (bila tersedia). Catatan: idx.co.id dilindungi Cloudflare — dari IP datacenter/VPS kadang diblok; bot memberitahu dengan jujur dan menyuruh pakai `/analisis` sebagai cadangan.
   | Jenis alert | Pemicu |
   |---|---|
