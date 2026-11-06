@@ -451,6 +451,83 @@ async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+async def cmd_agenda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """[P4] Agenda emiten: ex-date dividen & aksi korporasi terbaru."""
+    args = tokens(update)
+    if not args:
+        await update.effective_message.reply_text(
+            "Contoh: <code>/agenda BBCA</code>", parse_mode=ParseMode.HTML)
+        return
+    t = args[0].upper()
+    await update.effective_chat.send_action(ChatAction.TYPING)
+
+    def _job():
+        import yfinance as yf
+        sym = data.normalize_ticker(t)
+        tk = yf.Ticker(sym)
+        return sym, (tk.calendar or {}), tk.dividends, tk.splits
+
+    try:
+        sym, cal, divs, splits = await asyncio.to_thread(_job)
+    except ValueError as e:
+        await update.effective_message.reply_text(f"❌ {e}")
+        return
+    except Exception as e:
+        log.warning("agenda gagal %s: %s", t, e)
+        await update.effective_message.reply_text(
+            f"❌ Agenda {esc(t)} tidak tersedia (sumber bermasalah) — coba lagi nanti.")
+        return
+
+    lines = [f"📅 <b>Agenda {esc(t)}</b>"]
+    # kalender: ex-date dividen / jadwal earnings (Timestamp saja)
+    kal = []
+    if isinstance(cal, dict):
+        for k, v in cal.items():
+            if hasattr(v, "strftime"):
+                kal.append((str(k), v.strftime("%d %b %Y")))
+            elif isinstance(v, (list, tuple)):
+                for x in v:
+                    if hasattr(x, "strftime"):
+                        kal.append((str(k), x.strftime("%d %b %Y")))
+                if any(not hasattr(x, "strftime") for x in v):
+                    kal.append((str(k), esc(str(v))[:40]))
+    if cal is None or not cal:
+        # yfinance versi lama: calendar berupa list dict
+        if isinstance(cal, list):
+            for item in cal[:3]:
+                for k, v in (item or {}).items():
+                    if hasattr(v, "strftime"):
+                        kal.append((str(k), v.strftime("%d %b %Y")))
+    if kal:
+        lines.append("\n🗓️ Kalender (via Yahoo, bisa berubah):")
+        lines.extend(f"  • {esc(k)}: {v}" for k, v in kal[:6])
+
+    if divs is not None and len(divs):
+        last = divs.iloc[-1]
+        when = divs.index[-1].strftime("%d %b %Y")
+        lines.append(f"\n💵 Dividen terakhir: {float(last):,.1f} /lembar (ex≈{when})")
+        lines.append("  4 terakhir: " + ", ".join(
+            f"{float(v):.1f} ({d.strftime('%b %y')})"
+            for d, v in list(divs.tail(4).items())))
+    else:
+        lines.append("\n💵 Dividen: tidak ada agenda tercatat")
+
+    if splits is not None and len(splits):
+        lines.append("\n✂️ Split terakhir: " + ", ".join(
+            f"ratio {float(v):.0f} ({d.strftime('%d %b %y')})"
+            for d, v in list(splits.tail(2).items())))
+    else:
+        lines.append("✂️ Split: tidak ada agenda tercatat")
+
+    if not kal and (divs is None or len(divs) == 0) and (splits is None or len(splits) == 0):
+        lines.append("\nℹ️ Tidak ada agenda tercatat untuk emiten ini "
+                     "(atau Yahoo tidak menyimpannya).")
+    lines.append("\n🔒 Data Yahoo bisa telat/tidak lengkap — cek juga situs emiten. "
+                 "Bukan saran memburu dividen.")
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
 async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Data resmi BEI: IHSG & sektor, plus info emiten (aliran asing bila tersedia)."""
     args = tokens(update)
@@ -528,6 +605,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "dilacak otomatis (SL/TP kena = bot kabarin); <b>/saran list</b>\n"
         "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
         "• <b>/banding BBCA BBRI</b> — tabel PER/PBV/ROE/return + konteks IHSG\n"
+        "• <b>/agenda BBCA</b> — ex-date dividen & aksi korporasi\n"
         "• <b>/backtest BBCA</b> — akurasi statistik + simulasi transaksi\n"
         "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n"
         "• <b>/belajar RSI</b> — kamus istilah: cara baca + jebakan umumnya\n\n"
@@ -863,6 +941,7 @@ def main():
     reg(["bandar", "ihsg"], cmd_bandar)
     reg(["banding", "bandingkan"], cmd_banding)
     reg("alert", cmd_alert)
+    reg(["agenda", "korporasi"], cmd_agenda)
     reg(["belajar", "learn", "apa"], cmd_belajar)
 
     job_queue = app.job_queue
