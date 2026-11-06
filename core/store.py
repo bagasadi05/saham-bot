@@ -116,5 +116,28 @@ def set_modal(chat_id: int | str, amount: int):
         _save(data)
 
 
+# [P6] auto-scan pagi per chat (default off)
+def set_auto(chat_id: int | str, enabled: bool):
+    with _lock:
+        data = _load()
+        c = _chat(data, chat_id)
+        c["auto"] = bool(enabled)
+        _save(data)
+
+
+def get_auto_chats() -> list[str]:
+    """Daftar chat_id (string) yang mengaktifkan auto-scan pagi."""
+    out = []
+    for chat_id, c in _load().items():
+        if isinstance(c, dict) and c.get("auto"):
+            out.append(chat_id)
+    return out
+
+
+def get_auto(chat_id: int | str) -> bool:
+    with _lock:
+        return bool(_load().get(str(chat_id), {}).get("auto", False))
+
+
 class StoreWarning:
     """Catatan: _save menulis set sebagai list lazim, jadi tak ada tipe set mangling di JSON."""

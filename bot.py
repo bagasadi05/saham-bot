@@ -346,11 +346,27 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         return
 
-    wl = store.get_watchlist(update.effective_chat.id)
-    modal = store.get_modal(update.effective_chat.id)  # [P5]
+    chat_id = update.effective_chat.id
+    wl = store.get_watchlist(chat_id)
     universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
     await update.effective_message.reply_text(
         f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 3-4 menit...")
+    txt = await saran_scan_text(chat_id, universe)
+    if txt is None:
+        await update.effective_message.reply_text("❌ Data sumber error, coba lagi nanti.")
+        return
+    await update.effective_message.reply_text(
+        txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+async def saran_scan_text(chat_id: int, universe: list[str] | None = None) -> str | None:
+    """[P6] Inti pemindaian /saran — reusable untuk auto-scan pagi.
+
+    Return teks ringkasan, atau None kalau semua sumber gagal."""
+    if universe is None:
+        wl = store.get_watchlist(chat_id)
+        universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
+    modal = store.get_modal(chat_id)
     analyzed, latest = [], {}
     for t in universe:
         a = await gather_candidate(t)
@@ -359,17 +375,17 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             latest[a["res"]["ticker"]] = a["res"]["snap"]["close"]
         await asyncio.sleep(.2)
     if not analyzed:
-        await update.effective_message.reply_text("❌ Data sumber error, coba lagi nanti.")
-        return
+        return None
 
-    result = saranmod.pick(analyzed, modal)  # [P5] sizing pakai modal latihan    saranmod.update_paper(update.effective_chat.id, latest)
+    result = saranmod.pick(analyzed, modal)  # [P5] sizing pakai modal latihan
+    saranmod.update_paper(chat_id, latest)
 
     lines = [f"🧭 <b>RINGKASAN SARAN HARIAN — {pd.Timestamp.now(tz=WIB):%d %b %Y}</b>",
              f"Skema cais: jual dibeli penutupan | SL 1×ATR | TP 2×ATR | "
              f"Modal latihan {saranmod.fmt(modal)} (ubah: /modal 10000000)\n"]
     if result["picks"]:
         saranmod.open_paper(
-            update.effective_chat.id, result["picks"],
+            chat_id, result["picks"],
             f"{pd.Timestamp.now(tz=WIB):%d %b}")
         lines.append("Kandidat BUY (urut PowerScore, tersimpan sebagai posisi latihan):")
         for c in result["picks"]:
@@ -401,8 +417,7 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.append(f"  {c['emoji']} <b>{c['ticker']}</b> {c['power']:+d}% — "
                      f"{'jebakan momentum' if c['ret20d'] > 15 else 'teknikal lemah'}")
     lines.append("\n⚠️ Alat bantu latihan, bukan saran formal. DYOR!")
-    await update.effective_message.reply_text(
-        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    return "\n".join(lines)
 
 
 async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -656,7 +671,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <b>/agenda BBCA</b> — ex-date dividen & aksi korporasi\n"
         "• <b>/backtest BBCA</b> — akurasi statistik + simulasi transaksi\n"
         "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n"
-        "• <b>/belajar RSI</b> — kamus istilah: cara baca + jebakan umumnya\n\n"
+        "• <b>/belajar RSI</b> — kamus istilah: cara baca + jebakan umumnya\n"
+        "• <b>/auto on</b> — ringkasan harian otomatis ±08:30 WIB (Senin–Jumat)\n\n"
         "⚠️ Bukan saran investasi — selalu DYOR!",
         parse_mode=ParseMode.HTML)
 
@@ -884,6 +900,61 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ---------------------------------------------------------------- scanner
 
+async def morning_scan(app: Application):
+    """[P6] Auto-scan pagi: ringkasan /saran + rekap watchlist, 08:30 WIB,
+    Senin–Jumat — hanya ke chat yang mengaktifkan /auto on."""
+    now = pd.Timestamp.now(tz=WIB)
+    if now.weekday() >= 5:
+        return  # Sabtu/Minggu tidak jalan
+    for cid in store.get_auto_chats():
+        try:
+            txt = await saran_scan_text(int(cid))
+            if txt is None:
+                continue  # semua sumber gagal — jangan spam error
+            recap = []
+            for t in store.get_watchlist(cid)[:10]:
+                try:
+                    res = await fetch_and_analyze(t)
+                    recap.append(build_quick(res))
+                except (ValueError, Exception):
+                    continue
+            if recap:
+                txt += "\n\n📋 <b>Rekap watchlist</b>\n" + "\n".join(recap)
+            await app.bot.send_message(
+                int(cid),
+                f"🌅 <b>AUTOSCAN {now:%a, %d %b %Y}</b>\n\n" + txt,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        except Exception:
+            log.exception("autoscan gagal utk %s", cid)
+        await asyncio.sleep(1)
+
+
+async def cmd_auto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """[P6] Nyalakan/matikan auto-scan pagi per chat."""
+    args = tokens(update)
+    sub = args[0].lower() if args else ""
+    chat_id = update.effective_chat.id
+    if sub in ("on", "aktif", "nyala"):
+        store.set_auto(chat_id, True)
+        await update.effective_message.reply_text(
+            "🌅 <b>Auto-scan pagi: AKTIF</b>\n"
+            " Tiap hari bursa ±08:30 WIB: ringkasan /saran + rekap watchlist "
+            "dikirim otomatis di chat ini.\n"
+            " Matikan: <code>/auto off</code>", parse_mode=ParseMode.HTML)
+    elif sub in ("off", "mati", "nonaktif"):
+        store.set_auto(chat_id, False)
+        await update.effective_message.reply_text(
+            "🌙 Auto-scan pagi <b>mati</b>. Kapan pun nyala lagi: <code>/auto on</code>.",
+            parse_mode=ParseMode.HTML)
+    else:
+        status = "AKTIF ✅" if store.get_auto(chat_id) else "mati (default)"
+        await update.effective_message.reply_text(
+            f"🌅 Auto-scan pagi di chat ini: <b>{status}</b>\n"
+            "Nyalakan: <code>/auto on</code> — Matikan: <code>/auto off</code>\n"
+            "Jadwal: Senin–Jumat ±08:30 WIB (sebelum bursa buka).",
+            parse_mode=ParseMode.HTML)
+
+
 async def scan_alerts(app: Application):
     """Job berkala: periksa semua alert aktif di semua chat."""
     all_store = store._load()
@@ -991,10 +1062,15 @@ def main():
     reg("alert", cmd_alert)
     reg(["agenda", "korporasi"], cmd_agenda)
     reg("modal", cmd_modal)
+    reg("auto", cmd_auto)
     reg(["belajar", "learn", "apa"], cmd_belajar)
 
     job_queue = app.job_queue
     job_queue.run_repeating(scan_alerts, interval=config.ALERT_SCAN_MINUTES * 60, first=10)
+    # [P6] auto-scan pagi tiap 08:30 WIB (reguler job dibatasi weekday di dalam fungsi)
+    import datetime as _dt
+    job_queue.run_daily(morning_scan, time=_dt.time(8, 30, tzinfo=WIB),
+                        name="morning-scan")
 
     log.info("Bot jalan. Tekan Ctrl+C untuk berhenti.")
     app.add_error_handler(on_error)
