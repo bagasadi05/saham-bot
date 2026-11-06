@@ -18,7 +18,8 @@ TOP_N = 3       # jumlah kandidat BUY yang disarankan
 MAX_SCAN = 12   # batasi emiten yang dianalisis per permintaan
 
 
-def build_candidate(res: dict, fund: dict | None, news_sent: dict | None) -> dict:
+def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
+                    modal: int | None = None) -> dict:
     """Satu kandidat terkuracion (bagian dari /saran)."""
     tech = res["score"]["pct"]
     fund_pct = fund["pct"] if fund else None
@@ -29,7 +30,7 @@ def build_candidate(res: dict, fund: dict | None, news_sent: dict | None) -> dic
     import pandas as pd
     entry = snap["close"]
     atr_v = float(atr) if atr is not None and not pd.isna(atr) else entry * 0.03
-    return {
+    c = {
         "ticker": res["ticker"],
         "price": entry,
         "tech": tech,
@@ -44,9 +45,28 @@ def build_candidate(res: dict, fund: dict | None, news_sent: dict | None) -> dic
         "tp": round(entry + 2.0 * atr_v, 0),
         "date": None,  # diisi bot
     }
+    # [P5] ukuran posisi: risiko 1% modal per trade
+    if modal:
+        c.update(position_size(modal, entry, c["sl"]))
+    return c
 
 
-def pick(analyzed: list[dict]) -> dict:
+def position_size(modal: float, entry: float, sl: float) -> dict:
+    """Risiko 1% modal per trade: min. lot 100 lembar (floor).
+
+    Return {risk, shares, lots, value, real_risk}. lots bisa 0 → terlalu kecil."""
+    risk = max(float(entry) - float(sl), 0.0)
+    budget = float(modal) * 0.01          # 1% modal
+    shares = budget / risk if risk > 0 else 0.0
+    lots = int(shares // 100)
+    value = lots * 100 * float(entry)
+    real_risk = lots * 100 * risk
+    return {"risk": round(risk, 1), "budget": round(budget),
+            "shares": int(shares), "lots": lots,
+            "value": round(value), "real_risk": round(real_risk)}
+
+
+def pick(analyzed: list[dict], modal: int | None = None) -> dict:
     """Ranking hasil analisis → kandidat BUY & daftar HINDARI.
 
     analyzed: list of {res, fund, nsent}. Filter momentum-trap memakai
@@ -54,7 +74,7 @@ def pick(analyzed: list[dict]) -> dict:
     cands = []
     for a in analyzed:
         try:
-            cands.append(build_candidate(a["res"], a.get("fund"), a.get("nsent")))
+            cands.append(build_candidate(a["res"], a.get("fund"), a.get("nsent"), modal))
         except Exception:
             continue
     buys = [c for c in cands if c["power"] >= 20 and c["ret20d"] <= 15.0]
@@ -120,7 +140,12 @@ def quotes_forgotten(chat_id: int | str) -> list[str]:
         h = f" 📆 {rec.get('date','')}" if rec.get("date") else ""
         if status == "open":
             open_n += 1
-            lines.append(f"  🟡 <b>{t}</b> entry {fmt(entry)} | SL {fmt(rec['sl'])} | TP {fmt(rec['tp'])}{h}")
+            line = (f"  🟡 <b>{t}</b> entry {fmt(entry)} | SL {fmt(rec['sl'])} | "
+                    f"TP {fmt(rec['tp'])}")
+            if rec.get("lots"):  # [P5] nilai posisi modal 1% risiko
+                line += f" | 💼 ≈ {fmt(float(rec['value']))} ({int(rec['lots'])} lot)"
+            line += h
+            lines.append(line)
         else:
             exit_p = float(rec.get("exit_price", entry))
             pnl = (exit_p / entry - 1) * 100

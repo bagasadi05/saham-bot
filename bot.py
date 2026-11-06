@@ -347,6 +347,7 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     wl = store.get_watchlist(update.effective_chat.id)
+    modal = store.get_modal(update.effective_chat.id)  # [P5]
     universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
     await update.effective_message.reply_text(
         f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 3-4 menit...")
@@ -361,11 +362,11 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("❌ Data sumber error, coba lagi nanti.")
         return
 
-    result = saranmod.pick(analyzed)
-    saranmod.update_paper(update.effective_chat.id, latest)
+    result = saranmod.pick(analyzed, modal)  # [P5] sizing pakai modal latihan    saranmod.update_paper(update.effective_chat.id, latest)
 
     lines = [f"🧭 <b>RINGKASAN SARAN HARIAN — {pd.Timestamp.now(tz=WIB):%d %b %Y}</b>",
-             "Skema cais: jual dibeli penutupan | SL 1×ATR | TP 2×ATR\n"]
+             f"Skema cais: jual dibeli penutupan | SL 1×ATR | TP 2×ATR | "
+             f"Modal latihan {saranmod.fmt(modal)} (ubah: /modal 10000000)\n"]
     if result["picks"]:
         saranmod.open_paper(
             update.effective_chat.id, result["picks"],
@@ -379,6 +380,19 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"(tek {c['tech']:+.0f}, fund {fund_txt}, berita {news_txt})\n"
                 f"      Entry {saranmod.fmt(c['entry'])} | SL {saranmod.fmt(c['sl'])} | "
                 f"TP {saranmod.fmt(c['tp'])}")
+            # [P5] ukuran posisi: risiko 1% modal, floor ke lot 100
+            if "lots" in c:
+                if c["lots"] > 0:
+                    lines.append(
+                        f"      💼 Ukuran (risiko 1% modal): {c['lots']} lot "
+                        f"({c['shares']} lembar) ≈ {saranmod.fmt(c['value'])} | "
+                        f"risiko nyata {saranmod.fmt(c['real_risk'])}")
+                else:
+                    lines.append(
+                        "      💼 Ukuran: <i>risiko/lembar melebihi 1% modal — "
+                        "butuh minimal 1 lot; naikkan modal (mis. "
+                        f"{saranmod.fmt(min(int(modal) * 3, 100_000_000))}) "
+                        "atau lewati ini</i>")
     else:
         lines.append("Tidak ada kandidat layak BUY hari ini "
                      "(semua skor tak mencukupi / terkena filter jebakan momentum).")
@@ -528,6 +542,39 @@ async def cmd_agenda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+async def cmd_modal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """[P5] Set/ubah modal latihan paper trading (default Rp10 juta)."""
+    args = tokens(update)
+    chat_id = update.effective_chat.id
+    cur = store.get_modal(chat_id)
+    if not args:
+        await update.effective_message.reply_text(
+            f"💼 Modal latihan kamu: <b>{saranmod.fmt(cur)}</b>\n"
+            "Ubah: <code>/modal 5000000</code> (atau tulis 5.000.000)\n\n"
+            "Sizing /saran memakai risiko <b>1% modal per trade</b>: "
+            f"berarti pas-pasan {saranmod.fmt(cur * 0.01)} per posisi.",
+            parse_mode=ParseMode.HTML)
+        return
+    raw = args[0].replace(".", "").replace(",", "")
+    try:
+        val = int(raw)
+    except ValueError:
+        await update.effective_message.reply_text(
+            "❌ Angka tidak valid. Contoh: <code>/modal 10000000</code>",
+            parse_mode=ParseMode.HTML)
+        return
+    if not (100_000 <= val <= 10_000_000_000):
+        await update.effective_message.reply_text(
+            "❌ Modal wajar antara Rp100 ribu dan Rp10 miliar (latihan, kan?)")
+        return
+    store.set_modal(chat_id, val)
+    await update.effective_message.reply_text(
+        f"💼 Modal latihan diubah: <b>{saranmod.fmt(cur)}</b> → "
+        f"<b>{saranmod.fmt(val)}</b>\n"
+        f"Risiko per trade /saran berikutnya: {saranmod.fmt(val * 0.01)} (1%)",
+        parse_mode=ParseMode.HTML)
+
+
 async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Data resmi BEI: IHSG & sektor, plus info emiten (aliran asing bila tersedia)."""
     args = tokens(update)
@@ -601,8 +648,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <b>/skor TLKM BBRI</b> — ringkasan cepat\n"
         "• <b>/berita BBCA</b> — 7 berita terbaru + sentimen (ML lokal)\n"
         "• <b>/fundamental BBRI</b> — PER/PBV/ROE/dividen/DER\n"
-        "• <b>/saran</b> — pemindaian harian: kandidat BUY + entry/SL/TP, "
-        "dilacak otomatis (SL/TP kena = bot kabarin); <b>/saran list</b>\n"
+        "• <b>/saran</b> — pemindaian harian: kandidat BUY + entry/SL/TP + "
+        "ukuran posisi (1% modal), dilacak otomatis (SL/TP kena = bot kabarin); "
+        "<b>/saran list</b>, ubah modal: <b>/modal 10000000</b>\n"
         "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
         "• <b>/banding BBCA BBRI</b> — tabel PER/PBV/ROE/return + konteks IHSG\n"
         "• <b>/agenda BBCA</b> — ex-date dividen & aksi korporasi\n"
@@ -942,6 +990,7 @@ def main():
     reg(["banding", "bandingkan"], cmd_banding)
     reg("alert", cmd_alert)
     reg(["agenda", "korporasi"], cmd_agenda)
+    reg("modal", cmd_modal)
     reg(["belajar", "learn", "apa"], cmd_belajar)
 
     job_queue = app.job_queue

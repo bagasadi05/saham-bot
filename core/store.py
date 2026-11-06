@@ -99,5 +99,22 @@ def get_alerts(chat_id: int | str) -> dict[str, list]:
         return _chat(_load(), chat_id)["alerts"]
 
 
+# [P5] modal latihan (paper trading) — default Rp10 juta, bisa diubah per chat
+DEFAULT_MODAL = 10_000_000
+
+
+def get_modal(chat_id: int | str) -> int:
+    with _lock:
+        return int(_chat(_load(), chat_id).get("modal", DEFAULT_MODAL))
+
+
+def set_modal(chat_id: int | str, amount: int):
+    with _lock:
+        data = _load()
+        c = _chat(data, chat_id)
+        c["modal"] = int(amount)
+        _save(data)
+
+
 class StoreWarning:
     """Catatan: _save menulis set sebagai list lazim, jadi tak ada tipe set mangling di JSON."""
