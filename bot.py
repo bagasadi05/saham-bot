@@ -1,7 +1,7 @@
 """SahamBuddy — bot Telegram analisis saham Indonesia.
 
 Perintah:
-  /start, /help            - panduan
+  /start, /menu, /help     - menu utama / panduan
   /analisis BBCA           - laporan teknikal lengkap + chart
   /skor ANTM TLKM          - ringkasan skor (tanpa chart)
   /watch add <TICKER>      - tambah saham ke watchlist
@@ -192,8 +192,21 @@ def home_markup() -> InlineKeyboardMarkup:
         [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")]])
 
 
-def ticker_pick_markup(action: str) -> InlineKeyboardMarkup:
+def result_markup(action: str, ticker: str) -> InlineKeyboardMarkup:
+    """Tombol di bawah hasil: perbarui data + kembali ke menu."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Perbarui", callback_data=f"refresh:{action}:{ticker}")],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def ticker_pick_markup(action: str, watchlist: list[str] | None = None) -> InlineKeyboardMarkup:
     rows = []
+    wl = [t for t in (watchlist or []) if t not in POPULAR_TICKERS][:6]
+    if wl:
+        for i in range(0, len(wl), 3):
+            rows.append([InlineKeyboardButton(f"⭐ {t}", callback_data=f"tick:{action}:{t}")
+                         for t in wl[i:i + 3]])
     for i in range(0, len(POPULAR_TICKERS), 3):
         rows.append([InlineKeyboardButton(t, callback_data=f"tick:{action}:{t}")
                      for t in POPULAR_TICKERS[i:i + 3]])
@@ -254,7 +267,8 @@ async def _do_analisis(update: Update, tickers: list[str]):
         else:
             nsent = await asyncio.to_thread(news.news_sentiment, items)
         await msg.reply_text(build_report(res, fsc, nsent),
-                             parse_mode=ParseMode.HTML, reply_markup=home_markup())
+                             parse_mode=ParseMode.HTML,
+                             reply_markup=result_markup("analisis", t))
         path = os.path.join(TMP_DIR, f"chart_{int(time.time() * 1000)}.png")
         await asyncio.to_thread(build_chart, res["ticker"].upper(), res["ind"],
                                 res["score"]["pct"], path)
@@ -262,7 +276,7 @@ async def _do_analisis(update: Update, tickers: list[str]):
             with open(path, "rb") as f:
                 await msg.reply_photo(
                     photo=f, caption=f"📈 Chart {res['ticker']} (6 bulan terakhir)",
-                    reply_markup=home_markup())
+                    reply_markup=result_markup("analisis", t))
         finally:
             if os.path.exists(path):
                 os.remove(path)
@@ -305,7 +319,8 @@ async def _do_berita(update: Update, ticker: str):
                      f"{esc(d['title'][:110])}</a>{har}{age}{src}")
     lines.append("\n\n🔒 Bukan saran investasi.")
     await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
-                         disable_web_page_preview=True, reply_markup=home_markup())
+                         disable_web_page_preview=True,
+                         reply_markup=result_markup("berita", t))
 
 
 async def _do_fundamental(update: Update, ticker: str):
@@ -340,7 +355,7 @@ async def _do_fundamental(update: Update, ticker: str):
     rows.extend(f"  {esc(n)}" for n in sc["notes"])
     rows.append("\n🔒 Bukan saran investasi.")
     await msg.reply_text("\n".join(rows), parse_mode=ParseMode.HTML,
-                         reply_markup=home_markup())
+                         reply_markup=result_markup("fundamental", t))
 
 
 async def _do_backtest(update: Update, ticker: str):
@@ -375,7 +390,8 @@ async def _do_backtest(update: Update, ticker: str):
     parts.append("⚠️ Skor = deskripsi kondisi saat itu, bukan ramalan. "
                  "Uji dengan beberapa emiten sebelum menarik kesimpulan.")
     await msg.reply_text("\n".join(parts), parse_mode=ParseMode.HTML,
-                         disable_web_page_preview=True, reply_markup=home_markup())
+                         disable_web_page_preview=True,
+                         reply_markup=result_markup("backtest", t))
 
 
 async def _do_saran(update: Update, list_only: bool = False):
@@ -594,7 +610,8 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         label = NEED_TICKER.get(action, action)
         PENDING.pop(chat_id, None)
         await _safe_edit(msg, f"{label} — pilih emiten:",
-                            reply_markup=ticker_pick_markup(action))
+                            reply_markup=ticker_pick_markup(
+                                action, store.get_watchlist(chat_id)))
         return
     if data.startswith("manual:"):
         action = data.split(":", 1)[1]
@@ -608,6 +625,13 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         _, action, ticker = data.split(":")
         PENDING.pop(chat_id, None)
         await _safe_edit(msg, f"⏳ Memproses <b>{ticker}</b>...",
+                            parse_mode=ParseMode.HTML, reply_markup=home_markup())
+        await run_menu_action(update, action, [ticker])
+        return
+    if data.startswith("refresh:"):
+        _, action, ticker = data.split(":")
+        PENDING.pop(chat_id, None)
+        await _safe_edit(msg, f"⏳ Memperbarui <b>{ticker}</b>...",
                             parse_mode=ParseMode.HTML, reply_markup=home_markup())
         await run_menu_action(update, action, [ticker])
         return
@@ -671,6 +695,7 @@ async def _post_init(app: Application):
     from telegram import BotCommand
     await app.bot.set_my_commands([
         BotCommand("start", "Menu utama (tombol interaktif)"),
+        BotCommand("menu", "Menu utama (tombol interaktif)"),
         BotCommand("analisis", "Analisis emiten, mis. /analisis BBCA"),
         BotCommand("skor", "Ringkasan skor cepat"),
         BotCommand("berita", "Berita + sentimen emiten"),
@@ -689,7 +714,9 @@ async def cmd_berita(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = tokens(update)
     if not args:
         await update.effective_message.reply_text(
-            "Contoh: <code>/berita BBCA</code>", parse_mode=ParseMode.HTML)
+            "📰 Berita — pilih emiten:",
+            reply_markup=ticker_pick_markup(
+                "berita", store.get_watchlist(update.effective_chat.id)))
         return
     t = args[0].upper()
     await update.effective_chat.send_action(ChatAction.TYPING)
@@ -721,7 +748,9 @@ async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = tokens(update)
     if not args:
         await update.effective_message.reply_text(
-            "Contoh: <code>/fundamental BBRI</code>", parse_mode=ParseMode.HTML)
+            "💰 Fundamental — pilih emiten:",
+            reply_markup=ticker_pick_markup(
+                "fundamental", store.get_watchlist(update.effective_chat.id)))
         return
     t = args[0].upper()
     await update.effective_chat.send_action(ChatAction.TYPING)
@@ -908,15 +937,16 @@ async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = tokens(update)
     if not args:
         await update.effective_message.reply_text(
-            "Contoh: <code>/analisis BBCA</code> atau <code>/analisis BBCA TLKM</code>",
-            parse_mode=ParseMode.HTML)
+            "📊 Analisis — pilih emiten:",
+            reply_markup=ticker_pick_markup(
+                "analisis", store.get_watchlist(update.effective_chat.id)))
         return
 
     for t in args[:5]:  # max 5 emiten per permintaan
         try:
             res = await fetch_and_analyze(t)
         except ValueError as e:
-            await update.effective_message.reply_text(f"❌ {e}")
+            await update.effective_message.reply_text(f"❌ {e}", reply_markup=home_markup())
             continue
 
         # data pendukung fundamental & berita (diparalel, gagal = abaikan)
@@ -936,7 +966,8 @@ async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             nsent = await asyncio.to_thread(news.news_sentiment, items)
 
         await update.effective_message.reply_text(
-            build_report(res, fsc, nsent), parse_mode=ParseMode.HTML)
+            build_report(res, fsc, nsent), parse_mode=ParseMode.HTML,
+            reply_markup=result_markup("analisis", t))
 
         path = os.path.join(TMP_DIR, f"chart_{int(time.time() * 1000)}.png")
         await asyncio.to_thread(build_chart, res["ticker"].upper(), res["ind"],
@@ -944,7 +975,8 @@ async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             with open(path, "rb") as f:
                 await update.effective_message.reply_photo(
-                    photo=f, caption=f"📈 Chart {res['ticker']} (6 bulan terakhir)")
+                    photo=f, caption=f"📈 Chart {res['ticker']} (6 bulan terakhir)",
+                    reply_markup=result_markup("analisis", t))
         finally:
             if os.path.exists(path):
                 os.remove(path)
@@ -953,8 +985,11 @@ async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_skor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = tokens(update)
     if not args:
-        watch = store.get_watchlist(update.effective_chat.id)
-        args = watch or ["BBCA"]
+        await update.effective_message.reply_text(
+            "⚡ Skor — pilih emiten:",
+            reply_markup=ticker_pick_markup(
+                "skor", store.get_watchlist(update.effective_chat.id)))
+        return
     lines = []
     for t in args[:8]:
         try:
@@ -974,13 +1009,14 @@ async def cmd_watch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         wl = store.get_watchlist(chat_id)
         if not wl:
             await update.effective_message.reply_text(
-                "Watchlist masih kosong. Tambahkan dulu: <code>/watch add BBCA</code>",
-                parse_mode=ParseMode.HTML)
+                "👀 Watchlist masih kosong — pilih:",
+                parse_mode=ParseMode.HTML, reply_markup=watch_menu_markup())
             return
         lines = [store_format_quick(wl, chat_id)]
         lines.append("Ganti detail dengan /skor nama-saham")
         await update.effective_message.reply_text(
-            "\n".join(l for l in lines if l), parse_mode=ParseMode.HTML)
+            "\n".join(l for l in lines if l), parse_mode=ParseMode.HTML,
+            reply_markup=watch_menu_markup())
         return
 
     sub, *rest = args
@@ -1022,13 +1058,10 @@ async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not args:
         await update.effective_message.reply_text(
-            "Format:\n"
-            "<code>/alert add BBCA jump breakout oversold</code>\n"
-            "<code>/alert list</code>\n"
-            "<code>/alert remove BBCA</code>\n\n"
-            "Jenis alert:\n"
-            + "\n".join(f"  <code>{k}</code> — {esc(v)}" for k, v in alerts.KIND_EXAMPLES.items()),
-            parse_mode=ParseMode.HTML)
+            "🔔 Alert — pilih di bawah.\n"
+            "Jenis: jump, drop, breakout, breakdown, oversold, overbought, "
+            "ma_golden, ma_death, vol_spike.",
+            reply_markup=alert_menu_markup())
         return
 
     sub, *rest = args
@@ -1074,10 +1107,10 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = tokens(update)
     if not args:
         await update.effective_message.reply_text(
-            "Contoh: <code>/backtest BBCA</code>\n"
-            "Mengukur akurasi skor bot: tiap hari 5 tahun terakhir, bot "
-            "berteori, lalu dicek hasil 20 hari kemudian.",
-            parse_mode=ParseMode.HTML)
+            "📈 Backtest — pilih emiten:\n"
+            "Tiap hari 5 tahun terakhir bot berteori, lalu dicek hasil 20 hari kemudian.",
+            reply_markup=ticker_pick_markup(
+                "backtest", store.get_watchlist(update.effective_chat.id)))
         return
     await update.effective_message.reply_text(
         "⏳ Menghitung backtest 5 tahun + simulasi transaksi, tunggu 1-2 menit...")
@@ -1216,7 +1249,7 @@ def main():
                     "Isi env ALLOWED_USER_IDS (dipisah koma) untuk membatasi.")
 
     reg = lambda names, fn: app.add_handler(CommandHandler(names, fn, filters=user_filter))
-    reg("start", cmd_start)
+    reg(["start", "menu"], cmd_start)
     reg("help", cmd_start)
     reg(["analisa", "analysis", "analisis"], cmd_analisis)
     reg("skor", cmd_skor)

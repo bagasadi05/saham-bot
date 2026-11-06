@@ -156,15 +156,38 @@ def score_from_rows(last, prev) -> dict:
         "MA50 > MA200 (golden layout)", "MA50 < MA200 (death layout)")
     add(SCORE_WEIGHTS["macd_bullish"], _f(last, "macd") > _f(last, "macd_signal"),
         "MACD bullish", "MACD bearish")
+    # RSI: hanya <30 / >70 yang benar-benar ekstrem; 30-50 itu sekadar lemah.
+    if rsi_v >= 70:
+        rsi_bear = f"RSI overbought ({rsi_v:.0f}) - jenuh beli"
+    elif rsi_v <= 30:
+        rsi_bear = f"RSI oversold ({rsi_v:.0f}) - jenuh jual"
+    else:
+        rsi_bear = f"RSI lemah ({rsi_v:.0f}) - momentum di bawah 50"
     add(SCORE_WEIGHTS["rsi_goldilocks"], 50 <= rsi_v <= 70,
-        f"RSI sehat ({rsi_v:.0f})",
-        f"RSI ekstrem ({rsi_v:.0f}) - jenuh beli/jual")
+        f"RSI sehat ({rsi_v:.0f})", rsi_bear)
     add(SCORE_WEIGHTS["breakout_20d"], close >= _f(last, "high20") * 0.998,
         "Baru breakout high 20 hari", "Belum breakout / turun dari high 20 hari")
-    add(SCORE_WEIGHTS["volume_momentum"],
-        _f(last, "volume") > _f(last, "vol_avg20") and ret1d_v > 0,
-        "Volume di atas rata-rata dengan harga naik",
-        "Volume biasa / tekanan jual")
+    # Volume: jangan klaim "tekanan jual" dari volume rendah — sebutkan faktanya.
+    # Volume hari berjalan juga belum lengkap kalau pasar masih buka (candle
+    # hari ini vs rata-rata hari penuh itu apel lawan jeruk).
+    vol = _f(last, "volume")
+    vol_avg = _f(last, "vol_avg20")
+    vol_bull = vol > vol_avg and ret1d_v > 0
+    if vol > vol_avg:
+        vol_bear = "Volume di atas rata-rata, tapi harga turun"
+    elif ret1d_v > 0:
+        vol_bear = "Harga naik, tapi volume di bawah rata-rata"
+    else:
+        vol_bear = "Volume di bawah rata-rata, harga turun"
+    try:
+        last_date = pd.Timestamp(last.name).date()
+        now_wib = pd.Timestamp.now(tz="Asia/Jakarta")
+        if last_date == now_wib.date() and now_wib.hour < 15:
+            vol_bear += " (pasar masih buka — volume hari ini belum lengkap)"
+    except Exception:
+        pass
+    add(SCORE_WEIGHTS["volume_momentum"], vol_bull,
+        "Volume di atas rata-rata dengan harga naik", vol_bear)
     add(SCORE_WEIGHTS["price_above_sma20"], close > _f(last, "sma20"),
         "Harga di atas MA20", "Harga di bawah MA20")
 
