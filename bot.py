@@ -243,10 +243,20 @@ async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     t = args[0].upper()
     await update.effective_chat.send_action(ChatAction.TYPING)
-    fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
+    try:
+        fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
+    except ValueError as e:
+        await update.effective_message.reply_text(f"❌ {e}")
+        return
+    except Exception as e:
+        log.warning("fundamental gagal %s: %s", t, e)
+        await update.effective_message.reply_text(
+            f"❌ Data fundamental untuk {esc(t)} tidak tersedia — "
+            "sumber sedang bermasalah (rate-limit/jaringan). Coba lagi nanti.")
+        return
     if fund is None:
         await update.effective_message.reply_text(
-            f"❌ Data fundamental untuk {t} tidak tersedia.")
+            f"❌ Data fundamental untuk {esc(t)} tidak tersedia.")
         return
     sc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
     rows = [
@@ -269,6 +279,35 @@ async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if fund.get("market_cap"):
         cap = fund["market_cap"] / 1e12
         rows.append(f"  Kap. pasar: Rp{cap:.1f} T")
+
+    # [P3] tren 4 kuartal + tanggal data — gejala arah laba/pendapatan
+    def _trend_line(trend: list[tuple[str, float]] | None) -> str | None:
+        """Satu baris tren 4 kuartal + perubahan % kuartal terakhir."""
+        if not trend or len(trend) < 2:
+            return None
+        def _rp(v: float) -> str:
+            t = v / 1e12
+            return f"Rp{t:.2f}T" if abs(t) >= 1 else f"Rp{v/1e9:.0f}M"
+        labels = [lbl for lbl, _ in trend]
+        vals = [v for _, v in trend]
+        base = "→".join(_rp(v) for v in vals)
+        chg = None
+        if vals[-2] != 0:
+            chg = (vals[-1] / abs(vals[-2]) - 1) * 100
+        arrow = " 📈" if (chg or 0) > 0 else (" 📉" if (chg or 0) < 0 else "")
+        out = f"{base}{arrow}"
+        if chg is not None:
+            out += f" ({chg:+.1f}% kuartal terakhir)"
+        out += f"\n      kuartal: {esc(' → '.join(labels))}"
+        return out
+
+    rows.append(f"\nData per: {esc(str(fund.get('as_of') or 'kuartal terakhir yang tercatat'))}"
+                " <i>(laporan keuangan via Yahoo, bisa delay 1-2 kuartal)</i>")
+    for lblkey in ("Pendapatan", "Laba bersih"):
+        trend = fund.get("rev_trend" if lblkey == "Pendapatan" else "profit_trend")
+        line = _trend_line(trend)
+        rows.append(f"  {lblkey} 4K: {line if line else '<i>tren tidak tersedia</i>'}")
+
     rows.append("\nCatatan skor:")
     rows.extend(f"  {n}" for n in sc["notes"])
     rows.append("\n🔒 Bukan saran investasi.")
