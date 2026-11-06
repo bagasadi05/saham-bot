@@ -26,7 +26,7 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes, filters)
 
 import config
-from core import (alerts, analysis, bandar, data, fundamental, learn,
+from core import (alerts, analysis, bandar, banding, data, fundamental, learn,
                   news, powerscore, saran as saranmod, store)
 from core.chart import build_chart
 
@@ -90,7 +90,27 @@ async def fetch_and_analyze(ticker: str) -> dict:
 
 # ---------------------------------------------------------------- report
 
-def build_report(res: dict, fund: dict | None, news_sent: dict | None) -> str:
+def market_context_line(res: dict, mkt: dict | None) -> str:
+    """[P2] Satu baris konteks IHSG: angka, bukan opini."""
+    if not mkt:
+        return "📊 Konteks pasar: <i>data pembanding tidak tersedia</i>"
+    stock20 = res["snap"].get("ret20d")
+    stock1y = res.get("ret1y")
+    parts = []
+    for label, stock_v, mkt_v in [("20 hari", stock20, mkt.get("ret20d")),
+                                  ("1 tahun", stock1y, mkt.get("ret1y"))]:
+        if stock_v is None or mkt_v is None:
+            parts.append(f"{label}: —")
+        else:
+            diff = stock_v - mkt_v
+            arah = "unggul" if diff > 0.5 else ("tertinggal" if diff < -0.5 else "sejalan")
+            parts.append(f"{label}: {stock_v:+.1f}% vs IHSG {mkt_v:+.1f}% "
+                         f"({arah} {diff:+.1f} poin)")
+    return "📊 Konteks pasar (IHSG, data delayed): " + " | ".join(parts)
+
+
+def build_report(res: dict, fund: dict | None, news_sent: dict | None,
+                 mkt: dict | None = None) -> str:
     snap, sc, sr = res["snap"], res["score"], res["sr"]
     # [P1] tiap sinyal diberi penjelasan 1 baris biar pembelajar paham artinya
     def _sig_line(s: str, mark: str) -> str:
@@ -146,6 +166,7 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None) -> str:
         f"  Rentang 20d: {fmt_rp(sr['low_recent'])} — {fmt_rp(sr['high_recent'])}\n"
         f"{('\nKonfirmasi indikator pro:\n' + conf_txt) if conf_txt else ''}\n"
         f"{headline_txt}\n\n"
+        f"{market_context_line(res, mkt)}\n"
         f"🔒 <i>Bukan saran investasi. DYOR!</i>"
     )
 
@@ -331,6 +352,66 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """[P2] Bandingkan 2–4 emiten: PER/PBV/ROE/DY + return + PowerScore."""
+    args = tokens(update)
+    if len(args) < 2:
+        await update.effective_message.reply_text(
+            "Contoh: <code>/banding BBCA BBRI BMRI</code> (2–4 emiten)",
+            parse_mode=ParseMode.HTML)
+        return
+    emiten = list(dict.fromkeys(a.upper() for a in args[:4]))
+    await update.effective_message.reply_text(
+        f"⚖️ Membandingkan {len(emiten)} emiten… (data dari sumber yang sama "
+        "dengan /fundamental & /analisis)")
+
+    rows = []
+    for t in emiten:
+        try:
+            res = await fetch_and_analyze(t)
+        except ValueError:
+            res = None
+        try:
+            fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
+        except Exception:
+            fund = None
+        rows.append(banding.compare_row(t, res, fund))
+        await asyncio.sleep(.2)
+
+    if all(row["power"] is None for row in rows):
+        await update.effective_message.reply_text(
+            "❌ Data pembanding tidak tersedia (semua sumber gagal) — coba lagi nanti.")
+        return
+
+    hdr = f"{'EMITEN':<7}{'PER':>6}{'PBV':>6}{'ROE%':>7}{'DY%':>6}{'1 thn':>9}{'20h':>8}{'Pow':>5}"
+
+    def _row(r) -> str:
+        pow_txt = "—" if r["power"] is None else f"{r['power']:+.0f}"
+        return (
+            f"{r['ticker']:<7}"
+            f"{banding.fmt_cell(r['per'], '%.1f'):>6}"
+            f"{banding.fmt_cell(r['pbv'], '%.2f'):>6}"
+            f"{banding.fmt_cell(r['roe'], '%.1f'):>7}"
+            f"{banding.fmt_cell(r['dy'], '%.1f'):>6}"
+            f"{banding.fmt_cell(r['ret1y'], '%+.0f', '%'):>10}"
+            f"{banding.fmt_cell(r['ret20d'], '%+.1f'):>8}"
+            f"{pow_txt:>5}")
+
+    body = "\n".join(_row(r) for r in rows)
+    lines = [f"⚖️ <b>PERBANDINGAN {', '.join(esc(t) for t in emiten)}</b>",
+             "<pre>" + esc(hdr) + "\n" + esc(body) + "</pre>"]
+    verdict = banding.pbv_verdict(rows)
+    if verdict:
+        lines.append(f"\nℹ️ {esc(verdict)}")
+    missing = [r['ticker'] for r in rows if r["power"] is None]
+    if missing:
+        lines.append(f"⚠️ Data tidak tersedia untuk: {esc(', '.join(missing))} "
+                     "(dilaporkan apa adanya, bukan dikarang).")
+    lines.append("\n🔒 Angka deskriptif, bukan rekomendasi. DYOR!")
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
 async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Data resmi BEI: IHSG & sektor, plus info emiten (aliran asing bila tersedia)."""
     args = tokens(update)
@@ -407,6 +488,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <b>/saran</b> — pemindaian harian: kandidat BUY + entry/SL/TP, "
         "dilacak otomatis (SL/TP kena = bot kabarin); <b>/saran list</b>\n"
         "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
+        "• <b>/banding BBCA BBRI</b> — tabel PER/PBV/ROE/return + konteks IHSG\n"
         "• <b>/backtest BBCA</b> — akurasi statistik + simulasi transaksi\n"
         "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n"
         "• <b>/belajar RSI</b> — kamus istilah: cara baca + jebakan umumnya\n\n"
@@ -422,11 +504,12 @@ async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
         return
 
+    mkt = await asyncio.to_thread(banding.market_context)  # IHSG ^JKSE (cache 6 jam)
     for t in args[:5]:  # max 5 emiten per permintaan
         try:
             res = await fetch_and_analyze(t)
         except ValueError as e:
-            await update.effective_message.reply_text(f"❌ {e}")
+            await update.effective_message.reply_text(f"❌ {esc(e)}")
             continue
 
         # data pendukung fundamental & berita (diparalel, gagal = abaikan)
@@ -444,6 +527,14 @@ async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             nsent = None
         else:
             nsent = await asyncio.to_thread(news.news_sentiment, items)
+
+        # [P2] konteks pasar: bawa angka IHSG + return 1 thn emiten ke laporan
+        try:
+            close = res["ind"]["close"].reset_index(drop=True)
+            res["ret1y"] = float(close.iloc[-1] / close.iloc[0] - 1) * 100
+        except Exception:
+            res["ret1y"] = None
+        res["mkt"] = mkt
 
         await update.effective_message.reply_text(
             build_report(res, fsc, nsent), parse_mode=ParseMode.HTML)
@@ -731,6 +822,7 @@ def main():
     reg("watch", cmd_watch)
     reg(["saran", "recommendasi"], cmd_saran)
     reg(["bandar", "ihsg"], cmd_bandar)
+    reg(["banding", "bandingkan"], cmd_banding)
     reg("alert", cmd_alert)
     reg(["belajar", "learn", "apa"], cmd_belajar)
 

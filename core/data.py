@@ -66,9 +66,12 @@ def _load_cache(symbol: str):
         return None
 
 
-def fetch_history(ticker: str, period: str = DEFAULT_PERIOD):
-    """Ambil OHLCV history. Return DataFrame (attrs STALE bisa true) atau None."""
-    symbol = normalize_ticker(ticker)
+def fetch_history(ticker: str, period: str = DEFAULT_PERIOD,
+                  raw_symbol: bool = False):
+    """Ambil OHLCV history. Return DataFrame (attrs STALE bisa true) atau None.
+
+    raw_symbol=True dipakai untuk simbol non-emiten seperti indeks '^JKSE'."""
+    symbol = ticker if raw_symbol else normalize_ticker(ticker)
     df = None
     last_exc = None
     for attempt in range(_MAX_RETRIES):
