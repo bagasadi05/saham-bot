@@ -14,15 +14,17 @@ Perintah:
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import time
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import (Application, CommandHandler, ContextTypes, filters)
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters)
+from telegram.error import BadRequest
 
 import config
 import config
@@ -56,6 +58,16 @@ def fmt_rp(v: float) -> str:
     return f"Rp{v:,.0f}".replace(",", ".")
 
 
+def esc(s) -> str:
+    """Escape teks dinamis untuk pesan HTML Telegram (<, >, &).
+
+    Wajib untuk semua teks dari luar (judul berita, nama emiten, string skor
+    seperti 'MA20 < MA50') — kalau tidak, Telegram menolak pesan dengan
+    'Can't parse entities: unsupported start tag' dan handler crash.
+    """
+    return html.escape(str(s))
+
+
 def tokens(update: Update) -> list[str]:
     txt = (update.effective_message.text or "").split()
     return txt[1:]
@@ -66,7 +78,7 @@ async def send_typing(update: Update):
 
 
 def last_macd_cross_note(score: dict) -> str:
-    return f"\n⚠️ {score['macd_note']}" if score.get("macd_note") else ""
+    return f"\n⚠️ {esc(score['macd_note'])}" if score.get("macd_note") else ""
 
 
 async def fetch_and_analyze(ticker: str) -> dict:
@@ -84,21 +96,21 @@ async def fetch_and_analyze(ticker: str) -> dict:
 
 def build_report(res: dict, fund: dict | None, news_sent: dict | None) -> str:
     snap, sc, sr = res["snap"], res["score"], res["sr"]
-    bull_txt = "\n".join(f"  ✅ {s}" for s in sc["bull"]) or "  —"
-    bear_txt = "\n".join(f"  ❌ {s}" for s in sc["bear"]) or "  —"
+    bull_txt = "\n".join(f"  ✅ {esc(s)}" for s in sc["bull"]) or "  —"
+    bear_txt = "\n".join(f"  ❌ {esc(s)}" for s in sc["bear"]) or "  —"
     ma_row = " | ".join(
         f"MA{n}:{snap['sma' + n]}" if snap.get('sma' + n) else f"MA{n}:—"
         for n in ("20", "50", "200"))
     power = powerscore.judge(sc["pct"], fund, news_sent, snap)
     conf = analysis.extra_confirmations(res["ind"])
-    conf_txt = "\n".join(f"  • {c}" for c in conf) if conf else ""
+    conf_txt = "\n".join(f"  • {esc(c)}" for c in conf) if conf else ""
 
     headline_txt = ""
     if news_sent and news_sent.get("details"):
         top = sorted(news_sent["details"], key=lambda d: -abs(d["sent"]))[:2]
         heads = "\n".join(
-            f"  📰 <a href=\"{d.get('link') or 'https://finance.yahoo.com'}\">"
-            f"{d['title'][:80]}</a>" + (f" <i>({('%+d' % d['sent'])})</i>" if d["sent"] else "")
+            f"  📰 <a href=\"{esc(d.get('link') or 'https://finance.yahoo.com')}\">"
+            f"{esc(d['title'][:80])}</a>" + (f" <i>({('%+d' % d['sent'])})</i>" if d["sent"] else "")
             for d in top)
         headline_txt = (f"\nBerita terkini (sentimen {news_sent['emoji']} "
                         f"{news_sent['pct']:+.0f}%):\n{heads}")
@@ -137,6 +149,541 @@ def build_quick(res: dict) -> str:
     )
 
 
+# ---------------------------------------------------------------- menu interaktif
+# /start menampilkan tombol; semua fitur bisa dipakai tanpa mengetik perintah.
+# Alur: tombol aksi -> (pilih emiten dari tombol cepat / ketik manual) -> hasil.
+# Pesan teks biasa hanya diproses kalau chat sedang menunggu input emiten
+# (PENDING), selebihnya diabaikan supaya tidak mengganggu perintah lain.
+
+POPULAR_TICKERS = ["BBCA", "BBRI", "TLKM", "BMRI", "ANTM", "ASII"]
+
+# aksi yang butuh emiten -> label tombolnya
+NEED_TICKER = {
+    "analisis": "📊 Analisis",
+    "skor": "⚡ Skor",
+    "berita": "📰 Berita",
+    "fundamental": "💰 Fundamental",
+    "backtest": "📈 Backtest",
+}
+
+# chat_id -> aksi yang sedang menunggu input emiten
+PENDING: dict[int, str] = {}
+# diisi dari ALLOWED_USER_IDS di main(); kosong = siapa pun boleh
+ALLOWED_IDS: set[int] = set()
+
+
+def main_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Analisis", callback_data="pick:analisis"),
+         InlineKeyboardButton("⚡ Skor", callback_data="pick:skor")],
+        [InlineKeyboardButton("📰 Berita", callback_data="pick:berita"),
+         InlineKeyboardButton("💰 Fundamental", callback_data="pick:fundamental")],
+        [InlineKeyboardButton("💡 Saran", callback_data="run:saran"),
+         InlineKeyboardButton("📈 Backtest", callback_data="pick:backtest")],
+        [InlineKeyboardButton("👀 Watchlist", callback_data="run:watch"),
+         InlineKeyboardButton("🔔 Alert", callback_data="run:alert")],
+        [InlineKeyboardButton("🏦 Bandar", callback_data="run:bandar"),
+         InlineKeyboardButton("❓ Bantuan", callback_data="run:help")],
+    ])
+
+
+def home_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")]])
+
+
+def ticker_pick_markup(action: str) -> InlineKeyboardMarkup:
+    rows = []
+    for i in range(0, len(POPULAR_TICKERS), 3):
+        rows.append([InlineKeyboardButton(t, callback_data=f"tick:{action}:{t}")
+                     for t in POPULAR_TICKERS[i:i + 3]])
+    rows.append([InlineKeyboardButton("✏️ Ketik manual", callback_data=f"manual:{action}")])
+    rows.append([InlineKeyboardButton("⬅️ Kembali", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def watch_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Lihat", callback_data="run:watch_list"),
+         InlineKeyboardButton("➕ Tambah", callback_data="manual:watch_add")],
+        [InlineKeyboardButton("🗑 Hapus", callback_data="manual:watch_del")],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def alert_menu_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Lihat", callback_data="run:alert_list"),
+         InlineKeyboardButton("➕ Tambah", callback_data="manual:alert_add")],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+_MANUAL_PROMPT = {
+    "analisis": "Ketik kode emiten untuk dianalisis (contoh: <code>BBCA</code>, atau beberapa dipisah spasi: <code>BBCA TLKM</code>):",
+    "skor": "Ketik kode emiten untuk skor cepat (contoh: <code>BBCA TLKM BBRI</code>):",
+    "berita": "Ketik kode emiten untuk beritanya (contoh: <code>BBCA</code>):",
+    "fundamental": "Ketik kode emiten untuk fundamentalnya (contoh: <code>BBRI</code>):",
+    "backtest": "Ketik kode emiten untuk di-backtest (contoh: <code>BBCA</code>):",
+    "watch_add": "Ketik kode emiten yang mau ditambah ke watchlist (contoh: <code>ANTM</code>):",
+    "watch_del": "Ketik kode emiten yang mau dihapus dari watchlist:",
+    "alert_add": "Ketik kode emiten untuk alarm (jenis default: jump, drop, breakout, oversold, overbought, ma_golden, ma_death):",
+}
+
+
+async def _do_analisis(update: Update, tickers: list[str]):
+    msg = update.effective_message
+    for t in tickers[:5]:
+        try:
+            res = await fetch_and_analyze(t)
+        except ValueError as e:
+            await msg.reply_text(f"❌ {e}", reply_markup=home_markup())
+            continue
+        fund_f = asyncio.to_thread(fundamental.fetch_fundamentals, t)
+        news_f = asyncio.to_thread(news.fetch_news, t)
+        try:
+            fund, items = await asyncio.gather(fund_f, news_f, return_exceptions=True)
+        except Exception:
+            fund, items = None, None
+        if isinstance(fund, Exception) or fund is None:
+            fund, fsc = None, None
+        else:
+            fsc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
+        if isinstance(items, Exception) or not items:
+            nsent = None
+        else:
+            nsent = await asyncio.to_thread(news.news_sentiment, items)
+        await msg.reply_text(build_report(res, fsc, nsent),
+                             parse_mode=ParseMode.HTML, reply_markup=home_markup())
+        path = os.path.join(TMP_DIR, f"chart_{int(time.time() * 1000)}.png")
+        await asyncio.to_thread(build_chart, res["ticker"].upper(), res["ind"],
+                                res["score"]["pct"], path)
+        try:
+            with open(path, "rb") as f:
+                await msg.reply_photo(
+                    photo=f, caption=f"📈 Chart {res['ticker']} (6 bulan terakhir)",
+                    reply_markup=home_markup())
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+
+async def _do_skor(update: Update, tickers: list[str]):
+    msg = update.effective_message
+    args = tickers or store.get_watchlist(update.effective_chat.id) or ["BBCA"]
+    lines = []
+    for t in args[:8]:
+        try:
+            res = await fetch_and_analyze(t)
+            lines.append(build_quick(res))
+        except ValueError as e:
+            lines.append(f"❌ {e}")
+    await msg.reply_text("\n".join(lines) or "Watchlist kosong.",
+                         parse_mode=ParseMode.HTML, reply_markup=home_markup())
+
+
+async def _do_berita(update: Update, ticker: str):
+    msg = update.effective_message
+    t = ticker.upper()
+    await update.effective_chat.send_action(ChatAction.TYPING)
+    try:
+        items = await asyncio.to_thread(news.fetch_news, t)
+    except Exception:
+        items = []
+    if not items:
+        await msg.reply_text(f"❌ Berita untuk {t} tidak tersedia — atau jaringan sedang bermasalah.",
+                             reply_markup=home_markup())
+        return
+    sent = await asyncio.to_thread(news.news_sentiment, items)
+    lines = [f"📰 <b>Berita {t}</b> — sentimen {sent['emoji']} "
+             f"({sent['pct']:+.0f}%, {sent['n']} berita)"]
+    for d in sent["details"][:7]:
+        har = f" {d['sent']:+.0f}" if d["sent"] else ""
+        age = f", {d['age_days']:.0f}h lalu" if d["age_days"] >= 1 else ""
+        src = f" — <i>{esc(d['source'])}</i>" if d.get("source") else ""
+        lines.append(f"\n{d['date']:%d %b} · <a href=\"{esc(d['link'] or 'https://news.google.com')}\">"
+                     f"{esc(d['title'][:110])}</a>{har}{age}{src}")
+    lines.append("\n\n🔒 Bukan saran investasi.")
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
+                         disable_web_page_preview=True, reply_markup=home_markup())
+
+
+async def _do_fundamental(update: Update, ticker: str):
+    msg = update.effective_message
+    t = ticker.upper()
+    await update.effective_chat.send_action(ChatAction.TYPING)
+    fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
+    if fund is None:
+        await msg.reply_text(f"❌ Data fundamental untuk {t} tidak tersedia.",
+                             reply_markup=home_markup())
+        return
+    sc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
+    rows = [f"🏛️ <b>Fundamental {t}</b> — {esc(fund.get('name'))}"]
+    if fund.get("sector"):
+        rows.append(f"Sektor: {esc(fund['sector'])}")
+    rows.append(f"Skor: <b>{sc['pct']:+d}%</b> {sc['emoji']} {sc['label']}\n")
+
+    def _fmt(key, tpl, suffix=""):
+        v = fund.get(key)
+        return tpl % v + suffix if v is not None else "—"
+    rows.append(f"  PER: {_fmt('per', '%.1f')}   PBV: {_fmt('pbv', '%.2f')}")
+    rows.append(f"  EPS: {_fmt('eps', '%d')}   DER: {(_fmt('debt_eq', '%.0f%%') if fund.get('debt_eq') is not None else '—')}")
+    if fund.get("roe") is not None:
+        roe = fund["roe"] * 100 if fund["roe"] < 3 else fund["roe"]
+        rows.append(f"  ROE: {roe:.1f}%")
+    if fund.get("div_yield") is not None:
+        dy = fund["div_yield"] * 100 if fund["div_yield"] < 1 else fund["div_yield"]
+        rows.append(f"  Dividend yield: {dy:.1f}%")
+    if fund.get("market_cap"):
+        rows.append(f"  Kap. pasar: Rp{fund['market_cap'] / 1e12:.1f} T")
+    rows.append("\nCatatan skor:")
+    rows.extend(f"  {esc(n)}" for n in sc["notes"])
+    rows.append("\n🔒 Bukan saran investasi.")
+    await msg.reply_text("\n".join(rows), parse_mode=ParseMode.HTML,
+                         reply_markup=home_markup())
+
+
+async def _do_backtest(update: Update, ticker: str):
+    msg = update.effective_message
+    t = ticker.upper()
+    parts = []
+    try:
+        bt = await asyncio.to_thread(btmod.backtest, t)
+        parts.append(f"🧪 <b>Backtest statistik {t}</b>\n<pre>{btmod.summarize(bt)}</pre>")
+    except ValueError as e:
+        await msg.reply_text(f"❌ {e}", reply_markup=home_markup())
+        return
+    try:
+        import backtest_real
+        stats = await asyncio.to_thread(backtest_real.run_backtest, t)
+        parts.append("<b>Simulasi transaksi nyata</b> (buy sinyal BUY, SL 1×ATR, "
+                     "TP 2×ATR, biaya 0,25%):")
+        parts.append(
+            f"<pre>"
+            f"Return/thn      : {stats['Return (Ann.) [%]']:+.1f}%\n"
+            f"Buy & hold      : {stats['Buy & Hold Return [%]']:+.1f}%\n"
+            f"Transaksi       : {stats['# Trades']:.0f}\n"
+            f"Win-rate        : {stats['Win Rate [%]']:.1f}%\n"
+            f"Profit factor   : {stats['Profit Factor']:.2f}\n"
+            f"Max drawdown    : {stats['Max. Drawdown [%]']:.1f}%"
+            f"</pre>")
+    except ValueError as e:
+        parts.append(f"⚠️ Simulasi transaksi dilewati: {e}")
+    except Exception:
+        log.exception("backtest_real gagal utk %s", t)
+        parts.append("⚠️ Simulasi transaksi gagal dijalankan (library backtesting.py).")
+    parts.append("⚠️ Skor = deskripsi kondisi saat itu, bukan ramalan. "
+                 "Uji dengan beberapa emiten sebelum menarik kesimpulan.")
+    await msg.reply_text("\n".join(parts), parse_mode=ParseMode.HTML,
+                         disable_web_page_preview=True, reply_markup=home_markup())
+
+
+async def _do_saran(update: Update, list_only: bool = False):
+    msg = update.effective_message
+    chat_id = update.effective_chat.id
+    if list_only:
+        lines = saranmod.quotes_forgotten(chat_id)
+        await msg.reply_text("\n".join(lines) or "Belum ada posisi latihan.",
+                             parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                             reply_markup=home_markup())
+        return
+    wl = store.get_watchlist(chat_id)
+    universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
+    await msg.reply_text(
+        f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 3-4 menit...",
+        reply_markup=home_markup())
+    analyzed, latest = [], {}
+    for t in universe:
+        a = await gather_candidate(t)
+        if a:
+            analyzed.append(a)
+            latest[a["res"]["ticker"]] = a["res"]["snap"]["close"]
+        await asyncio.sleep(.2)
+    if not analyzed:
+        await msg.reply_text("❌ Data sumber error, coba lagi nanti.",
+                             reply_markup=home_markup())
+        return
+    result = saranmod.pick(analyzed)
+    saranmod.update_paper(chat_id, latest)
+    lines = [f"🧭 <b>RINGKASAN SARAN HARIAN — {pd.Timestamp.now(tz=WIB):%d %b %Y}</b>",
+             "Skema cais: jual dibeli penutupan | SL 1×ATR | TP 2×ATR\n"]
+    if result["picks"]:
+        saranmod.open_paper(chat_id, result["picks"], f"{pd.Timestamp.now(tz=WIB):%d %b}")
+        lines.append("Kandidat BUY (urut PowerScore, tersimpan sebagai posisi latihan):")
+        for c in result["picks"]:
+            fund_txt = "—" if c["fund"] is None else f"{c['fund']:+.0f}"
+            news_txt = "—" if c["news"] is None else f"{c['news']:+.0f}"
+            lines.append(
+                f"  {c['emoji']} <b>{c['ticker']}</b> power {c['power']:+d}% "
+                f"(tek {c['tech']:+.0f}, fund {fund_txt}, berita {news_txt})\n"
+                f"      Entry {saranmod.fmt(c['entry'])} | SL {saranmod.fmt(c['sl'])} | "
+                f"TP {saranmod.fmt(c['tp'])}")
+    else:
+        lines.append("Tidak ada kandidat layak BUY hari ini "
+                     "(semua skor tak mencukupi / terkena filter jebakan momentum).")
+    lines.append("\n🚫 HINDARI (terlemah):")
+    for c in result["avoid"]:
+        lines.append(f"  {c['emoji']} <b>{c['ticker']}</b> {c['power']:+d}% — "
+                     f"{'jebakan momentum' if c['ret20d'] > 15 else 'teknikal lemah'}")
+    lines.append("\n⚠️ Alat bantu latihan, bukan saran formal. DYOR!")
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
+                         disable_web_page_preview=True, reply_markup=home_markup())
+
+
+async def _do_watch_list(update: Update):
+    msg = update.effective_message
+    chat_id = update.effective_chat.id
+    wl = store.get_watchlist(chat_id)
+    if not wl:
+        await msg.reply_text("Watchlist masih kosong. Tambahkan dulu lewat tombol ➕ Tambah.",
+                             reply_markup=watch_menu_markup())
+        return
+    lines = [store_format_quick(wl, chat_id)]
+    for t in wl:
+        try:
+            res = await fetch_and_analyze(t)
+            lines.append(build_quick(res))
+        except ValueError as e:
+            lines.append(f"❌ {e}")
+        await asyncio.sleep(.3)
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
+                         reply_markup=watch_menu_markup())
+
+
+async def _do_watch_add(update: Update, ticker: str):
+    msg = update.effective_message
+    ok, wl = store.watchlist_add(update.effective_chat.id, ticker.upper())
+    prefix = "✅ Ditambahkan" if ok else "📌 Sudah ada di"
+    await msg.reply_text(f"{prefix} watchlist: {', '.join(str(w) for w in wl)}",
+                         reply_markup=watch_menu_markup())
+
+
+async def _do_watch_del(update: Update, ticker: str):
+    msg = update.effective_message
+    ok, wl = store.watchlist_remove(update.effective_chat.id, ticker.upper())
+    prefix = "🗑️ Dihapus" if ok else "❓ Tidak ditemukan di"
+    await msg.reply_text(f"{prefix} watchlist. Sisanya: {', '.join(wl) or '(kosong)'}",
+                         reply_markup=watch_menu_markup())
+
+
+async def _do_alert_list(update: Update):
+    msg = update.effective_message
+    al = store.get_alerts(update.effective_chat.id)
+    if al:
+        txt = "\n".join(f"  • <b>{s}</b>: {', '.join(sorted(k))}" for s, k in al.items())
+        await msg.reply_text(f"Alert kamu:\n{txt}", parse_mode=ParseMode.HTML,
+                             reply_markup=alert_menu_markup())
+    else:
+        await msg.reply_text("Belum ada alert.", reply_markup=alert_menu_markup())
+
+
+async def _do_alert_add(update: Update, ticker: str):
+    msg = update.effective_message
+    chat_id = update.effective_chat.id
+    symbol = ticker.upper()
+    kinds = {"jump", "drop", "breakout", "oversold", "overbought", "ma_golden", "ma_death"}
+    saved = store.set_alert(chat_id, symbol, kinds)
+    store.watchlist_add(chat_id, symbol)
+    await msg.reply_text(
+        f"🔔 Alert untuk <b>{symbol}</b> aktif: <code>{', '.join(sorted(saved))}</code>\n"
+        "Scanner mengecek tiap 30 menit saat pasar buka.",
+        parse_mode=ParseMode.HTML, reply_markup=alert_menu_markup())
+
+
+async def _do_bandar(update: Update):
+    msg = update.effective_message
+    await update.effective_chat.send_action(ChatAction.TYPING)
+
+    def _job():
+        idx = bandar.get_index_summary()
+        rows = bandar.get_stock_summary(bandar.last_trading_date(), max_stocks=200)
+        return idx, rows
+    try:
+        idx, rows = await asyncio.to_thread(_job)
+    except bandar.IDXTidakTersedia as e:
+        await msg.reply_text(
+            "🔒 <b>Data BEI (idx.co.id) kini diblokir Cloudflare</b> "
+            "(IP server diperlakukan kurang manis). Coba lagi nanti atau dari server lain.\n"
+            "<i>Alternatif cepat: /analisis TICKER (pakai Yahoo Finance, delayed 15 menit).</i>",
+            parse_mode=ParseMode.HTML, reply_markup=home_markup())
+        log.warning("BEI blocked: %s", e)
+        return
+    comp = next((x for x in idx if x["IndexCode"] == "COMPOSITE"), None)
+    lines = []
+    if comp:
+        def _num(k):
+            return f"{comp.get(k):,.2f}" if isinstance(comp.get(k), (int, float)) else "—"
+        lines.append(f"🇮🇩 <b>IHSG</b> (BEI resmi, {comp.get('Date', '')[:10]})")
+        for key_lbl, key in [("Penutupan", "IndexClose"), ("Buka", "IndexOpen"),
+                             ("Tinggi", "IndexHigh"), ("Rendah", "IndexLow"),
+                             ("Perubahan", "IndexChange")]:
+            lines.append(f"  {key_lbl}: {_num(key)}")
+    up = bandar.top_movers(rows, n=4)
+    dn = bandar.top_movers(rows, n=4, asc=True)
+
+    def _mv(rs):
+        return "\n".join(
+            f"  <b>{r['StockCode']}</b> {bandar.to_pct(r):+.1f}% "
+            f"vol {r.get('Volume',0):,.0f}" for r in rs)
+    lines.append("\n🔥 Top gainer:\n" + _mv(up))
+    lines.append("\n💀 Top loser:\n" + _mv(dn))
+    lines.append("\n⚠️ Data BEI resmi (bukan saran investasi)")
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
+                         disable_web_page_preview=True, reply_markup=home_markup())
+
+
+async def run_menu_action(update: Update, action: str, tickers: list[str]):
+    """Jalankan satu aksi menu. Dipakai tombol maupun input teks."""
+    if action == "analisis":
+        await _do_analisis(update, tickers)
+    elif action == "skor":
+        await _do_skor(update, tickers)
+    elif action == "berita":
+        await _do_berita(update, tickers[0])
+    elif action == "fundamental":
+        await _do_fundamental(update, tickers[0])
+    elif action == "backtest":
+        await _do_backtest(update, tickers[0])
+    elif action == "saran":
+        await _do_saran(update)
+    elif action == "saran_list":
+        await _do_saran(update, list_only=True)
+    elif action == "watch_list":
+        await _do_watch_list(update)
+    elif action == "watch_add":
+        await _do_watch_add(update, tickers[0])
+    elif action == "watch_del":
+        await _do_watch_del(update, tickers[0])
+    elif action == "alert_list":
+        await _do_alert_list(update)
+    elif action == "alert_add":
+        await _do_alert_add(update, tickers[0])
+    elif action == "bandar":
+        await _do_bandar(update)
+    else:
+        await update.effective_message.reply_text(
+            "Aksi tidak dikenal. Buka /start untuk menu.",
+            reply_markup=home_markup())
+
+
+async def _safe_edit(msg, text, **kw):
+    """Edit pesan menu; abaikan 'Message is not modified' (double-tap jinak)."""
+    try:
+        await msg.edit_text(text, **kw)
+    except BadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
+
+
+async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    if ALLOWED_IDS and q.from_user.id not in ALLOWED_IDS:
+        await q.answer("⛔ Bot ini privat.", show_alert=True)
+        return
+    data = q.data or ""
+    chat_id = update.effective_chat.id
+    msg = q.message
+    if data == "menu":
+        PENDING.pop(chat_id, None)
+        await _safe_edit(msg, _menu_text(), parse_mode=ParseMode.HTML,
+                            reply_markup=main_menu_markup())
+        return
+    if data.startswith("pick:"):
+        action = data.split(":", 1)[1]
+        label = NEED_TICKER.get(action, action)
+        PENDING.pop(chat_id, None)
+        await _safe_edit(msg, f"{label} — pilih emiten:",
+                            reply_markup=ticker_pick_markup(action))
+        return
+    if data.startswith("manual:"):
+        action = data.split(":", 1)[1]
+        PENDING[chat_id] = action
+        await _safe_edit(msg, _MANUAL_PROMPT.get(action, "Ketik kode emiten:"),
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=InlineKeyboardMarkup(
+                                [[InlineKeyboardButton("⬅️ Batal", callback_data="menu")]]))
+        return
+    if data.startswith("tick:"):
+        _, action, ticker = data.split(":")
+        PENDING.pop(chat_id, None)
+        await _safe_edit(msg, f"⏳ Memproses <b>{ticker}</b>...",
+                            parse_mode=ParseMode.HTML, reply_markup=home_markup())
+        await run_menu_action(update, action, [ticker])
+        return
+    if data.startswith("run:"):
+        action = data.split(":", 1)[1]
+        if action == "watch":
+            await _safe_edit(msg, "👀 <b>Watchlist</b> — pilih:",
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=watch_menu_markup())
+        elif action == "alert":
+            await _safe_edit(msg, "🔔 <b>Alert</b> — pilih:",
+                                parse_mode=ParseMode.HTML,
+                                reply_markup=alert_menu_markup())
+        elif action == "help":
+            await _safe_edit(msg, _menu_text(), parse_mode=ParseMode.HTML,
+                                reply_markup=main_menu_markup())
+        elif action == "saran":
+            await _safe_edit(msg, "🔍 Memindai emiten, 3-4 menit...",
+                                reply_markup=home_markup())
+            await run_menu_action(update, "saran", [])
+        elif action == "bandar":
+            await _safe_edit(msg, "⏳ Mengambil data BEI...",
+                                reply_markup=home_markup())
+            await run_menu_action(update, "bandar", [])
+        else:
+            await run_menu_action(update, action, [])
+        return
+
+
+async def menu_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Teks biasa: hanya diproses kalau chat sedang menunggu input emiten."""
+    chat_id = update.effective_chat.id
+    action = PENDING.get(chat_id)
+    if not action:
+        return
+    if ALLOWED_IDS and update.effective_user.id not in ALLOWED_IDS:
+        PENDING.pop(chat_id, None)
+        return
+    text = (update.effective_message.text or "").strip().upper()
+    tickers = [t for t in text.replace(",", " ").split() if t]
+    if not tickers or not all(t.isalnum() and len(t) <= 6 for t in tickers):
+        await update.effective_message.reply_text(
+            "❌ Kode emiten tidak valid. Contoh: <code>BBCA</code> (atau <code>BBCA TLKM</code>).",
+            parse_mode=ParseMode.HTML)
+        return
+    PENDING.pop(chat_id, None)
+    await run_menu_action(update, action, tickers[:5])
+
+
+def _menu_text() -> str:
+    return (
+        "👋 Halo! Aku <b>SahamBuddy</b> — bot analisis saham Indonesia "
+        "(teknikal + fundamental + sentimen berita + data resmi BEI).\n\n"
+        "Pilih dari tombol di bawah — atau ketik perintah langsung, mis. "
+        "<code>/analisis BBCA</code>.\n\n"
+        "⚠️ Bukan saran investasi — selalu DYOR!")
+
+
+async def _post_init(app: Application):
+    """Daftarkan daftar perintah di menu '/' Telegram."""
+    from telegram import BotCommand
+    await app.bot.set_my_commands([
+        BotCommand("start", "Menu utama (tombol interaktif)"),
+        BotCommand("analisis", "Analisis emiten, mis. /analisis BBCA"),
+        BotCommand("skor", "Ringkasan skor cepat"),
+        BotCommand("berita", "Berita + sentimen emiten"),
+        BotCommand("fundamental", "PER/PBV/ROE/dividen/DER"),
+        BotCommand("saran", "Kandidat BUY harian + paper trading"),
+        BotCommand("bandar", "Data resmi BEI / IHSG"),
+        BotCommand("backtest", "Backtest 5 tahun emiten"),
+        BotCommand("watch", "Kelola watchlist"),
+        BotCommand("alert", "Kelola alarm harga"),
+        BotCommand("help", "Panduan"),
+    ])
+
+
 async def cmd_berita(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ringkasan berita terkini + skor sentimen lexicon Indonesia."""
     args = tokens(update)
@@ -160,9 +707,9 @@ async def cmd_berita(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for d in sent["details"][:7]:
         har = f" {d['sent']:+.0f}" if d["sent"] else ""
         age = f", {d['age_days']:.0f}h lalu" if d["age_days"] >= 1 else ""
-        src = f" — <i>{d['source']}</i>" if d.get("source") else ""
-        lines.append(f"\n{d['date']:%d %b} · <a href=\"{d['link'] or 'https://news.google.com'}\">"
-                     f"{d['title'][:110]}</a>{har}{age}{src}")
+        src = f" — <i>{esc(d['source'])}</i>" if d.get("source") else ""
+        lines.append(f"\n{d['date']:%d %b} · <a href=\"{esc(d['link'] or 'https://news.google.com')}\">"
+                     f"{esc(d['title'][:110])}</a>{har}{age}{src}")
     lines.append("\n\n🔒 Bukan saran investasi.")
     await update.effective_message.reply_text(
         "\n".join(lines), parse_mode=ParseMode.HTML,
@@ -185,10 +732,10 @@ async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     sc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
     rows = [
-        f"🏛️ <b>Fundamental {t}</b> — {fund.get('name')}",
+        f"🏛️ <b>Fundamental {t}</b> — {esc(fund.get('name'))}",
     ]
     if fund.get("sector"):
-        rows.append(f"Sektor: {fund['sector']}")
+        rows.append(f"Sektor: {esc(fund['sector'])}")
     rows.append(f"Skor: <b>{sc['pct']:+d}%</b> {sc['emoji']} {sc['label']}\n")
     def _fmt(key, tpl, suffix=""):
         v = fund.get(key)
@@ -205,7 +752,7 @@ async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         cap = fund["market_cap"] / 1e12
         rows.append(f"  Kap. pasar: Rp{cap:.1f} T")
     rows.append("\nCatatan skor:")
-    rows.extend(f"  {n}" for n in sc["notes"])
+    rows.extend(f"  {esc(n)}" for n in sc["notes"])
     rows.append("\n🔒 Bukan saran investasi.")
     await update.effective_message.reply_text(
         "\n".join(rows), parse_mode=ParseMode.HTML)
@@ -322,7 +869,7 @@ async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         row = bandar.find_row(rows, ticker)
         if row:
             pct = bandar.to_pct(row)
-            lines.append(f"\n📊 <b>{row['StockCode']}</b> — {row.get('StockName','')}")
+            lines.append(f"\n📊 <b>{row['StockCode']}</b> — {esc(row.get('StockName',''))}")
             for lbl, key in [("Buka","OpenPrice"),("Tertinggi","HighestPrice"),
                              ("Terendah","LowestPrice"),("Tutup","ClosingPrice"),
                              ("Volume","Volume"),("Nilai","Value")]:
@@ -353,20 +900,8 @@ async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        "👋 Halo! Aku <b>SahamBuddy</b> — bot analisis saham Indonesia "
-        "(teknikal + fundamental + sentimen berita + data resmi BEI).\n\n"
-        "Menu utama:\n"
-        "• <b>/analisis BBCA</b> — PowerScore, chart, konfirmasi pro + berita\n"
-        "• <b>/skor TLKM BBRI</b> — ringkasan cepat\n"
-        "• <b>/berita BBCA</b> — 7 berita terbaru + sentimen (ML lokal)\n"
-        "• <b>/fundamental BBRI</b> — PER/PBV/ROE/dividen/DER\n"
-        "• <b>/saran</b> — pemindaian harian: kandidat BUY + entry/SL/TP, "
-        "dilacak otomatis (SL/TP kena = bot kabarin); <b>/saran list</b>\n"
-        "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
-        "• <b>/backtest BBCA</b> — akurasi statistik + simulasi transaksi\n"
-        "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n\n"
-        "⚠️ Bukan saran investasi — selalu DYOR!",
-        parse_mode=ParseMode.HTML)
+        _menu_text(), parse_mode=ParseMode.HTML,
+        reply_markup=main_menu_markup())
 
 
 async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -492,7 +1027,7 @@ async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "<code>/alert list</code>\n"
             "<code>/alert remove BBCA</code>\n\n"
             "Jenis alert:\n"
-            + "\n".join(f"  <code>{k}</code> — {v}" for k, v in alerts.KIND_EXAMPLES.items()),
+            + "\n".join(f"  <code>{k}</code> — {esc(v)}" for k, v in alerts.KIND_EXAMPLES.items()),
             parse_mode=ParseMode.HTML)
         return
 
@@ -638,7 +1173,12 @@ async def scan_alerts(app: Application):
 
 async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     """[kendala 4] setiap crash handler: log penuh + balasan ramah ke user."""
-    log.exception("handler kena error")
+    err = ctx.error
+    # double-tap tombol / pesan sudah diubah: jinak, jangan ganggu user
+    if isinstance(err, BadRequest) and "message is not modified" in str(err).lower():
+        return
+    log.error("handler kena error: %r", err,
+              exc_info=err if isinstance(err, BaseException) else None)
     if update and getattr(update, "effective_message", None):
         try:
             await ctx.bot.send_message(
@@ -658,7 +1198,7 @@ def main():
             "  1. Chat @BotFather di Telegram\n"
             "  2. Kirim /newbot, ikuti isian\n"
             "  3. Jalankan:  BOT_TOKEN=123:abc python bot.py")
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(_post_init).build()
 
     # [kendala 5] kalau ALLOWED_USER_IDS diisi, hanya user itu yang boleh memakai bot
     user_ids: list[int] = []
@@ -687,6 +1227,9 @@ def main():
     reg(["saran", "recommendasi"], cmd_saran)
     reg(["bandar", "ihsg"], cmd_bandar)
     reg("alert", cmd_alert)
+    ALLOWED_IDS.update(user_ids)
+    app.add_handler(CallbackQueryHandler(menu_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_text_input))
 
     job_queue = app.job_queue
     job_queue.run_repeating(scan_alerts, interval=config.ALERT_SCAN_MINUTES * 60, first=10)

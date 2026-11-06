@@ -1,6 +1,8 @@
 """Logika alert otomatis: mendeteksi kondisi pemicu dari data terbaru."""
 from __future__ import annotations
 
+import html
+
 import pandas as pd
 
 KIND_LABEL = {
@@ -73,7 +75,9 @@ def build_alert_message(symbol: str, triggers: list[str], snap: dict, score: dic
              "",
              "Pemicu aktif:"]
     for t in triggers:
-        lines.append(f"  {KIND_LABEL.get(t, t)}")
+        # label berisi '<' / '>' (mis. 'RSI oversold (<30)') — escape agar
+        # pesan HTML Telegram tidak gagal parse
+        lines.append(f"  {html.escape(KIND_LABEL.get(t, t))}")
     return "\n".join(lines)
 
 
