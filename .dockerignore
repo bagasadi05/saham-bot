@@ -1,0 +1,9 @@
+temp/
+__pycache__/
+*.pyc
+.env
+store.json
+data/
+models/
+.git/
+*.md

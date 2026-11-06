@@ -1,0 +1,20 @@
+services:
+  saham-bot:
+    build:
+      context: .
+      args:
+        SKIP_MODEL: "0"          # "1" = slim, tanpa model ML (lexicon fallback)
+    container_name: saham-bot
+    env_file: .env
+    environment:
+      STORE_FILE: /app/data/store.json
+      TMP_DIR: /app/data/temp
+      SAHAMBOT_LOCAL_MODEL: /app/models/indo-fin-roberta
+    volumes:
+      - ./data:/app/data         # watchlist/alert/paper-trading bertahan lintas rebuild
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

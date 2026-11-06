@@ -1,0 +1,18 @@
+# rahasia & data pribadi — tidak pernah masuk repo
+.env
+store.json
+data/
+temp/
+
+# model ML besar (diunduh saat build, bukan di-commit)
+models/
+
+# artefak python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# lainnya
+*.log
+.DS_Store
