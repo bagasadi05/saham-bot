@@ -17,10 +17,13 @@ import threading
 MODEL_ID = "will702/indo-roBERTa-financial-sentiment-v2"
 LABEL_MAP = {0: "positive", 1: "neutral", 2: "negative"}
 
-# Folder koper lokal (hasil unduhan manual) — dipakai bila ada, supaya bot
-# enggak danak tergantung jaringan yang tidak stabil saat startup.
+# Folder koper lokal (hasil unduhan manual / build Docker) — dipakai bila ada,
+# supaya bot enggak tergantung jaringan yang tidak stabil saat startup.
+# Override dengan env SAHAMBOT_LOCAL_MODEL jika perlu.
 LOCAL_MODEL_DIR = os.environ.get(
-    "SAHAMBOT_LOCAL_MODEL", "/tmp/opencode/hfmodel/indo-fin-roberta")
+    "SAHAMBOT_LOCAL_MODEL",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "models", "indo-fin-roberta"))
 
 _state = {"model": None, "tokenizer": None, "failed": False}
 _lock = threading.Lock()

@@ -227,6 +227,10 @@ def last_snapshot(ind: pd.DataFrame) -> dict:
 
 
 def analyze(ticker: str, df_raw) -> dict:
+    if df_raw is None or len(df_raw) == 0:
+        raise ValueError(
+            f"data '{ticker.upper()}' tidak dapat diambil (sumber gagal/"
+            "rate-limit); silakan coba lagi nanti")
     ind = compute_indicators(df_raw)
     return {
         "ticker": ticker.upper(),

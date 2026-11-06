@@ -13,6 +13,8 @@ latihan & watchlist bertahan di volume.
   sudo usermod -aG docker $USER && newgrp docker
   ```
 - Token bot dari [@BotFather](https://t.me/BotFather): `/newbot` → salin token
+- (Disarankan) ID Telegram-mu — tanyakan ke [@userinfobot](https://t.me/userinfobot),
+  untuk mengisi `ALLOWED_USER_IDS` supaya bot hanya bisa dipakai kamu sendiri
 
 ## Langkah (Docker — cara utama)
 
@@ -20,7 +22,7 @@ latihan & watchlist bertahan di volume.
 git clone https://github.com/NAMA-KAMU/saham-bot.git
 cd saham-bot
 cp .env.example .env
-nano .env                # isi BOT_TOKEN=123456:ABC..., simpan (Ctrl+O, Ctrl+X)
+nano .env                # isi BOT_TOKEN=..., ALLOWED_USER_IDS=idmu, simpan
 docker compose up -d --build
 ```
 
@@ -73,7 +75,8 @@ After=network-online.target
 User=KAMU
 WorkingDirectory=/opt/saham-bot
 EnvironmentFile=/opt/saham-bot/.env
-ExecStart=/opt/saham-bot/.venv/bin/python bot.py
+Environment=NO_PROXY=localhost,127.0.0.1,::1
+ExecStart=/opt/saham-bot/run.sh
 Restart=always
 RestartSec=5
 

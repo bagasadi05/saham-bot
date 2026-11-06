@@ -55,14 +55,30 @@ pip install -r requirements.txt
 ## Jalankan
 
 ```bash
+./run.sh          # baca BOT_TOKEN dari .env otomatis + fix NO_PROXY VPS
+```
+
+atau langsung:
+
+```bash
 BOT_TOKEN="123456:ABC-DEF..." python bot.py
 ```
 
-atau simpan di file `.env`:
+Deployment 24/7 (Docker/systemd) → lihat **[deploy.md](deploy.md)**.
 
-```bash
-export $(cat .env) && python bot.py
-```
+### Konfigurasi env penting
+
+| Variabel | Arti | Default |
+|---|---|---|
+| `BOT_TOKEN` | token dari @BotFather — **wajib** | — |
+| `ALLOWED_USER_IDS` | id Telegram yang boleh pakai bot (koma utk banyak). Kosong = publik | kosong |
+| `YF_RETRIES` | percobaan ulang saat Yahoo rate-limit (429) | `3` |
+| `SAHAMBOT_CACHE` | folder cache harga (fallback saat Yahoo mati) | `temp/cache` |
+| `SAHAMBOT_LOCAL_MODEL` | folder model sentimen lokal | `models/indo-fin-roberta` |
+| `STORE_FILE` | file data pribadi (watchlist/alert/paper) | `store.json` |
+
+Saat Yahoo memblokir IP (429), bot otomatis pakai cache harga terakhir dan
+menandai laporan dengan ⚠️ + umur cache — jujur, tidak membual data segar.
 
 ## Tips
 

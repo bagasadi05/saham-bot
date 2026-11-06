@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
-from telegram.ext import (Application, CommandHandler, ContextTypes)
+from telegram.ext import (Application, CommandHandler, ContextTypes, filters)
 
 import config
 import config
@@ -31,8 +31,17 @@ from core.chart import build_chart
 
 import backtest as btmod
 
-logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)",
+# [kendala 3, fix permanen] httpx bengkak saat NO_PROXY berisi IPv6 berkurung
+# seperti "[::1]" — (langsung) bersihkan sebelum client dibangun
+_np = os.environ.get("NO_PROXY", os.environ.get("no_proxy", ""))
+if "[::1]" in _np or "[" in _np:
+    os.environ["NO_PROXY"] = os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
+
+logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                     level=logging.INFO)
+# [kendala 6] token sering tampil di URL httpx — redaksikan (bisa masuk ke log)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 log = logging.getLogger("sahambuddy")
 
@@ -66,6 +75,8 @@ async def fetch_and_analyze(ticker: str) -> dict:
         raise ValueError(f"Data untuk '{ticker}' tidak ditemukan (kursor tidak valid atau koneksi gagal).")
     res = await asyncio.to_thread(analysis.analyze, ticker, df)
     res["ticker"] = ticker.upper().replace(".", "").replace("JK", "")
+    # [kendala 1] kalau data berasal dari cache (Yahoo 429 dsb), sampaikan jujur
+    res["stale_note"] = df.attrs.get("stale_note", "")
     return res
 
 
@@ -93,6 +104,7 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None) -> str:
                         f"{news_sent['pct']:+.0f}%):\n{heads}")
 
     return (
+        f"{res.get('stale_note', '')}"
         f"📊 <b>{res['ticker']}</b>\n"
         f"Harga: <b>{fmt_rp(snap['close'])}</b> "
         f"({snap['ret1d']:+.2f}% 1d, {snap['ret20d']:+.2f}% 20d)\n\n"
@@ -117,9 +129,11 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None) -> str:
 
 def build_quick(res: dict) -> str:
     snap, sc = res["snap"], res["score"]
+    # [kendala 1] tanda singkat kalau data dari cache, bukan live
+    note = " ⚠️(cache)" if res.get("stale_note") else ""
     return (
         f"{sc['emoji']} <b>{res['ticker']}</b> {fmt_rp(snap['close'])} "
-        f"({snap['ret1d']:+.2f}%) — {sc['pct']:+.0f}% {sc['rating']}"
+        f"({snap['ret1d']:+.2f}%) — {sc['pct']:+.0f}% {sc['rating']}{note}"
     )
 
 
@@ -622,6 +636,19 @@ async def scan_alerts(app: Application):
 
 # ---------------------------------------------------------------- main
 
+async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    """[kendala 4] setiap crash handler: log penuh + balasan ramah ke user."""
+    log.exception("handler kena error")
+    if update and getattr(update, "effective_message", None):
+        try:
+            await ctx.bot.send_message(
+                update.effective_chat.id,
+                "⚠️ Ups, ada kesalahan internal saat memproses permintaan ini. "
+                "Coba ulangi; kalau sering terjadi lihat log — pemilik bot tahu.")
+        except Exception:
+            pass
+
+
 def main():
     """Entry point: python bot.py"""
     token = config.BOT_TOKEN or os.getenv("BOT_TOKEN", "").strip()
@@ -633,22 +660,39 @@ def main():
             "  3. Jalankan:  BOT_TOKEN=123:abc python bot.py")
     app = Application.builder().token(token).build()
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_start))
-    app.add_handler(CommandHandler(["analisa", "analysis", "analisis"], cmd_analisis))
-    app.add_handler(CommandHandler("skor", cmd_skor))
-    app.add_handler(CommandHandler(["berita", "news"], cmd_berita))
-    app.add_handler(CommandHandler(["fundamental", "fundi"], cmd_fundamental))
-    app.add_handler(CommandHandler("watch", cmd_watch))
-    app.add_handler(CommandHandler(["saran", "recommendasi"], cmd_saran))
-    app.add_handler(CommandHandler(["bandar", "ihsg"], cmd_bandar))
-    app.add_handler(CommandHandler("alert", cmd_alert))
-    app.add_handler(CommandHandler("backtest", cmd_backtest))
+    # [kendala 5] kalau ALLOWED_USER_IDS diisi, hanya user itu yang boleh memakai bot
+    user_ids: list[int] = []
+    for part in (os.getenv("ALLOWED_USER_IDS", "") or "").replace(" ", "").split(","):
+        if part:
+            try:
+                user_ids.append(int(part))
+            except ValueError:
+                raise SystemExit(
+                    f"ALLOWED_USER_IDS berisi '{part}' — harus berupa angka id user "
+                    "Telegram dipisah koma (cek id-mu dengan @userinfobot)")
+    user_filter = filters.User(user_id=user_ids) if user_ids else None
+    if not user_ids:
+        log.warning("ALLOWED_USER_IDS kosong — bot bisa dipakai siapa saja. "
+                    "Isi env ALLOWED_USER_IDS (dipisah koma) untuk membatasi.")
+
+    reg = lambda names, fn: app.add_handler(CommandHandler(names, fn, filters=user_filter))
+    reg("start", cmd_start)
+    reg("help", cmd_start)
+    reg(["analisa", "analysis", "analisis"], cmd_analisis)
+    reg("skor", cmd_skor)
+    reg(["berita", "news"], cmd_berita)
+    reg(["fundamental", "fundi"], cmd_fundamental)
+    reg("backtest", cmd_backtest)
+    reg("watch", cmd_watch)
+    reg(["saran", "recommendasi"], cmd_saran)
+    reg(["bandar", "ihsg"], cmd_bandar)
+    reg("alert", cmd_alert)
 
     job_queue = app.job_queue
     job_queue.run_repeating(scan_alerts, interval=config.ALERT_SCAN_MINUTES * 60, first=10)
 
     log.info("Bot jalan. Tekan Ctrl+C untuk berhenti.")
+    app.add_error_handler(on_error)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
