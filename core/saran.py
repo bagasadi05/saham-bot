@@ -14,6 +14,16 @@ DEFAULT_UNIVERSE = [
     "ANTM", "PGAS", "ICBP", "INDF", "UNVR", "TPIA",
 ]
 
+# [P7] Universe LQ45 (komposisi ±2026; BEI menggantikan anggota ±2x/tahun —
+# cek idx.co.id untuk daftar resmi terkini. Ini universe pemindaian, bukan rekomendasi)
+LQ45 = [
+    "AADI", "ADRO", "AKRA", "AMMN", "AMRT", "ASII", "BBCA", "BBNI", "BBRI",
+    "BMRI", "BRIS", "BRPT", "CPIN", "CTRA", "EMTK", "EXCL", "GGRM", "HMSP",
+    "ICBP", "INDF", "INKP", "ISAT", "ITMG", "JPFA", "JSMR", "KLBF", "MAPI",
+    "MBMA", "MDKA", "MEDC", "MNCN", "PGAS", "PGEO", "PTBA", "SRTG", "SMGR",
+    "TBIG", "TLKM", "TPIA", "UNTR", "UNVR", "ANTM", "BREN", "BUMI", "DSSA",
+]
+
 TOP_N = 3       # jumlah kandidat BUY yang disarankan
 MAX_SCAN = 12   # batasi emiten yang dianalisis per permintaan
 

@@ -346,6 +346,27 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         return
 
+    if sub in ("lq45",):  # [P7] seluruh universe LQ45 (±4-6 menit, progres bertahap)
+        if len(saranmod.LQ45) < 30:
+            await update.effective_message.reply_text("❌ Daftar LQ45 kosong.")
+            return
+        ok = await update.effective_message.reply_text(
+            f"⏳ Memindai seluruh LQ45 ({len(saranmod.LQ45)} emiten) — "
+            "kira-kira 4-6 menit; progres dikirim tiap 10 emiten…")
+        async def _prog(done, total):
+            try:
+                await ok.edit_text(f"⏳ LQ45: {done}/{total} emiten diproses…")
+            except Exception:
+                pass
+        txt = await saran_scan_text(update.effective_chat.id, saranmod.LQ45, _prog)
+        if txt is None:
+            await update.effective_message.reply_text(
+                "❌ Data sumber error, coba lagi nanti.")
+            return
+        await update.effective_message.reply_text(
+            txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        return
+
     chat_id = update.effective_chat.id
     wl = store.get_watchlist(chat_id)
     universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
@@ -359,20 +380,32 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-async def saran_scan_text(chat_id: int, universe: list[str] | None = None) -> str | None:
-    """[P6] Inti pemindaian /saran — reusable untuk auto-scan pagi.
+async def saran_scan_text(chat_id: int, universe: list[str] | None = None,
+                          progress=None) -> str | None:
+    """[P6] Inti pemindaian /saran — reusable untuk auto-scan pagi & /saran lq45.
 
+    universe None = default (watchlist + default, cap MAX_SCAN).
+    progress: async callback(done, total) untuk pesan '10/45 ...' bertahap.
     Return teks ringkasan, atau None kalau semua sumber gagal."""
     if universe is None:
         wl = store.get_watchlist(chat_id)
         universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
     modal = store.get_modal(chat_id)
     analyzed, latest = [], {}
-    for t in universe:
+    total = len(universe)
+    last_reported = 0
+    for i, t in enumerate(universe, 1):
         a = await gather_candidate(t)
         if a:
             analyzed.append(a)
             latest[a["res"]["ticker"]] = a["res"]["snap"]["close"]
+        # [P7] progres tiap ±10 emiten (universe besar)
+        if progress and (i - last_reported >= 10 or i == total):
+            try:
+                await progress(i, total)
+            except Exception:
+                pass
+            last_reported = i
         await asyncio.sleep(.2)
     if not analyzed:
         return None
@@ -665,7 +698,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <b>/fundamental BBRI</b> — PER/PBV/ROE/dividen/DER\n"
         "• <b>/saran</b> — pemindaian harian: kandidat BUY + entry/SL/TP + "
         "ukuran posisi (1% modal), dilacak otomatis (SL/TP kena = bot kabarin); "
-        "<b>/saran list</b>, ubah modal: <b>/modal 10000000</b>\n"
+        "<b>/saran list</b>, universe lebih lebar: <b>/saran lq45</b>, "
+        "ubah modal: <b>/modal 10000000</b>\n"
         "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
         "• <b>/banding BBCA BBRI</b> — tabel PER/PBV/ROE/return + konteks IHSG\n"
         "• <b>/agenda BBCA</b> — ex-date dividen & aksi korporasi\n"
