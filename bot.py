@@ -14,6 +14,7 @@ Perintah:
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import time
@@ -25,8 +26,8 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes, filters)
 
 import config
-import config
-from core import alerts, analysis, bandar, data, fundamental, news, powerscore, saran as saranmod, store
+from core import (alerts, analysis, bandar, data, fundamental, learn,
+                  news, powerscore, saran as saranmod, store)
 from core.chart import build_chart
 
 import backtest as btmod
@@ -51,6 +52,13 @@ os.makedirs(TMP_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------- helpers
+
+def esc(text: str) -> str:
+    """Escape teks dinamis untuk mode HTML — WAJIB untuk semua string dari
+    luar (judul berita, kode emiten, sinyal, dsb). Plusy Telegram menolak
+    pesan saat ada '<' mentah dari sinyal seperti 'MA20 < MA50'."""
+    return html.escape(str(text), quote=False)
+
 
 def fmt_rp(v: float) -> str:
     return f"Rp{v:,.0f}".replace(",", ".")
@@ -84,32 +92,47 @@ async def fetch_and_analyze(ticker: str) -> dict:
 
 def build_report(res: dict, fund: dict | None, news_sent: dict | None) -> str:
     snap, sc, sr = res["snap"], res["score"], res["sr"]
-    bull_txt = "\n".join(f"  ✅ {s}" for s in sc["bull"]) or "  —"
-    bear_txt = "\n".join(f"  ❌ {s}" for s in sc["bear"]) or "  —"
+    # [P1] tiap sinyal diberi penjelasan 1 baris biar pembelajar paham artinya
+    def _sig_line(s: str, mark: str) -> str:
+        note = learn.signal_note(s)
+        return (f"  {mark} {esc(s)}" +
+                (f" — <i>{note}</i>" if note else ""))
+
+    bull_txt = "\n".join(_sig_line(s, "✅") for s in sc["bull"]) or "  —"
+    bear_txt = "\n".join(_sig_line(s, "❌") for s in sc["bear"]) or "  —"
     ma_row = " | ".join(
         f"MA{n}:{snap['sma' + n]}" if snap.get('sma' + n) else f"MA{n}:—"
         for n in ("20", "50", "200"))
     power = powerscore.judge(sc["pct"], fund, news_sent, snap)
     conf = analysis.extra_confirmations(res["ind"])
-    conf_txt = "\n".join(f"  • {c}" for c in conf) if conf else ""
+    conf_txt = ""
+    for c in conf:
+        note = learn.pro_note(c)
+        conf_txt += f"  • {esc(c)}" + (f" — <i>{note}</i>" if note else "") + "\n"
+    conf_txt = conf_txt.rstrip()
+
+    # [P1] penjelasan rating & PowerScore biar tidak terasa seperti tebakan
+    rating_note = learn.RATING_NOTES.get(
+        sc["rating"], "(penjelasan rating tidak tersedia)")
 
     headline_txt = ""
     if news_sent and news_sent.get("details"):
         top = sorted(news_sent["details"], key=lambda d: -abs(d["sent"]))[:2]
         heads = "\n".join(
             f"  📰 <a href=\"{d.get('link') or 'https://finance.yahoo.com'}\">"
-            f"{d['title'][:80]}</a>" + (f" <i>({('%+d' % d['sent'])})</i>" if d["sent"] else "")
+            f"{esc(d['title'][:80])}</a>" + (f" <i>({('%+d' % d['sent'])})</i>" if d["sent"] else "")
             for d in top)
         headline_txt = (f"\nBerita terkini (sentimen {news_sent['emoji']} "
                         f"{news_sent['pct']:+.0f}%):\n{heads}")
 
     return (
         f"{res.get('stale_note', '')}"
-        f"📊 <b>{res['ticker']}</b>\n"
+        f"📊 <b>{esc(res['ticker'])}</b>\n"
         f"Harga: <b>{fmt_rp(snap['close'])}</b> "
         f"({snap['ret1d']:+.2f}% 1d, {snap['ret20d']:+.2f}% 20d)\n\n"
         f"{power}\n\n"
         f"Skor teknikal: <b>{sc['pct']:+.0f}%</b> → {sc['emoji']} <b>{sc['rating']}</b>\n"
+        f"  <i>{rating_note}</i>\n"
         f"  ✅ Sinyal positif:\n{bull_txt}\n"
         f"  ❌ Sinyal negatif:\n{bear_txt}\n"
         f"{last_macd_cross_note(sc)}\n\n"
@@ -132,9 +155,30 @@ def build_quick(res: dict) -> str:
     # [kendala 1] tanda singkat kalau data dari cache, bukan live
     note = " ⚠️(cache)" if res.get("stale_note") else ""
     return (
-        f"{sc['emoji']} <b>{res['ticker']}</b> {fmt_rp(snap['close'])} "
+        f"{sc['emoji']} <b>{esc(res['ticker'])}</b> {fmt_rp(snap['close'])} "
         f"({snap['ret1d']:+.2f}%) — {sc['pct']:+.0f}% {sc['rating']}{note}"
     )
+
+
+async def cmd_belajar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """[P1] Kamus istilah: /belajar RSI, /belajar PBV, /belajar MACD, ..."""
+    args = tokens(update)
+    if not args:
+        await update.effective_message.reply_text(
+            "🎓 <b>Belajar istilah IHSG</b>\n"
+            "Pilih topik: <code>/belajar &lt;topik&gt;</code>\n\n"
+            f"{learn.list_topics()}\n\n"
+            "Contoh: <code>/belajar RSI</code>, <code>/belajar PBV</code>",
+            parse_mode=ParseMode.HTML)
+        return
+    txt = learn.learn(args[0])
+    if txt is None:
+        await update.effective_message.reply_text(
+            "❓ Topik tidak dikenal. Kirim <code>/belajar</code> saja "
+            "buat lihat daftar topiknya.", parse_mode=ParseMode.HTML)
+        return
+    await update.effective_message.reply_text(
+        txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 async def cmd_berita(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -364,7 +408,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "dilacak otomatis (SL/TP kena = bot kabarin); <b>/saran list</b>\n"
         "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
         "• <b>/backtest BBCA</b> — akurasi statistik + simulasi transaksi\n"
-        "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n\n"
+        "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n"
+        "• <b>/belajar RSI</b> — kamus istilah: cara baca + jebakan umumnya\n\n"
         "⚠️ Bukan saran investasi — selalu DYOR!",
         parse_mode=ParseMode.HTML)
 
@@ -687,6 +732,7 @@ def main():
     reg(["saran", "recommendasi"], cmd_saran)
     reg(["bandar", "ihsg"], cmd_bandar)
     reg("alert", cmd_alert)
+    reg(["belajar", "learn", "apa"], cmd_belajar)
 
     job_queue = app.job_queue
     job_queue.run_repeating(scan_alerts, interval=config.ALERT_SCAN_MINUTES * 60, first=10)
