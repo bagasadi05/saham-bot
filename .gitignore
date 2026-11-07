@@ -1,6 +1,11 @@
 # rahasia & data pribadi — tidak pernah masuk repo
 .env
+store.db
+store.db-wal
+store.db-shm
 store.json
+store.json.migrated
+heartbeat.txt
 data/
 temp/
 
@@ -12,6 +17,8 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
+.pytest_cache/
+.ruff_cache/
 
 # lainnya
 *.log

@@ -9,7 +9,7 @@ BASE = "https://huggingface.co/will702/indo-roBERTa-financial-sentiment-v2/resol
 DEST = os.environ.get("SAHAMBOT_LOCAL_MODEL", "/app/models/indo-fin-roberta")
 CHUNK = int(os.environ.get("DOWNLOAD_CHUNK", "4")) * 1024 * 1024
 FILES = ["config.json", "tokenizer_config.json", "special_tokens_map.json",
-         "tokenizer.json", "model.safetensors"]
+         "tokenizer.json", "vocab.json", "merges.txt", "model.safetensors"]
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 | saham-bot-deploy"
 
 
@@ -30,7 +30,7 @@ def fetch(url: str, out: str, tries: int = 60):
             time.sleep(3)
     if not total:
         raise SystemExit(f"gagal ukur {url}")
-    for t in range(tries):
+    for _ in range(tries):
         have = os.path.getsize(part) if os.path.exists(part) else 0
         if have >= total:
             os.replace(part, out)

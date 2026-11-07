@@ -1,0 +1,4 @@
+# Opsional & berat (±1–2 GB, menarik paket pendukung CUDA dari PyPI).
+# Tanpa file ini bot tetap jalan memakai mesin lexicon sentimen.
+torch>=2.5,<3
+transformers>=4.40,<5

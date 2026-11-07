@@ -19,7 +19,7 @@ latihan & watchlist bertahan di volume.
 ## Langkah (Docker — cara utama)
 
 ```bash
-git clone https://github.com/NAMA-KAMU/saham-bot.git
+git clone https://github.com/bagasadi05/saham-bot.git
 cd saham-bot
 cp .env.example .env
 nano .env                # isi BOT_TOKEN=..., ALLOWED_USER_IDS=idmu, simpan
@@ -43,26 +43,43 @@ Test ke Telegram: kirim `/start` ke bot-mu → jawaban menu. Selesai — bot hid
 | Lihat log | `docker compose logs -f --tail=100` |
 | Update tanpa hilang data | `git pull && docker compose up -d --build` |
 | Matikan/aktifkan | `docker compose down` / `docker compose up -d` |
-| Cek status | `docker compose ps` |
+| Cek status | `docker compose ps` (lihat kolom STATUS: `healthy`/`unhealthy`) |
+| Cek isi bot | kirim `/status` di Telegram (uptime, error, isi store, cache) |
 
-Data `store.json` (watchlist/alert/paper-trading) disimpan di folder `data/`
-di dalam VPS — kebal terhadap rebuild container.
+Data `store.db` (watchlist/alert/paper trading, SQLite) disimpan di folder
+`data/` di dalam VPS — kebal terhadap rebuild container. Backup cukup
+menyalin folder itu:
+
+```bash
+tar czf saham-data-$(date +%F).tgz data/     # saat container berhenti:
+docker compose stop && tar czf ... && docker compose start
+```
+
+`store.json` versi lama (kalau ada) dimigrasikan otomatis sekali saat start,
+lalu berganti nama jadi `store.json.migrated` — jangan dihapus sebelum yakin.
+
+**Healthcheck.** Container menulis `data/heartbeat.txt` tiap 5 menit; Docker
+menandai container `unhealthy` kalau file itu basi >30 menit. Lihat dengan
+`docker inspect --format '{{.State.Health.Status}}' saham-bot`.
 
 ## Varian slim (RAM kecil / HDD kecil)
 
 ```bash
-docker compose build --build-arg SKIP_MODEL=1 && docker compose up -d
+SKIP_MODEL=1 docker compose up -d --build
 ```
-Semua fitur tetap jalan kecuali sentimen ML → otomatis jatuh ke lexicon.
+
+Build ini tidak memasang `torch`/`transformers` dan tidak mengunduh model —
+semua fitur tetap jalan kecuali sentimen ML, yang otomatis jatuh ke lexicon.
 
 ## Alternatif tanpa Docker (systemd)
 
 ```bash
 sudo apt install -y python3-pip python3-venv
 sudo mkdir -p /opt/saham-bot && sudo chown $USER /opt/saham-bot
-git clone https://github.com/NAMA-KAMU/saham-bot.git /opt/saham-bot
+git clone https://github.com/bagasadi05/saham-bot.git /opt/saham-bot
 cd /opt/saham-bot
-python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt          # inti; tambah requirements-ml.txt untuk model ML
 cp .env.example .env && nano .env
 
 # servis systemd:
@@ -76,6 +93,7 @@ User=KAMU
 WorkingDirectory=/opt/saham-bot
 EnvironmentFile=/opt/saham-bot/.env
 Environment=NO_PROXY=localhost,127.0.0.1,::1
+Environment=HEARTBEAT_FILE=/opt/saham-bot/heartbeat.txt
 ExecStart=/opt/saham-bot/run.sh
 Restart=always
 RestartSec=5
@@ -94,7 +112,10 @@ journalctl -u saham-bot -f        # lihat log
   Kalau takut bocor: @BotFather → `/revoke` → buat token baru → update `.env`
 - 📵 Jaringan VPS kadang punyai limit unduhan — jika build freeze di layer
   model, jalankan ulang `docker compose build` (unduhan resume otomatis,
- .dockerignore & kali ini untuk chunk 4 MB anti-putus)
+  `.dockerignore` & chunk 4 MB anti-putus)
 - 📊 Data BEI (`/bandar`) kadang diblokir Cloudflare saat bot ditempatkan di
   IP datacenter — itu normal, bot kasih pesan jujur + alternatif `/analisis`
+- 🗓️ Kalender bursa memakai paket `exchange_calendars` (XIDX). Kalau SKB cuti
+  bersama tahun berjalan belum masuk paket, isi `MARKET_HOLIDAYS` di `.env`
+  supaya job alert & autoscan tidak jalan di hari libur
 - ⚠️ Bukan saran investasi — DYOR senantiasa

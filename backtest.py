@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import sys
 
-import numpy as np
 import pandas as pd
 
 from core import analysis, data
@@ -47,7 +46,7 @@ def backtest(ticker: str, horizon: int = 20, period: str = "5y") -> pd.DataFrame
 def summarize(bt: pd.DataFrame) -> str:
     base = bt["fwd_ret"].mean()
     out = [f"Baseline (tanpa filter): rata² {base:+.2f}% "
-           f"per {len(bt)} observasi"]
+           f"per {len(bt)} observasi", ""]
     order = ["STRONG BUY", "BUY", "NETRAL", "SELL", "STRONG SELL"]
     lines = []
     for r in order:
@@ -58,7 +57,7 @@ def summarize(bt: pd.DataFrame) -> str:
         lines.append(
             f"{r:<12} n={len(grp):4d} | win-rate {win:5.1f}% | "
             f"rata² {grp['fwd_ret'].mean():+5.2f}% | median {grp['fwd_ret'].median():+5.2f}%")
-    return "\n".join(lines)
+    return "\n".join(out + lines)
 
 
 def run_cli(argv: list[str]):

@@ -29,15 +29,12 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
 
 
 def support_resistance(df: pd.DataFrame, lookback: int = 20) -> dict:
-    """S/R sederhana: support = min low & pivot bawah, resistance = max high 20 hari terakhir."""
+    """S/R sederhana: support = low terendah & resistance = high tertinggi 20 hari."""
     recent = df.tail(lookback)
-    close = float(df["close"].iloc[-1])
-    return {
-        "support": round(float(recent["low"].min()), 2),
-        "resistance": round(float(recent["low"].max() if recent["low"].max() < close else recent["high"].max()), 2),
-        "high_recent": round(float(recent["high"].max()), 2),
-        "low_recent": round(float(recent["low"].min()), 2),
-    }
+    low = round(float(recent["low"].min()), 2)
+    high = round(float(recent["high"].max()), 2)
+    return {"support": low, "resistance": high,
+            "high_recent": high, "low_recent": low}
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -127,6 +124,17 @@ SCORE_WEIGHTS = {
 MAX_SCORE = sum(SCORE_WEIGHTS.values())  # 90
 
 
+def _cmp(a, b) -> bool | None:
+    """Perbandingan yang jujur soal data kurang: NaN → None (netral).
+
+    Dulu `close > NaN` bernilai False, sehingga emiten berriwayat <200 hari
+    otomatis dianggap "di bawah MA200" dan skornya dihukum tanpa alasan.
+    """
+    if a is None or b is None or pd.isna(a) or pd.isna(b):
+        return None
+    return bool(a > b)
+
+
 def score_from_rows(last, prev) -> dict:
     """Skor dari dua baris indikator (baris hari ini & kemarin).
     Dipakai oleh score_stock() dan modul backtest."""
@@ -137,8 +145,10 @@ def score_from_rows(last, prev) -> dict:
     signals_bear: list[str] = []
     score = 0
 
-    def add(weight: float, bull: bool, bull_msg: str, bear_msg: str):
+    def add(weight: float, bull: bool | None, bull_msg: str, bear_msg: str):
         nonlocal score
+        if bull is None:
+            return  # indikator belum terbentuk → netral, jangan dihukum
         if bull:
             signals_bull.append(bull_msg)
             score += weight
@@ -146,26 +156,34 @@ def score_from_rows(last, prev) -> dict:
             signals_bear.append(bear_msg)
             score -= weight
 
-    add(SCORE_WEIGHTS["price_above_sma50"], close > _f(last, "sma50"),
+    add(SCORE_WEIGHTS["price_above_sma50"], _cmp(close, _f(last, "sma50")),
         "Harga di atas MA50", "Harga di bawah MA50")
-    add(SCORE_WEIGHTS["price_above_sma200"], close > _f(last, "sma200"),
+    add(SCORE_WEIGHTS["price_above_sma200"], _cmp(close, _f(last, "sma200")),
         "Harga di atas MA200", "Harga di bawah MA200")
-    add(SCORE_WEIGHTS["sma20_above_sma50"], _f(last, "sma20") > _f(last, "sma50"),
+    add(SCORE_WEIGHTS["sma20_above_sma50"], _cmp(_f(last, "sma20"), _f(last, "sma50")),
         "MA20 > MA50 (tren naik pendek)", "MA20 < MA50 (tren turun)")
-    add(SCORE_WEIGHTS["sma50_above_sma200"], _f(last, "sma50") > _f(last, "sma200"),
+    add(SCORE_WEIGHTS["sma50_above_sma200"], _cmp(_f(last, "sma50"), _f(last, "sma200")),
         "MA50 > MA200 (golden layout)", "MA50 < MA200 (death layout)")
-    add(SCORE_WEIGHTS["macd_bullish"], _f(last, "macd") > _f(last, "macd_signal"),
+    add(SCORE_WEIGHTS["macd_bullish"], _cmp(_f(last, "macd"), _f(last, "macd_signal")),
         "MACD bullish", "MACD bearish")
-    add(SCORE_WEIGHTS["rsi_goldilocks"], 50 <= rsi_v <= 70,
+    add(SCORE_WEIGHTS["rsi_goldilocks"],
+        None if pd.isna(rsi_v) else 50 <= rsi_v <= 70,
         f"RSI sehat ({rsi_v:.0f})",
         f"RSI ekstrem ({rsi_v:.0f}) - jenuh beli/jual")
-    add(SCORE_WEIGHTS["breakout_20d"], close >= _f(last, "high20") * 0.998,
-        "Baru breakout high 20 hari", "Belum breakout / turun dari high 20 hari")
+    # catatan: high20 memuat high hari ini, jadi ini "dekat/atas puncak",
+    # bukan konfirmasi breakout murni (itu tugas alert breakout).
+    high20 = _f(last, "high20")
+    add(SCORE_WEIGHTS["breakout_20d"],
+        None if pd.isna(high20) else close >= high20 * 0.998,
+        "Harga di dekat/atas puncak 20 hari",
+        "Belum di dekat puncak 20 hari")
+    vol_avg = _f(last, "vol_avg20")
     add(SCORE_WEIGHTS["volume_momentum"],
-        _f(last, "volume") > _f(last, "vol_avg20") and ret1d_v > 0,
+        None if pd.isna(vol_avg) or pd.isna(ret1d_v)
+        else _f(last, "volume") > vol_avg and ret1d_v > 0,
         "Volume di atas rata-rata dengan harga naik",
         "Volume biasa / tekanan jual")
-    add(SCORE_WEIGHTS["price_above_sma20"], close > _f(last, "sma20"),
+    add(SCORE_WEIGHTS["price_above_sma20"], _cmp(close, _f(last, "sma20")),
         "Harga di atas MA20", "Harga di bawah MA20")
 
     macd_note = None
@@ -208,10 +226,20 @@ def score_stock(ind: pd.DataFrame) -> dict:
     return score_from_rows(ind.iloc[-1], ind.iloc[-2])
 
 
+def _as_of(ind: pd.DataFrame) -> str:
+    """Tanggal bar terakhir (ISO) untuk laporan 'data per'."""
+    try:
+        idx = ind.index[-1]
+        return (idx.date() if hasattr(idx, "date") else idx).isoformat()
+    except Exception:
+        return ""
+
+
 def last_snapshot(ind: pd.DataFrame) -> dict:
     last = ind.iloc[-1]
     return {
         "close": round(float(last["close"]), 2),
+        "as_of": _as_of(ind),
         "ret1d": round(float(last["ret1d"]), 2),
         "ret20d": round(float(last["ret20d"]), 2),
         "rsi": round(float(last["rsi14"]), 1),
@@ -231,11 +259,22 @@ def analyze(ticker: str, df_raw) -> dict:
         raise ValueError(
             f"data '{ticker.upper()}' tidak dapat diambil (sumber gagal/"
             "rate-limit); silakan coba lagi nanti")
+    if len(df_raw) < 30:
+        raise ValueError(
+            f"riwayat harga '{ticker.upper()}' baru {len(df_raw)} hari — "
+            "minimal 30 hari bursa agar MA/RSI bisa dihitung")
     ind = compute_indicators(df_raw)
+    # [jujur] riwayat pendek membuat MA200 NaN dan skor otomatis bias turun
+    history_note = ""
+    if len(ind) < 200:
+        history_note = (
+            f"⚠️ <i>Riwayat harga cuma {len(ind)} hari (<200): MA200 belum "
+            "terbentuk — sinyal jangka panjang dianggap netral, bukan negatif.</i>\n")
     return {
         "ticker": ticker.upper(),
         "ind": ind,
         "snap": last_snapshot(ind),
         "score": score_stock(ind),
         "sr": support_resistance(ind),
+        "history_note": history_note,
     }

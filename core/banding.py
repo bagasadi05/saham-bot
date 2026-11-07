@@ -8,16 +8,18 @@ import time as _time
 
 from core import data, fundamental, powerscore
 
-_MKT_TTL = 6 * 3600  # cache IHSG 6 jam (pembanding tidak perlu real-time)
+_MKT_TTL = 6 * 3600      # cache IHSG 6 jam (pembanding tidak perlu real-time)
+_MKT_FAIL_TTL = 5 * 60   # gagal: coba lagi 5 menit lagi, jangan dikunci 6 jam
 _mkt_cache: dict = {"ts": 0.0, "val": None}
 
 
 def market_context() -> dict | None:
     """Return IHSG {'ret20d', 'ret1y'} (%) atau None kalau Yahoo gagal."""
-    if _time.time() - _mkt_cache["ts"] < _MKT_TTL:
+    ttl = _MKT_TTL if _mkt_cache["val"] else _MKT_FAIL_TTL
+    if _time.time() - _mkt_cache["ts"] < ttl:
         return _mkt_cache["val"]
     df = None
-    for attempt in range(2):
+    for _ in range(2):
         try:
             df = data.fetch_history("^JKSE", "1y", raw_symbol=True)
             if df is not None and len(df) >= 25:
@@ -49,7 +51,6 @@ def compare_row(ticker: str, res: dict | None, fund: dict | None) -> dict:
         snap = res["snap"]
         out["ret20d"] = snap.get("ret20d")
         try:
-            import pandas as pd
             close = res["ind"]["close"].reset_index(drop=True)
             out["ret1y"] = float(close.iloc[-1] / close.iloc[0] - 1) * 100
         except Exception:

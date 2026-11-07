@@ -24,8 +24,8 @@ SIGNAL_NOTES: list[tuple[str, str]] = [
     ("MACD bearish", "momentum turun: garis MACD berada di bawah garis sinyal"),
     ("RSI sehat", "RSI 50–70: momentumnya naik tapi belum terlalu ramai — zona terlalu sehat"),
     ("RSI ekstrem", "RSI di luar zona sehat (>70 jenuh beli, <30 jenuh jual) — bisa mirroring atau berbalik arah"),
-    ("Baru breakout high 20 hari", "harga baru saja menembus puncak 20 hari — momentum kuat, namun waspada breakout palsu"),
-    ("Belum breakout", "harga masih dalam kisaran 20 hari — tren belum jelas, bersabar menunggu"),
+    ("Harga di dekat/atas puncak 20 hari", "harga berada di dekat/atas puncak 20 hari — momentum kuat, tapi ini belum konfirmasi breakout; waspada breakout palsu"),
+    ("Belum di dekat puncak", "harga masih di dalam kisaran 20 hari — tren belum jelas, bersabar menunggu"),
     ("Volume di atas rata-rata", "volume transaksi mendukung kenaikan harga — banyak investor yang antusias"),
     ("Volume biasa", "partisipasi pasar tidak terlalu aktif — kenaikan/penurunan mudah berbalik arah"),
 ]

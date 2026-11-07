@@ -8,8 +8,6 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 | Fundamental | PER, PBV, ROE, div-yield, DER (data laporan keuangan) | 30% |
 | Sentimen berita | Google News RSS + model ML indo-roBERTa finansial lokal (fallback lexicon) | 20% |
 
-![chart](temp/bbca.png)
-
 ## Fitur
 
 - **/analisis BBCA** — PowerScore (gabungan 3 pin) + chart 4 panel + konfirmasi
@@ -24,14 +22,17 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
    transaksi nyata** (`backtesting.py`): biaya 0,25%/transaksi, fill bar berikutnya,
    entry sinyal BUY (skip jebakan momentum >15%/bulanan), SL 1×ATR, TP 2×ATR,
    maksimal tahan 20 hari. CLI: `python backtest.py BBCA` & `python backtest_real.py BBCA`.
-- **Watchlist & alert** — `/watch`, `/alert add BBCA jump breakout`: dicek tiap 30 menit saat bursa buka (Senin–Jumat 09:00–16:00 WIB).
-- **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**, disimpan sebagai posisi latihan (paper trading) dan dilacak otomatis — kalau TP/SL kena, bot kabari beserta hasil %-nya. `/saran list` = rekap.
+- **Watchlist & alert** — `/watch`, `/alert add BBCA jump breakout`: dicek tiap 30 menit saat bursa buka (hari bursa XIDX, 09:00–16:00 WIB). Alert **hanya dikirim saat kondisi berubah** (False → True), tidak lagi diulang tiap 30 menit selama kondisi bertahan.
+- **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**. Posisi dicatat **realistis**: masuk antrean `pending` dan baru dibeli di **harga open sesi berikutnya**, PnL dihitung setelah biaya beli 0,15% & jual 0,25%, ditutup otomatis setelah ±20 hari bursa, maksimal 5 posisi terbuka & 2 per sektor. `/saran list` = rekap posisi + rata-rata hasil net.
 - **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, 4–6 menit, progres bertahap tiap 10 emiten).
 - **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
 - **/banding BBCA BBRI BMRI** — tabel pembanding PER/PBV/ROE/dividend yield/return 1 thn/20 hari/PowerScore + fakta "paling murah/mahal menurut PBV" (deskriptif). Data pembanding yang gagal dilaporkan jujur.
 - **/agenda BBCA** — ex-date dividen (terakhir/berikutnya) + split & aksi korporasi dari Yahoo (bisa telat — cek juga situs emiten).
 - **/belajar RSI** — kamus istilah dalam bahasa sederhana (18 topik: RSI, MACD, MA20/50/200, Bollinger, ATR, OBV, StochRSI, PER, PBV, ROE, dividend yield, DER, volume, breakout, IHSG, PowerScore + alias).
-- **/auto on** — ringkasan `/saran` + rekap watchlist dikirim otomatis tiap hari bursa ±08:30 WIB (Senin–Jumat, default off).
+- **/auto on** — ringkasan `/saran` + rekap watchlist dikirim otomatis tiap hari bursa ±08:30 WIB (default off).
+- **/status** — kesehatan bot: uptime, jumlah perintah/error, rata-rata waktu proses, isi store, cache harga, status bursa (khusus `ADMIN_IDS` bila diisi).
+- **Kalender bursa sungguhan** — job alert & autoscan mengikuti kalender XIDX (`exchange_calendars`) plus libur tambahan via `MARKET_HOLIDAYS`, jadi tidak berisik di hari libur nasional/cuti bersama.
+- **Cache harga ber-TTL** (default 5 menit, `SAHAMBOT_TTL`) — `/skor`, `/analisis`, dan `/saran` pada emiten yang sama tidak menembak Yahoo berulang, dan tiap laporan menyebut **“data per <tanggal>”**.
 - Setiap sinyal di `/analisis` kini diberi **penjelasan 1 baris** ("MA20 < MA50 → tren jangka pendek di bawah tren menengah — harga sedang downtrend") + laporan menyertakan **konteks IHSG** (20 hari & 1 tahun, berapa poin unggul/tertinggal).
 - **/bandar [TICKER]** — data **resmi BEI (idx.co.id)**: IHSG & indeks sektor, top gainer/loser; per emiten: OHLC + nilai transaksi + field asing (bila tersedia). Catatan: idx.co.id dilindungi Cloudflare — dari IP datacenter/VPS kadang diblok; bot memberitahu dengan jujur dan menyuruh pakai `/analisis` sebagai cadangan.
   | Jenis alert | Pemicu |
@@ -53,6 +54,19 @@ maksimum ±90% dan rating: STRONG BUY / BUY / NETRAL / SELL / STRONG SELL.
 ```bash
 cd saham-bot
 pip install -r requirements.txt
+# opsional — model sentimen ML (~500 MB, butuh torch/transformers):
+pip install -r requirements-ml.txt && python download_model.py
+```
+
+Tanpa `requirements-ml.txt` bot tetap jalan penuh; sentimen berita otomatis
+memakai lexicon Indonesia.
+
+Uji logika inti tanpa token bot / tanpa jaringan:
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q        # alert, skor, sizing, paper trading, kalender, cache, store
+ruff check .     # lint (F, E9, B; line-length 100)
 ```
 
 ## Dapatkan token bot
@@ -81,10 +95,19 @@ Deployment 24/7 (Docker/systemd) → lihat **[deploy.md](deploy.md)**.
 |---|---|---|
 | `BOT_TOKEN` | token dari @BotFather — **wajib** | — |
 | `ALLOWED_USER_IDS` | id Telegram yang boleh pakai bot (koma utk banyak). Kosong = publik | kosong |
+| `REQUIRE_ALLOWLIST` | `1` = bot menolak start kalau `ALLOWED_USER_IDS` kosong | mati |
+| `ADMIN_IDS` | id yang boleh `/status` (kosong = semua pemakai) | kosong |
 | `YF_RETRIES` | percobaan ulang saat Yahoo rate-limit (429) | `3` |
+| `SAHAMBOT_TTL` | umur cache harga di memori, detik (`0` = nonaktif) | `300` |
+| `SAHAMBOT_FUND_TTL` | umur cache fundamental, detik (`0` = nonaktif) | `21600` (6 jam) |
+| `SAHAMBOT_NEWS_TTL` | umur cache berita Google News, detik (`0` = nonaktif) | `900` (15 menit) |
 | `SAHAMBOT_CACHE` | folder cache harga (fallback saat Yahoo mati) | `temp/cache` |
 | `SAHAMBOT_LOCAL_MODEL` | folder model sentimen lokal | `models/indo-fin-roberta` |
-| `STORE_FILE` | file data pribadi (watchlist/alert/paper) | `store.json` |
+| `STORE_DB` | database SQLite data pribadi (watchlist/alert/paper) | `store.db` |
+| `STORE_FILE` | `store.json` lama — dimigrasikan sekali lalu jadi `.migrated` | `store.json` |
+| `HEARTBEAT_FILE` | file heartbeat untuk `HEALTHCHECK` Docker (kosong = nonaktif) | `heartbeat.txt` |
+| `MARKET_HOLIDAYS` | libur bursa tambahan, mis. `2026-03-19,2026-03-20` | kosong |
+| `MARKET_HOLIDAYS_FILE` | file JSON daftar libur tambahan | `market_holidays.json` |
 
 Saat Yahoo memblokir IP (429), bot otomatis pakai cache harga terakhir dan
 menandai laporan dengan ⚠️ + umur cache — jujur, tidak membual data segar.
@@ -98,6 +121,8 @@ menandai laporan dengan ⚠️ + umur cache — jujur, tidak membual data segar.
   res = analysis.analyze('BBCA', data.fetch_history('BBCA')); \
   print(res['score']['pct'], res['score']['rating'])"`
 - Hapus chart sementara di folder `temp/` sesekali (otomatis dihapus setelah dikirim).
+- Command mahal (`/analisis`, `/saran`, `/banding`, `/bandar`, `/backtest`) punya
+  cooldown per user supaya satu akun tidak bisa membanjiri bot.
 
 ## Kejujuran hasil backtest (jarak: di database!)
 

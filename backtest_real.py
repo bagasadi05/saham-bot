@@ -5,6 +5,7 @@ berikutnya, stop-loss & take-profit berbasis ATR, dan filter jebakan momentum
 Entry   : rating BUY / STRONG BUY pada penutupan  ATAU price di rentang BB (optional)
 Entry R : rating >= +20 , skip bila ret20d > TRAP_RET_PCT
 Exit    : TP = entry + 2×ATR | SL = entry − 1×ATR | maksimal HOLD_MAX hari bursa
+Sizing  : risiko 1% ekuitas per trade — sama dengan skema /saran
 Biaya   : COMMISSION 0,25% per transaksi (beli maupun jual, konservatif)
 Cash    : Rp100.000.000
 
@@ -25,6 +26,7 @@ TRAP_RET_PCT = 15.0   # skip entry bila harga sudah naik >15% (20 hari)
 HOLD_MAX = 20         # hari bursa maksimal tahan
 COMMISSION = 0.0025   # 0,25% per transaksi
 MIN_RATING_PCT = 20.0  # ambil rating BUY ke atas
+RISK_PCT = 0.01       # 1% ekuitas per trade (sama dengan /saran)
 
 
 def build_statistics(ticker: str, period: str = "5y"):
@@ -34,7 +36,6 @@ def build_statistics(ticker: str, period: str = "5y"):
         raise ValueError(f"Data '{ticker}' terlalu pendek untuk backtest nyata.")
     ind = analysis.compute_indicators(df)
 
-    closes = ind["close"].to_numpy()
     score_pct = np.full(len(ind), np.nan)
     for i in range(2, len(ind)):
         try:
@@ -85,7 +86,13 @@ class PowerStrategy(Strategy):
             tp = price + self.atr_mult_tp * atr
             if sl <= 0:
                 return
-            ok = self.buy(size=0.99, sl=sl, tp=tp)
+            # sizing identik dengan /saran: risiko RISK_PCT ekuitas per trade,
+            # bukan all-in — supaya simulasi memvalidasi skema yang dipakai bot.
+            risk_per_share = price - sl
+            size = min(0.99, (RISK_PCT * price) / risk_per_share)
+            if size <= 0:
+                return
+            self.buy(size=size, sl=sl, tp=tp)
             self._entry_bar = i
 
 
@@ -116,7 +123,8 @@ def fmt_report(ticker: str, stats) -> str:
         f"  Max drawdown    : {dd:.1f}%\n"
         f"  Waktu terinvestasi: {dur:.0f}%\n"
         f"  (biaya {COMMISSION*100:.2f}% per transaksi, fill bar berikutnya,\n"
-        f"   SL 1×ATR, TP 2×ATR, maksimal tahan {HOLD_MAX} hari, skip trap momentum)"
+        f"   SL 1×ATR, TP 2×ATR, maksimal tahan {HOLD_MAX} hari, skip trap momentum,\n"
+        f"   sizing risiko {RISK_PCT*100:.0f}% ekuitas per trade seperti /saran)"
     )
 
 

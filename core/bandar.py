@@ -5,7 +5,6 @@ dengan jujur agar pesan bot tidak berbohong."""
 from __future__ import annotations
 
 import time
-from datetime import date
 
 BASE = "https://www.idx.co.id/primary"
 HDR = {
@@ -88,5 +87,6 @@ def top_movers(rows: list[dict], n: int = 5, asc: bool = False) -> list[dict]:
 
 
 def last_trading_date() -> str:
-    """Hari ini (BEI menerima tanggal apapun & membalik dengan data sesuai)."""
-    return date.today().isoformat()
+    """Tanggal bursa terakhir (BEI membalas kosong untuk hari libur)."""
+    from core import marketcal
+    return marketcal.last_trading_day().isoformat()

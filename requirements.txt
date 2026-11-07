@@ -1,13 +1,14 @@
 python-telegram-bot[job-queue]~=21.0
 yfinance>=0.2.40
 pandas>=2.0
+numpy>=1.26
 matplotlib>=3.8
+cloudscraper>=2.4        # /bandar: idx.co.id di balik Cloudflare
+exchange_calendars>=4.11 # kalender bursa XIDX (libur BEI)
 
 # analisis teknikal & backtest
 pandas-ta-classic>=0.9.0
 backtesting>=0.6.0
 
-# sentimen berita ML lokal (opsional — kalau gagal terpasang, bot jatuh ke lexicon)
-# catatan: transformers 5.x butuh torch>=2.6; kami pin ke 4.x agar kompatibel torch 2.5 (stabil di CPU)
-torch>=2.5,<3
-transformers>=4.40,<5
+# sentimen ML sengaja dipisah ke requirements-ml.txt (torch itu berat).
+# Tanpa ML, bot tetap jalan memakai mesin lexicon.

@@ -1,143 +1,303 @@
-"""Penyimpanan watchlist & alert per chat (JSON sederhana)."""
+"""Penyimpanan watchlist, alert, dan paper trading (SQLite).
+
+Dulu JSON yang ditulis ulang penuh tiap perubahan: rawan lost update antara job
+scanner dan handler, dan satu file rusak menghapus data semua user. SQLite
+memberi transaksi atomik; `store.json` lama dimigrasikan otomatis sekali.
+"""
 from __future__ import annotations
 
 import json
+import logging
 import os
+import sqlite3
 import threading
+from contextlib import contextmanager
 
-from config import STORE_FILE
+from config import STORE_DB, STORE_FILE
 
-_lock = threading.Lock()
+log = logging.getLogger("sahambuddy.store")
+
+DEFAULT_MODAL = 10_000_000
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chats (
+    chat_id TEXT PRIMARY KEY,
+    modal   INTEGER NOT NULL DEFAULT 10000000,
+    auto    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS watchlist (
+    chat_id TEXT NOT NULL,
+    symbol  TEXT NOT NULL,
+    PRIMARY KEY (chat_id, symbol)
+);
+CREATE TABLE IF NOT EXISTS alerts (
+    chat_id TEXT NOT NULL,
+    symbol  TEXT NOT NULL,
+    kinds   TEXT NOT NULL DEFAULT '[]',
+    active  TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (chat_id, symbol)
+);
+CREATE TABLE IF NOT EXISTS paper (
+    chat_id TEXT NOT NULL,
+    symbol  TEXT NOT NULL,
+    rec     TEXT NOT NULL,
+    PRIMARY KEY (chat_id, symbol)
+);
+"""
 
 
-def _load() -> dict:
-    if not os.path.exists(STORE_FILE):
-        return {}
+_init_lock = threading.Lock()
+_ready_for: str | None = None
+
+
+def _ensure_ready(conn):
+    """Buat skema + migrasi sekali per file DB, bukan pada tiap operasi.
+
+    Dulu `executescript(_SCHEMA)` + cek file migrasi dijalankan pada setiap
+    panggilan store — puluhan kali untuk satu `/saran`, tanpa manfaat.
+    """
+    global _ready_for
+    if _ready_for == STORE_DB:
+        return
+    with _init_lock:
+        if _ready_for == STORE_DB:
+            return
+        conn.executescript(_SCHEMA)
+        _migrate_json(conn)
+        _ready_for = STORE_DB
+
+
+@contextmanager
+def _db():
+    """Koneksi + transaksi singkat (satu operasi tulis = satu transaksi)."""
+    conn = sqlite3.connect(STORE_DB, timeout=15)
+    conn.row_factory = sqlite3.Row
     try:
-        with open(STORE_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=15000")
+        _ensure_ready(conn)
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
-def _save(data: dict):
-    tmp = STORE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, STORE_FILE)
+def _ensure_chat(conn, chat_id, modal: int | None = None, auto: bool | None = None):
+    cid = str(chat_id)
+    conn.execute("INSERT OR IGNORE INTO chats(chat_id) VALUES (?)", (cid,))
+    if modal is not None:
+        conn.execute("UPDATE chats SET modal=? WHERE chat_id=?", (int(modal), cid))
+    if auto is not None:
+        conn.execute("UPDATE chats SET auto=? WHERE chat_id=?", (int(bool(auto)), cid))
 
 
-def _chat(data: dict, chat_id: str) -> dict:
-    return data.setdefault(str(chat_id), {"watchlist": [], "alerts": {}})
+def _migrate_json(conn):
+    """Impor store.json lama sekali, lalu ganti nama file agar tak diulang."""
+    legacy = STORE_FILE
+    if not legacy or not os.path.exists(legacy):
+        return
+    if conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0]:
+        return
+    try:
+        with open(legacy, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        log.exception("migrasi: %s tidak bisa dibaca — dilewati", legacy)
+        return
+    if not isinstance(data, dict):
+        return
+    for chat_id, c in data.items():
+        if not isinstance(c, dict):
+            continue
+        _ensure_chat(conn, chat_id,
+                     modal=int(c.get("modal") or DEFAULT_MODAL),
+                     auto=bool(c.get("auto")))
+        for symbol in c.get("watchlist") or []:
+            conn.execute("INSERT OR IGNORE INTO watchlist(chat_id, symbol) VALUES (?, ?)",
+                         (str(chat_id), symbol))
+        for symbol, kinds in (c.get("alerts") or {}).items():
+            conn.execute(
+                "INSERT OR REPLACE INTO alerts(chat_id, symbol, kinds, active) "
+                "VALUES (?, ?, ?, '[]')",
+                (str(chat_id), symbol, json.dumps(sorted(set(kinds or [])))))
+        for symbol, rec in (c.get("paper") or {}).items():
+            conn.execute(
+                "INSERT OR REPLACE INTO paper(chat_id, symbol, rec) VALUES (?, ?, ?)",
+                (str(chat_id), symbol, json.dumps(rec, ensure_ascii=False, default=str)))
+    os.replace(legacy, legacy + ".migrated")
+    log.info("migrasi store.json -> SQLite selesai (%d chat)", len(data))
 
+
+# ------------------------------------------------------------ watchlist -----
 
 def get_watchlist(chat_id: int | str) -> list[str]:
-    with _lock:
-        return _chat(_load(), chat_id)["watchlist"]
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT symbol FROM watchlist WHERE chat_id=? ORDER BY rowid",
+            (str(chat_id),))
+        return [r["symbol"] for r in rows]
 
 
 def watchlist_add(chat_id: int | str, symbol: str) -> tuple[bool, list[str]]:
     """Return (berhasil, watchlist_terbaru). False kalau sudah ada."""
-    with _lock:
-        data = _load()
-        c = _chat(data, chat_id)
-        if symbol not in c["watchlist"]:
-            c["watchlist"].append(symbol)
-            _save(data)
-            return True, c["watchlist"]
-        return False, c["watchlist"]
+    with _db() as conn:
+        _ensure_chat(conn, chat_id)
+        row = conn.execute(
+            "SELECT 1 FROM watchlist WHERE chat_id=? AND symbol=?",
+            (str(chat_id), symbol)).fetchone()
+        if row is None:
+            conn.execute("INSERT INTO watchlist(chat_id, symbol) VALUES (?, ?)",
+                         (str(chat_id), symbol))
+            added = True
+        else:
+            added = False
+    return added, get_watchlist(chat_id)
 
 
 def watchlist_remove(chat_id: int | str, symbol: str) -> tuple[bool, list[str]]:
-    with _lock:
-        data = _load()
-        c = _chat(data, chat_id)
-        if symbol in c["watchlist"]:
-            c["watchlist"].remove(symbol)
-            _save(data)
-            return True, c["watchlist"]
-        return False, c["watchlist"]
+    with _db() as conn:
+        cur = conn.execute(
+            "DELETE FROM watchlist WHERE chat_id=? AND symbol=?",
+            (str(chat_id), symbol))
+        removed = cur.rowcount > 0
+    return removed, get_watchlist(chat_id)
 
+
+# ---------------------------------------------------------------- alert -----
 
 def set_alert(chat_id: int | str, symbol: str, kinds: set[str]) -> set[str]:
-    with _lock:
-        data = _load()
-        c = _chat(data, chat_id)
-        saved = set(c["alerts"].get(symbol) or set())
+    with _db() as conn:
+        _ensure_chat(conn, chat_id)
+        row = conn.execute(
+            "SELECT kinds FROM alerts WHERE chat_id=? AND symbol=?",
+            (str(chat_id), symbol)).fetchone()
+        saved = set(json.loads(row["kinds"])) if row else set()
         saved |= set(kinds)
-        c["alerts"][symbol] = sorted(saved)
-        _save(data)
-        return set(saved)
+        conn.execute(
+            "INSERT INTO alerts(chat_id, symbol, kinds, active) VALUES (?, ?, ?, '[]') "
+            "ON CONFLICT(chat_id, symbol) DO UPDATE SET kinds=excluded.kinds",
+            (str(chat_id), symbol, json.dumps(sorted(saved))))
+    return saved
 
 
 def remove_alert(chat_id: int | str, symbol: str) -> bool:
-    with _lock:
-        data = _load()
-        c = _chat(data, chat_id)
-        if symbol in c["alerts"]:
-            del c["alerts"][symbol]
-            _save(data)
-            return True
-        return False
-
-
-def get_paper(chat_id: int | str) -> dict[str, dict]:
-    with _lock:
-        return _chat(_load(), chat_id).setdefault("paper", {})
-
-
-def save_paper(chat_id: int | str, paper: dict[str, dict]):
-    with _lock:
-        data = _load()
-        c = _chat(data, chat_id)
-        c["paper"] = paper
-        _save(data)
+    with _db() as conn:
+        cur = conn.execute(
+            "DELETE FROM alerts WHERE chat_id=? AND symbol=?",
+            (str(chat_id), symbol))
+        return cur.rowcount > 0
 
 
 def get_alerts(chat_id: int | str) -> dict[str, list]:
-    with _lock:
-        return _chat(_load(), chat_id)["alerts"]
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT symbol, kinds FROM alerts WHERE chat_id=? ORDER BY symbol",
+            (str(chat_id),))
+        return {r["symbol"]: json.loads(r["kinds"]) for r in rows}
 
 
-# [P5] modal latihan (paper trading) — default Rp10 juta, bisa diubah per chat
-DEFAULT_MODAL = 10_000_000
+def alert_subscriptions() -> list[tuple[str, str, set[str]]]:
+    """Semua langganan alert: [(chat_id, symbol, kinds), ...]."""
+    with _db() as conn:
+        rows = conn.execute("SELECT chat_id, symbol, kinds FROM alerts")
+        return [(r["chat_id"], r["symbol"], set(json.loads(r["kinds"]))) for r in rows]
 
+
+def update_alert_state(chat_id: int | str, symbol: str, hits: set[str]) -> set[str]:
+    """Simpan kondisi pemicu sekarang, kembalikan jenis yang BARU aktif.
+
+    Scanner memakai ini supaya alert hanya dikirim saat kondisi berubah
+    (False → True), bukan tiap 30 menit selama kondisi bertahan.
+    """
+    hits = set(hits)
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT active FROM alerts WHERE chat_id=? AND symbol=?",
+            (str(chat_id), symbol)).fetchone()
+        if row is None:
+            return set()
+        prev = set(json.loads(row["active"] or "[]"))
+        conn.execute(
+            "UPDATE alerts SET active=? WHERE chat_id=? AND symbol=?",
+            (json.dumps(sorted(hits)), str(chat_id), symbol))
+    return hits - prev
+
+
+# ---------------------------------------------------------------- paper -----
+
+def get_paper(chat_id: int | str) -> dict[str, dict]:
+    with _db() as conn:
+        rows = conn.execute("SELECT symbol, rec FROM paper WHERE chat_id=?",
+                            (str(chat_id),))
+        return {r["symbol"]: json.loads(r["rec"]) for r in rows}
+
+
+def set_paper_record(chat_id: int | str, symbol: str, rec: dict):
+    with _db() as conn:
+        _ensure_chat(conn, chat_id)
+        conn.execute(
+            "INSERT INTO paper(chat_id, symbol, rec) VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_id, symbol) DO UPDATE SET rec=excluded.rec",
+            (str(chat_id), symbol,
+             json.dumps(rec, ensure_ascii=False, default=str)))
+
+
+def delete_paper(chat_id: int | str, symbol: str):
+    with _db() as conn:
+        conn.execute("DELETE FROM paper WHERE chat_id=? AND symbol=?",
+                     (str(chat_id), symbol))
+
+
+def all_papers() -> list[tuple[str, str, dict]]:
+    """Semua posisi latihan: [(chat_id, symbol, rec), ...]."""
+    with _db() as conn:
+        rows = conn.execute("SELECT chat_id, symbol, rec FROM paper")
+        return [(r["chat_id"], r["symbol"], json.loads(r["rec"])) for r in rows]
+
+
+# ------------------------------------------------------- modal & auto ------
 
 def get_modal(chat_id: int | str) -> int:
-    with _lock:
-        return int(_chat(_load(), chat_id).get("modal", DEFAULT_MODAL))
+    with _db() as conn:
+        row = conn.execute("SELECT modal FROM chats WHERE chat_id=?",
+                           (str(chat_id),)).fetchone()
+        return int(row["modal"]) if row else DEFAULT_MODAL
 
 
 def set_modal(chat_id: int | str, amount: int):
-    with _lock:
-        data = _load()
-        c = _chat(data, chat_id)
-        c["modal"] = int(amount)
-        _save(data)
+    with _db() as conn:
+        _ensure_chat(conn, chat_id, modal=int(amount))
 
 
-# [P6] auto-scan pagi per chat (default off)
 def set_auto(chat_id: int | str, enabled: bool):
-    with _lock:
-        data = _load()
-        c = _chat(data, chat_id)
-        c["auto"] = bool(enabled)
-        _save(data)
-
-
-def get_auto_chats() -> list[str]:
-    """Daftar chat_id (string) yang mengaktifkan auto-scan pagi."""
-    out = []
-    for chat_id, c in _load().items():
-        if isinstance(c, dict) and c.get("auto"):
-            out.append(chat_id)
-    return out
+    with _db() as conn:
+        _ensure_chat(conn, chat_id, auto=bool(enabled))
 
 
 def get_auto(chat_id: int | str) -> bool:
-    with _lock:
-        return bool(_load().get(str(chat_id), {}).get("auto", False))
+    with _db() as conn:
+        row = conn.execute("SELECT auto FROM chats WHERE chat_id=?",
+                           (str(chat_id),)).fetchone()
+        return bool(row["auto"]) if row else False
 
 
-class StoreWarning:
-    """Catatan: _save menulis set sebagai list lazim, jadi tak ada tipe set mangling di JSON."""
+def get_auto_chats() -> list[str]:
+    with _db() as conn:
+        rows = conn.execute("SELECT chat_id FROM chats WHERE auto=1")
+        return [r["chat_id"] for r in rows]
+
+
+def counts() -> dict:
+    """Ringkasan isi store untuk /status."""
+    with _db() as conn:
+        def one(sql: str) -> int:
+            return int(conn.execute(sql).fetchone()[0])
+        papers = [json.loads(r["rec"]) for r in conn.execute("SELECT rec FROM paper")]
+        return {
+            "chats": one("SELECT COUNT(*) FROM chats"),
+            "watchlist": one("SELECT COUNT(*) FROM watchlist"),
+            "alerts": one("SELECT COUNT(*) FROM alerts"),
+            "paper_total": len(papers),
+            "paper_open": sum(1 for p in papers
+                              if p.get("status") in ("open", "pending")),
+        }

@@ -50,7 +50,8 @@ def build_chart(symbol: str, ind: pd.DataFrame, score_pct: float, out_path: str)
     ax1.set_ylabel("Harga (Rp)", color="white", fontsize=9)
 
     # Panel 2 — volume
-    bar_c = ["#26a69a" if o <= c else "#ef5350" for o, c in zip(df["open"], df["close"])]
+    bar_c = ["#26a69a" if o <= c else "#ef5350"
+             for o, c in zip(df["open"], df["close"], strict=True)]
     ax2.bar(x, df["volume"], color=bar_c, width=1.0, alpha=.8)
     ax2.plot(x, df["vol_avg20"], color="#546e7a", lw=1, label="Vol avg 20d")
     ax2.set_ylabel("Volume", color="white", fontsize=9)
