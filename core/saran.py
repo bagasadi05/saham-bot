@@ -36,6 +36,7 @@ MAX_PER_SECTOR = 2      # konsentrasi per sektor
 MAX_HOLD_DAYS = 20      # hari bursa (≈ 28 hari kalender)
 MAX_QUEUE_AGE_DAYS = 10  # sinyal basi: batalkan kalau open berikutnya tak kunjung ada
 TRAP_RET20D = 15.0      # skip jebakan momentum (temuan backtest)
+CLOSED_SHOWN = 10       # posisi selesai yang ditampilkan di /saran list
 
 BUY_FEE = 0.0015        # broker beli
 SELL_FEE = 0.0025       # broker + pajak jual
@@ -280,6 +281,8 @@ def update_paper(chat_id: int | str, quotes: dict,
             msgs.append(f"⏱️ <b>{symbol}</b> ditutup karena batas waktu "
                         f"({MAX_HOLD_DAYS} hari bursa) di {fmt(close)} — "
                         f"net {pnl_pct(entry, close):+.1f}%")
+    if msgs:  # ada posisi selesai → jaga riwayat tetap ringkas
+        store.prune_paper(chat_id)
     return msgs
 
 
@@ -289,6 +292,7 @@ def quotes_forgotten(chat_id: int | str) -> list[str]:
     if not paper:
         return []
     lines = ["📋 <b>Posisi latihan (paper trading)</b>"]
+    closed_lines: list[str] = []
     open_n = win_n = lose_n = 0
     pnl_sum = 0.0
     for t, rec in sorted(paper.items()):
@@ -318,7 +322,11 @@ def quotes_forgotten(chat_id: int | str) -> list[str]:
             lose_n += pnl <= 0
             badge = {"tp": "🎯 TP", "sl": "🛑 SL",
                      "timeout": "⏱️ batas waktu"}.get(rec.get("hit"), "✅")
-            lines.append(f"  {badge} <b>{t}</b> {pnl:+.1f}% net" + when)
+            closed_lines.append(f"  {badge} <b>{t}</b> {pnl:+.1f}% net" + when)
+    if len(closed_lines) > CLOSED_SHOWN:
+        lines.append(f"  … {len(closed_lines) - CLOSED_SHOWN} posisi selesai "
+                     "lebih lama tidak ditampilkan (riwayat dipangkas otomatis)")
+    lines.extend(closed_lines[-CLOSED_SHOWN:])
     if win_n + lose_n:
         lines.append(f"\nRekap: {win_n + lose_n} posisi selesai (masih terbuka "
                      f"{open_n}) | untung {win_n}, rugi {lose_n}, rata-rata "

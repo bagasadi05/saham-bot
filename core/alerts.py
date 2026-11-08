@@ -88,13 +88,3 @@ def build_alert_message(symbol: str, triggers: list[str], snap: dict, score: dic
     for t in triggers:
         lines.append(f"  {KIND_LABEL.get(t, t)}")
     return "\n".join(lines)
-
-
-def market_hours(jkt_hour: int, jkt_minute: int, weekday: int, open_=None, close=None) -> bool:
-    """Cek apakah sedang dalam jam bursa (Senin-Jumat 09:00-16:00 WIB)."""
-    if weekday >= 5:  # Sabtu = 5, Minggu = 6
-        return False
-    minutes_into_day = jkt_hour * 60 + jkt_minute
-    o = (open_ or (9, 0))
-    c = (close or (16, 0))
-    return o[0] * 60 + o[1] <= minutes_into_day <= c[0] * 60 + c[1]

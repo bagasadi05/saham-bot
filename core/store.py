@@ -18,6 +18,7 @@ from config import STORE_DB, STORE_FILE
 log = logging.getLogger("sahambuddy.store")
 
 DEFAULT_MODAL = 10_000_000
+KEEP_CLOSED = 20   # riwayat posisi latihan 'closed' yang disimpan per chat
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS chats (
@@ -253,6 +254,34 @@ def all_papers() -> list[tuple[str, str, dict]]:
     with _db() as conn:
         rows = conn.execute("SELECT chat_id, symbol, rec FROM paper")
         return [(r["chat_id"], r["symbol"], json.loads(r["rec"])) for r in rows]
+
+
+def prune_paper(chat_id: int | str, keep_closed: int = KEEP_CLOSED) -> int:
+    """Pangkas riwayat posisi latihan yang sudah selesai ('closed').
+
+    Tabel paper dulu tak pernah dibersihkan: setelah berbulan-bulan, `/saran
+    list` dan rekap PnL ikut membengkak tanpa batas. Sisakan `keep_closed`
+    posisi selesai TERBARU (urut filled_at/queued); posisi open & pending
+    tidak pernah disentuh. Return jumlah baris yang dihapus.
+    """
+    if keep_closed < 0:
+        return 0
+    with _db() as conn:
+        rows = conn.execute("SELECT symbol, rec FROM paper WHERE chat_id=?",
+                            (str(chat_id),)).fetchall()
+        closed = []
+        for r in rows:
+            rec = json.loads(r["rec"])
+            if rec.get("status") == "closed":
+                stamp = str(rec.get("filled_at") or rec.get("queued") or "")
+                closed.append((stamp, r["symbol"]))
+        if len(closed) <= keep_closed:
+            return 0
+        closed.sort()  # terlama dulu
+        drop = [sym for _, sym in closed[:len(closed) - keep_closed]]
+        conn.executemany("DELETE FROM paper WHERE chat_id=? AND symbol=?",
+                         [(str(chat_id), sym) for sym in drop])
+        return len(drop)
 
 
 # ------------------------------------------------------- modal & auto ------

@@ -65,6 +65,12 @@ os.makedirs(TMP_DIR, exist_ok=True)
 # Batas watchlist per chat — membatasi biaya pemindaian /saran
 MAX_WATCH = 30
 
+# [Tier B] Pemindaian /saran paralel berbatas: satu emiten = 3-4 permintaan
+# jaringan (harga, fundamental, berita). 4 sekaligus memangkas LQ45 dari ±5
+# menit jadi ±1,5 menit tanpa memicu rate-limit Yahoo.
+SCAN_CONCURRENCY = max(1, int(os.getenv("SARAN_CONCURRENCY", "4") or 1))
+SCAN_PAUSE = 0.15
+
 
 # ---------------------------------------------------------------- helpers
 
@@ -455,13 +461,13 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not await cooldown_ok(update, "saran"):
         return
-    if sub in ("lq45",):  # [P7] seluruh universe LQ45 (±4-6 menit, progres bertahap)
+    if sub in ("lq45",):  # [P7] seluruh universe LQ45 (±1-2 menit paralel, progres bertahap)
         if len(saranmod.LQ45) < 30:
             await update.effective_message.reply_text("❌ Daftar LQ45 kosong.")
             return
         ok = await update.effective_message.reply_text(
             f"⏳ Memindai seluruh LQ45 ({len(saranmod.LQ45)} emiten) — "
-            "kira-kira 4-6 menit; progres dikirim tiap 10 emiten…")
+            "kira-kira 1-2 menit; progres dikirim tiap 10 emiten…")
         async def _prog(done, total):
             try:
                 await ok.edit_text(f"⏳ LQ45: {done}/{total} emiten diproses…")
@@ -479,7 +485,7 @@ async def cmd_saran(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     wl = store.get_watchlist(chat_id)
     universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
     await update.effective_message.reply_text(
-        f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 3-4 menit...")
+        f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 1-2 menit...")
     txt = await saran_scan_text(chat_id, universe)
     if txt is None:
         await update.effective_message.reply_text("❌ Data sumber error, coba lagi nanti.")
@@ -494,28 +500,43 @@ async def saran_scan_text(chat_id: int, universe: list[str] | None = None,
 
     universe None = default (watchlist + default, cap MAX_SCAN).
     progress: async callback(done, total) untuk pesan '10/45 ...' bertahap.
+    Emiten dianalisis paralel berbatas (`SCAN_CONCURRENCY`) — hasil tetap urut
+    sesuai universe, dan satu emiten gagal tidak membatalkan sisanya.
     Return teks ringkasan, atau None kalau semua sumber gagal."""
     if universe is None:
         wl = store.get_watchlist(chat_id)
         universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
     modal = store.get_modal(chat_id)
-    analyzed, latest = [], {}
     total = len(universe)
-    last_reported = 0
-    for i, t in enumerate(universe, 1):
-        a = await gather_candidate(t)
-        if a:
-            analyzed.append(a)
-            # bar terakhir (bukan hanya close) → SL/TP intraday ikut terdeteksi
-            latest[a["res"]["ticker"]] = a["res"]["ind"].iloc[-1]
-        # [P7] progres tiap ±10 emiten (universe besar)
-        if progress and (i - last_reported >= 10 or i == total):
+    done = 0
+    report_at = 0
+    sem = asyncio.Semaphore(SCAN_CONCURRENCY)
+
+    async def scan_one(t: str) -> dict | None:
+        """Satu emiten, paralel dibatasi semaphore agar Yahoo tidak dibanjiri."""
+        nonlocal done, report_at
+        async with sem:
             try:
-                await progress(i, total)
+                a = await gather_candidate(t)
+            except Exception:
+                # satu emiten bermasalah tidak boleh membatalkan seluruh pemindaian
+                log.exception("pemindaian %s gagal", t)
+                a = None
+            await asyncio.sleep(SCAN_PAUSE)
+        done += 1
+        should_report = bool(progress) and (done - report_at >= 10 or done == total)
+        if should_report:
+            report_at = done
+            try:
+                await progress(done, total)
             except Exception:
                 pass
-            last_reported = i
-        await asyncio.sleep(.2)
+        return a
+
+    results = await asyncio.gather(*(scan_one(t) for t in universe))
+    # urutan universe dipertahankan (bukan urutan selesai) supaya hasil stabil
+    analyzed = [a for a in results if a]
+    latest = {a["res"]["ticker"]: a["res"]["ind"].iloc[-1] for a in analyzed}
     if not analyzed:
         return None
 

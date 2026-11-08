@@ -1,6 +1,7 @@
 """Unit test inti SahamBuddy — tanpa jaringan dan tanpa token bot."""
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import sys
@@ -17,8 +18,8 @@ if "yfinance" not in sys.modules:
     _yf.Ticker = lambda *a, **k: None
     sys.modules["yfinance"] = _yf
 
-from core import (alerts, analysis, data, learn, marketcal, news,  # noqa: E402
-                  powerscore, saran, store, textutil)
+from core import (alerts, analysis, bandar, data, learn, marketcal,  # noqa: E402
+                  news, powerscore, saran, store, textutil)
 
 
 @pytest.fixture(autouse=True)
@@ -65,13 +66,6 @@ def test_breakdown_can_fire():
     ind.iloc[-1, ind.columns.get_loc("close")] = crash
     ind.iloc[-1, ind.columns.get_loc("low")] = crash
     assert "breakdown" in alerts.check_triggers(ind)
-
-
-def test_market_hours():
-    assert alerts.market_hours(9, 30, 0)
-    assert not alerts.market_hours(9, 30, 5)
-    assert not alerts.market_hours(8, 59, 2)
-    assert not alerts.market_hours(16, 1, 2)
 
 
 # ------------------------------------------------------------ powerscore ---
@@ -438,3 +432,149 @@ def test_fetch_news_is_cached(monkeypatch):
         assert news.fetch_news("BBCA")[0]["title"] == "Laba bank naik"
     finally:
         news.clear_cache()
+
+
+# ------------------------------------------- Tier B: cache data BEI --------
+
+_BEI_ROWS = [{"StockCode": "BBCA", "ClosingPrice": 9000, "PreviousPrice": 8900},
+             {"StockCode": "BBRI", "ClosingPrice": 5000, "PreviousPrice": 5100}]
+
+
+def _patch_bandar(monkeypatch, payload):
+    monkeypatch.setattr(bandar, "_scraper", lambda: None)
+    monkeypatch.setattr(
+        bandar, "_get",
+        lambda url, scraper, params=None, tries=3, pause=4.0: payload(params))
+
+
+def test_bandar_stock_summary_is_cached(monkeypatch):
+    calls = {"n": 0}
+
+    def payload(params):
+        calls["n"] += 1
+        return {"data": _BEI_ROWS}
+
+    bandar.clear_cache()
+    _patch_bandar(monkeypatch, payload)
+    try:
+        first = bandar.get_stock_summary("2026-11-06", max_stocks=10)
+        second = bandar.get_stock_summary("2026-11-06", max_stocks=10)
+        assert calls["n"] == 1              # permintaan kedua dari cache
+        assert first == second
+        first[0]["ClosingPrice"] = 1        # salinan: cache tidak ikut berubah
+        assert bandar.get_stock_summary("2026-11-06", max_stocks=10)[0]["ClosingPrice"] == 9000
+        bandar.clear_cache()
+        assert bandar.cache_stats()["entries"] == 0
+        assert bandar.get_stock_summary("2026-11-06", max_stocks=10)
+        assert calls["n"] == 2              # cache dibersihkan → ambil ulang
+    finally:
+        bandar.clear_cache()
+
+
+def test_bandar_cache_key_includes_trade_date(monkeypatch):
+    seen: list = []
+
+    def payload(params):
+        seen.append(params.get("date"))
+        return {"data": []}
+
+    bandar.clear_cache()
+    _patch_bandar(monkeypatch, payload)
+    try:
+        bandar.get_stock_summary("2026-11-05")
+        bandar.get_stock_summary("2026-11-06")
+        bandar.get_stock_summary("2026-11-06")
+        assert seen == ["2026-11-05", "2026-11-06"]
+    finally:
+        bandar.clear_cache()
+
+
+# ------------------------------------- Tier B: pemindaian /saran paralel ----
+
+def _scan_candidate(t: str) -> dict:
+    return {"res": {"ticker": t, "score": {"pct": 60},
+                    "snap": {"close": 1000.0, "ret20d": 1.0, "ret1d": 0.0},
+                    "ind": pd.DataFrame({"atr14": [20.0]})},
+            "fund": None, "nsent": None, "fund_raw": {"sector": "Financials"}}
+
+
+def test_saran_scan_is_parallel_ordered_and_error_isolated(tmp_path, monkeypatch):
+    import bot
+
+    _isolate(tmp_path, monkeypatch)
+    active = {"now": 0, "max": 0}
+    finished: list[str] = []
+
+    async def fake_candidate(t):
+        if t == "RUSAK":
+            raise RuntimeError("sumber gagal")
+        active["now"] += 1
+        active["max"] = max(active["max"], active["now"])
+        await asyncio.sleep(0.02)
+        active["now"] -= 1
+        finished.append(t)
+        return _scan_candidate(t)
+
+    monkeypatch.setattr(bot, "gather_candidate", fake_candidate)
+    monkeypatch.setattr(bot, "SCAN_PAUSE", 0)
+    monkeypatch.setattr(bot.saranmod, "queue_paper", lambda *a, **k: 0)
+    monkeypatch.setattr(bot.saranmod, "update_paper", lambda *a, **k: [])
+    universe = ["AAAA", "RUSAK", "BBBB", "CCCC", "DDDD", "EEEE"]
+    txt = asyncio.run(bot.saran_scan_text(1, universe))
+    assert txt and "AAAA" in txt
+    assert "RUSAK" not in txt
+    assert active["max"] > 1                      # benar-benar paralel
+    assert active["max"] <= bot.SCAN_CONCURRENCY   # tapi tetap dibatasi
+    assert sorted(finished) == ["AAAA", "BBBB", "CCCC", "DDDD", "EEEE"]
+    assert finished.index("AAAA") < finished.index("EEEE")  # urutan universe dijaga
+
+
+# -------------------------------- Tier B: riwayat paper trading dibatasi ----
+
+def test_prune_paper_keeps_newest_closed_and_survivors(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    for i in range(25):
+        store.set_paper_record(1, f"C{i:02d}", {
+            "status": "closed", "hit": "tp", "entry": 1000.0, "exit_price": 1040.0,
+            "filled_at": f"2026-{1 + i // 20:02d}-{1 + i % 20:02d}"})
+    store.set_paper_record(1, "OPEN1", {"status": "open", "entry": 1000.0})
+    store.set_paper_record(1, "PEND1", {"status": "pending", "entry": 1000.0})
+    assert store.prune_paper(1, keep_closed=20) == 5
+    paper = store.get_paper(1)
+    assert len([s for s, r in paper.items() if r["status"] == "closed"]) == 20
+    assert {"OPEN1", "PEND1"} <= set(paper)
+    assert "C00" not in paper and "C04" not in paper   # terlama dibuang
+    assert "C05" in paper and "C24" in paper           # terbaru disimpan
+    assert store.prune_paper(1, keep_closed=20) == 0    # idempoten
+
+
+def test_quotes_forgotten_caps_closed_lines(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    for i in range(saran.CLOSED_SHOWN + 4):
+        store.set_paper_record(1, f"C{i:02d}", {"status": "closed", "hit": "tp",
+                                                "entry": 1000.0, "exit_price": 1040.0})
+    lines = saran.quotes_forgotten(1)
+    assert sum("🎯 TP" in ln for ln in lines) == saran.CLOSED_SHOWN
+    assert any("4 posisi selesai" in ln for ln in lines)
+
+
+# ------------------------------- Tier B: biaya backtest = biaya /saran -----
+
+def test_backtest_and_paper_share_trading_fees():
+    import backtest
+
+    assert backtest.pnl_pct is saran.pnl_pct        # satu sumber rumus biaya
+    assert (saran.BUY_FEE, saran.SELL_FEE) == (0.0015, 0.0025)
+    assert backtest.BUY_FEE == saran.BUY_FEE
+    assert backtest.SELL_FEE == saran.SELL_FEE
+    gross = (1040 / 1000 - 1) * 100
+    net = backtest.pnl_pct(1000, 1040)              # forward return backtest = net
+    assert net < gross
+
+
+def test_backtest_real_commission_matches_saran_per_side():
+    pytest.importorskip("backtesting")
+    from backtest_real import commission
+
+    assert commission(100, 1000.0) == saran.BUY_FEE     # beli
+    assert commission(-100, 1000.0) == saran.SELL_FEE   # jual (ada pajak)

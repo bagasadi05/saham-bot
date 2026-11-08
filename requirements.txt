@@ -3,7 +3,7 @@ yfinance>=0.2.40
 pandas>=2.0
 numpy>=1.26
 matplotlib>=3.8
-cloudscraper>=2.4        # /bandar: idx.co.id di balik Cloudflare
+cloudscraper>=1.2.71     # /bandar: idx.co.id di balik Cloudflare (PyPI terbaru 1.2.x)
 exchange_calendars>=4.11 # kalender bursa XIDX (libur BEI)
 
 # analisis teknikal & backtest
