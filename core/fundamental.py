@@ -1,15 +1,47 @@
 """Data fundamental (PER, PBV, ROE, dividen) + skor valuations sederhana.
-Sumber: info Yahoo Finance (data dari laporan keuangan & agregator)."""
+Sumber: info Yahoo Finance (data dari laporan keuangan & agregator).
+
+Hasil dicache 6 jam: laporan kuartalan tidak berubah dalam hitungan menit,
+padahal `.info` + `quarterly_income_stmt` termasuk panggilan termahal ke Yahoo.
+Tanpa cache, satu `/saran` 12 emiten = 24 permintaan jaringan yang sama persis.
+"""
 from __future__ import annotations
+
+import os
+import threading
+import time
 
 import yfinance as yf
 
 from core import data as datamod
 
+_FUND_TTL = int(os.getenv("SAHAMBOT_FUND_TTL", "21600") or 0)  # 6 jam
+_fund_cache: dict[str, tuple[float, dict]] = {}
+_fund_lock = threading.Lock()
+
 
 def fetch_fundamentals(ticker: str) -> dict | None:
-    """Return dict fundamental atau None kalau data tidak tersedia."""
+    """Return dict fundamental atau None kalau data tidak tersedia (cache 6 jam)."""
     symbol = datamod.normalize_ticker(ticker)
+    if _FUND_TTL > 0:
+        with _fund_lock:
+            hit = _fund_cache.get(symbol)
+            if hit and time.time() - hit[0] < _FUND_TTL:
+                return dict(hit[1])
+    fields = _fetch_uncached(symbol)
+    if fields is not None and _FUND_TTL > 0:
+        with _fund_lock:
+            _fund_cache[symbol] = (time.time(), fields)
+    return fields
+
+
+def clear_cache():
+    """Kosongkan cache fundamental (dipakai test / manual)."""
+    with _fund_lock:
+        _fund_cache.clear()
+
+
+def _fetch_uncached(symbol: str) -> dict | None:
     yft = yf.Ticker(symbol)
     info = yft.info or {}
 
@@ -34,6 +66,43 @@ def fetch_fundamentals(ticker: str) -> dict | None:
     }
     if all(fields[k] is None for k in ("per", "pbv", "div_yield", "roe")):
         return None
+
+    # [P3] tren 4 kuartal terakhir: pendapatan & laba bersih (quarterly financials)
+    fields["as_of"] = None
+    fields["rev_trend"] = None   # [(kuartal, revenue), ...] terbaru di akhir
+    fields["profit_trend"] = None
+    try:
+        qs = yft.quarterly_income_stmt
+        if qs is not None and len(qs.columns) >= 2:
+            # urutkan kronologis — Yahoo kadang kirim kolom tidak berurutan
+            cols = sorted(qs.columns, key=lambda q: str(q))
+            rev_row = None
+            profit_row = None
+            for key in ("Total Revenue", "Operating Revenue", "Revenues"):
+                if key in qs.index:
+                    rev_row = qs.loc[key, cols]
+                    break
+            for key in ("Net Income Common Stockholders", "Net Income",
+                        "Net Income Including Noncontrolling Interests"):
+                if key in qs.index:
+                    profit_row = qs.loc[key, cols]
+                    break
+            def _series(row, n=4):
+                if row is None:
+                    return None
+                s = row.dropna()
+                s = s[s != 0]
+                if len(s) == 0:
+                    return None
+                s = s.iloc[-n:]
+                labels = [f"Q{q.quarter} {q.year}" for q in s.index]
+                return [(lbl, float(v)) for lbl, v in zip(labels, s.values, strict=True)]
+            fields["rev_trend"] = _series(rev_row)
+            fields["profit_trend"] = _series(profit_row)
+            last_q = max((q for q in qs.columns if hasattr(q, "quarter")), default=None)
+            fields["as_of"] = f"Q{last_q.quarter} {last_q.year}" if last_q else None
+    except Exception:
+        pass  # tren tak tersedia → dikatakan jujur di laporan
     return fields
 
 

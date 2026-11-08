@@ -14,11 +14,19 @@ W_TECH, W_FUND, W_NEWS = 0.5, 0.3, 0.2
 
 
 def combine(tech_pct: float, fund_pct: float | None, news_pct: float | None) -> dict:
-    comp = tech_pct * W_TECH
+    """Gabungkan komponen yang tersedia dengan bobot dinormalisasi.
+
+    Kalau salah satu sumber gagal diambil, bobotnya dibagi ke komponen yang ada
+    — bukan dianggap nol (dulu komponen hilang membuat skor maksimal 50%
+    sehingga STRONG BUY praktis mustahil).
+    """
+    parts = [(tech_pct, W_TECH)]
     if fund_pct is not None:
-        comp += fund_pct * W_FUND
+        parts.append((fund_pct, W_FUND))
     if news_pct is not None:
-        comp += news_pct * W_NEWS
+        parts.append((news_pct, W_NEWS))
+    total_w = sum(w for _, w in parts)
+    comp = sum(v * w for v, w in parts) / total_w if total_w else 0.0
     comp = max(-100.0, min(100.0, comp))
 
     if comp >= 50:
@@ -57,6 +65,10 @@ def judge(tech_pct: float, fund: dict | None, news_sent: dict | None,
         f"{('%+.0f%%' % fund_pct) if fund_pct is not None else '—'} × 30% | "
         f"Berita {('%+.0f%%' % news_pct) if news_pct is not None else '—'} × 20%",
     ]
+    missing = [n for n, v in (("fundamental", fund_pct), ("berita", news_pct)) if v is None]
+    if missing:
+        lines.append(f"  <i>Komponen {', '.join(missing)} tidak tersedia — "
+                     "bobot dinormalisasi ke komponen yang ada.</i>")
     trap = trap_warning(snap.get("ret20d"), snap.get("ret1d"))
     if trap:
         lines.append(trap)

@@ -4,10 +4,48 @@ tiap permintaan di-retry berselang; kalau tetap gagal, caller diberi tahu
 dengan jujur agar pesan bot tidak berbohong."""
 from __future__ import annotations
 
+import copy
+import os
+import threading
 import time
-from datetime import date
 
 BASE = "https://www.idx.co.id/primary"
+
+# Ringkasan bursa BEI hanya berubah sekali sehari, tetapi satu /bandar memicu
+# 2 permintaan ke idx.co.id (di balik Cloudflare). Beberapa pengguna beruntun
+# dulu bisa memicu blokir; cache memori 10 menit menghemat kuota.
+# Set BANDAR_TTL=0 untuk mematikan.
+_TTL_SECONDS = float(os.getenv("BANDAR_TTL", "600") or 0)
+_cache: dict[tuple, tuple[float, object]] = {}
+_cache_lock = threading.Lock()
+
+
+def clear_cache():
+    with _cache_lock:
+        _cache.clear()
+
+
+def cache_stats() -> dict:
+    with _cache_lock:
+        return {"entries": len(_cache), "ttl_seconds": _TTL_SECONDS}
+
+
+def _cached(key: tuple, producer, ttl: float | None = None):
+    """Nilai dari cache memori bila masih segar, kalau tidak panggil producer().
+
+    Salinan (deepcopy) dikembalikan agar pemanggil tidak bisa merusak isi cache.
+    """
+    ttl = _TTL_SECONDS if ttl is None else ttl
+    if ttl > 0:
+        with _cache_lock:
+            hit = _cache.get(key)
+            if hit is not None and time.time() - hit[0] <= ttl:
+                return copy.deepcopy(hit[1])
+    value = producer()
+    if ttl > 0:
+        with _cache_lock:
+            _cache[key] = (time.time(), copy.deepcopy(value))
+    return value
 HDR = {
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "X-Requested-With": "XMLHttpRequest",
@@ -40,8 +78,19 @@ def _scraper():
 
 
 def get_stock_summary(trade_date: str | None = None, max_stocks: int = 1000,
-                      page_len: int = 100, cooldown: float = 2.0) -> list[dict]:
-    """Ringkasan perdagangan harian seluruh emiten (OHLC, volume, nilai, asing)."""
+                      page_len: int = 100, cooldown: float = 2.0,
+                      ttl: float | None = None) -> list[dict]:
+    """Ringkasan perdagangan harian seluruh emiten (OHLC, volume, nilai, asing).
+
+    Hasil di-cache per (tanggal bursa, jumlah emiten) — lihat `_TTL_SECONDS`.
+    """
+    return _cached(("stock", trade_date, max_stocks, page_len),
+                   lambda: _fetch_stock_summary(trade_date, max_stocks, page_len, cooldown),
+                   ttl)
+
+
+def _fetch_stock_summary(trade_date: str | None, max_stocks: int,
+                         page_len: int, cooldown: float) -> list[dict]:
     s = _scraper()
     params = {"start": 0, "length": page_len, "language": "en-us"}
     if trade_date:
@@ -59,10 +108,13 @@ def get_stock_summary(trade_date: str | None = None, max_stocks: int = 1000,
     return rows
 
 
-def get_index_summary() -> list[dict]:
+def get_index_summary(ttl: float | None = None) -> list[dict]:
     """IHSG + indeks sektor (COMPOSITE, LQ45, dst) langsung dari BEI."""
-    s = _scraper()
-    return _get(f"{BASE}/TradingSummary/GetIndexSummary", s).get("data", [])
+    return _cached(("index",), _fetch_index_summary, ttl)
+
+
+def _fetch_index_summary() -> list[dict]:
+    return _get(f"{BASE}/TradingSummary/GetIndexSummary", _scraper()).get("data", [])
 
 
 def foreign_fields(row: dict) -> dict:
@@ -88,5 +140,6 @@ def top_movers(rows: list[dict], n: int = 5, asc: bool = False) -> list[dict]:
 
 
 def last_trading_date() -> str:
-    """Hari ini (BEI menerima tanggal apapun & membalik dengan data sesuai)."""
-    return date.today().isoformat()
+    """Tanggal bursa terakhir (BEI membalas kosong untuk hari libur)."""
+    from core import marketcal
+    return marketcal.last_trading_day().isoformat()

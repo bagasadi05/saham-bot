@@ -2,10 +2,11 @@
 
 Model: will702/indo-roBERTa-financial-sentiment-v2 (HuggingFace, MIT).
 - Berjalan sepenuhnya lokal (CPU) — tanpa API key, tanpa biaya per call.
-- Lazy load: model baru diunduh saat pertama kali dipakai.
+- Lazy load: model baru dimuat saat pertama kali dipakai.
+- Inferensi dilakukan BATCH (satu forward pass untuk semua judul) + cache
+  per judul, karena berita sering berulang antar-emiten.
 - Kalau gagal (torch/transformers tidak ada, RAM habis, unduhan gagal),
-  caller jatuh ke mesin lexicon sebagai pendopang — LEBIH BAIK ADA PENGUKURAN
-  BERBASIS KODE daripada tidak sama sekali.
+  caller jatuh ke mesin lexicon.
 
 Glosarium label model: {0: positive, 1: neutral, 2: negative}
 """
@@ -17,8 +18,8 @@ import threading
 MODEL_ID = "will702/indo-roBERTa-financial-sentiment-v2"
 LABEL_MAP = {0: "positive", 1: "neutral", 2: "negative"}
 
-# Folder koper lokal (hasil unduhan manual / build Docker) — dipakai bila ada,
-# supaya bot enggak tergantung jaringan yang tidak stabil saat startup.
+# Folder model lokal (hasil unduhan manual / build Docker) — dipakai bila ada,
+# supaya bot tidak bergantung jaringan saat startup.
 # Override dengan env SAHAMBOT_LOCAL_MODEL jika perlu.
 LOCAL_MODEL_DIR = os.environ.get(
     "SAHAMBOT_LOCAL_MODEL",
@@ -27,6 +28,9 @@ LOCAL_MODEL_DIR = os.environ.get(
 
 _state = {"model": None, "tokenizer": None, "failed": False}
 _lock = threading.Lock()
+
+_cache: dict[str, dict | None] = {}
+_CACHE_MAX = 500
 
 
 def get_model():
@@ -53,27 +57,54 @@ def get_model():
             return None, None
 
 
-def classify(text: str) -> dict | None:
-    """Klasifikasi satu judul. Return {'label','score','probs'} atau None."""
+def _remember(text: str, result: dict):
+    if len(_cache) >= _CACHE_MAX:
+        _cache.pop(next(iter(_cache)))
+    _cache[text] = result
+
+
+def classify_batch(texts: list[str]) -> list[dict | None]:
+    """Klasifikasi banyak judul sekaligus. Return list sejajar dengan input."""
+    out: list[dict | None] = [None] * len(texts)
+    todo: list[int] = []
+    for i, text in enumerate(texts):
+        if text in _cache:
+            out[i] = _cache[text]
+        else:
+            todo.append(i)
+    if not todo:
+        return out
+
     model, tok = get_model()
     if model is None:
-        return None
+        return out
     try:
         import torch
+        batch = [texts[i] for i in todo]
+        inputs = tok(batch, return_tensors="pt", truncation=True,
+                     max_length=128, padding=True)
         with torch.no_grad():
-            inputs = tok(text, return_tensors="pt", truncation=True, max_length=128)
-            logits = model(**inputs).logits[0]
-            probs = torch.softmax(logits, dim=-1).tolist()
-        idx = int(max(range(len(probs)), key=lambda i: probs[i]))
-        return {
-            "label": LABEL_MAP.get(idx, str(idx)),
-            "score": round(probs[idx], 3),
-            "probs": {LABEL_MAP.get(i, str(i)): round(p, 3) for i, p in enumerate(probs)},
-        }
+            probs_all = torch.softmax(model(**inputs).logits, dim=-1).tolist()
+        for i, probs in zip(todo, probs_all, strict=True):
+            idx = int(max(range(len(probs)), key=lambda j: probs[j]))
+            res = {
+                "label": LABEL_MAP.get(idx, str(idx)),
+                "score": round(probs[idx], 3),
+                "probs": {LABEL_MAP.get(j, str(j)): round(p, 3)
+                          for j, p in enumerate(probs)},
+            }
+            out[i] = res
+            _remember(texts[i], res)
     except Exception:
         _state["failed"] = True
         _state["model"] = None
-        return None
+        return out
+    return out
+
+
+def classify(text: str) -> dict | None:
+    """Klasifikasi satu judul. Return {'label','score','probs'} atau None."""
+    return classify_batch([text])[0]
 
 
 def is_available() -> bool:

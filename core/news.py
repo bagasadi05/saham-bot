@@ -2,13 +2,28 @@
 Bahasa Indonesia untuk berita pasar modal. Tanpa API key, tanpa biaya."""
 from __future__ import annotations
 
+import os
 import re
+import threading
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from core import data as datamod
+
+# Cache berita: judul Google News jarang berubah dalam 15 menit, sementara
+# fetch_news dipanggil untuk setiap emiten di setiap pemindaian /saran.
+_NEWS_TTL = int(os.getenv("SAHAMBOT_NEWS_TTL", "900") or 0)
+_news_cache: dict[tuple[str, int], tuple[float, list[dict]]] = {}
+_news_lock = threading.Lock()
+
+
+def clear_cache():
+    """Kosongkan cache berita (dipakai test / manual)."""
+    with _news_lock:
+        _news_cache.clear()
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -74,8 +89,15 @@ def _http_get(url: str, timeout: int = 15) -> bytes:
 
 
 def fetch_news(ticker: str, limit: int = 12) -> list[dict]:
-    """Berita Google News untuk emiten (perusahaan berita, max `limit`)."""
+    """Berita Google News untuk emiten (cache 15 menit, max `limit`)."""
     symbol = datamod.normalize_ticker(ticker).replace(".JK", "")
+    key = (symbol, int(limit))
+    if _NEWS_TTL > 0:
+        with _news_lock:
+            hit = _news_cache.get(key)
+            if hit and time.time() - hit[0] < _NEWS_TTL:
+                # salinan: news_sentiment menulis 'sent'/'engine' ke item
+                return [dict(it) for it in hit[1]]
     name = datamod.fetch_quote_name(symbol)
     query = f"{name} OR {symbol}"
     qs = urllib.parse.urlencode({
@@ -107,40 +129,46 @@ def fetch_news(ticker: str, limit: int = 12) -> list[dict]:
         items.append({"title": title, "link": link, "date": dt, "source": source})
         if len(items) >= limit:
             break
-    return items
+    if _NEWS_TTL > 0:
+        with _news_lock:
+            _news_cache[key] = (time.time(), items)
+    return [dict(it) for it in items]
 
 
 def news_sentiment(items: list[dict]) -> dict:
     """Agregat sentimen berita: skor -100..100 + rincian per judul.
     Berita yang lebih baru bobot lebih besar (decay 7 hari).
-    Setiap judul dicoba via model ML lokal; kalau tidak tersedia, jatuh
-    ke mesin lexicon (dan setiap item diberi catatan mesin yang dipakai)."""
+    Model ML lokal dijalankan sekali untuk semua judul (batch); kalau tidak
+    tersedia, jatuh ke mesin lexicon (setiap item diberi catatan mesinnya)."""
     now = datetime.now(timezone.utc)
-    try:
-        from core import news_ml
-        ml_model, _ = news_ml.get_model()
-    except Exception:
-        ml_model = None
+
+    # klasifikasi ML sekali jalan untuk judul yang belum punya skor
+    pending = [it for it in items
+               if not ("sent" in it and it.get("engine") is not None)]
+    ml_results: list[dict | None] = [None] * len(pending)
+    if pending:
+        try:
+            from core import news_ml
+            ml_results = news_ml.classify_batch([it["title"] for it in pending])
+        except Exception:
+            ml_results = [None] * len(pending)
+    ml_iter = iter(ml_results)
+
     total_v, total_w = 0.0, 0.0
     details = []
     for it in items:
         if "sent" in it and it.get("engine") is not None:
             s, hits, engine = it["sent"], it.get("hits", []), it["engine"]
-        elif ml_model is not None:
-            from core import news_ml
-            res = news_ml.classify(it["title"])
+        else:
+            res = next(ml_iter, None)
             if res is not None:
                 # skala ±1 (ML) dipetakan ke skala lexicon-ish ±2
-                s = res["probs"]["positive"] - res["probs"]["negative"]
-                s *= 2.0
+                s = (res["probs"]["positive"] - res["probs"]["negative"]) * 2.0
                 hits = [f"ML {res['label']}:{res['score']:.0%}"]
                 engine = "ml"
             else:
                 s, hits = score_title(it["title"])
                 engine = "lexicon"
-        else:
-            s, hits = score_title(it["title"])
-            engine = "lexicon"
         it.update({"sent": s, "hits": hits, "engine": engine})
 
         age_days = 7.0

@@ -32,6 +32,14 @@ KIND_EXAMPLES = {
 ALL_KINDS = set(KIND_LABEL)
 
 
+def match_kinds(triggered: list[str], kinds) -> set[str]:
+    """Irisan pemicu aktif dengan jenis yang didaftarkan user.
+
+    Dipisah dari bot supaya bug tipe (list & set) tidak terulang dan bisa diuji.
+    """
+    return set(triggered) & set(kinds)
+
+
 def check_triggers(ind: pd.DataFrame) -> list[str]:
     """Cek baris terakhir & membandingkan dengan baris sebelumnya. Return daftar pemicu."""
     if len(ind) < 25:
@@ -45,9 +53,14 @@ def check_triggers(ind: pd.DataFrame) -> list[str]:
         triggers.append("jump")
     if ret <= -5:
         triggers.append("drop")
-    if pd.notna(last["high20"]) and float(last["close"]) > float(last["high20"]) * 1.001:
+    # high20/low20 baris terakhir SUDAH memuat high/low hari ini, sehingga close
+    # tidak mungkin melewatinya. Pakai level 20 hari sampai dengan kemarin.
+    high20_prev = float(prev["high20"]) if pd.notna(prev.get("high20")) else None
+    low20_prev = float(prev["low20"]) if pd.notna(prev.get("low20")) else None
+    close_now = float(last["close"])
+    if high20_prev and close_now > high20_prev * 1.001:
         triggers.append("breakout")
-    if pd.notna(last["low20"]) and float(last["close"]) < float(last["low20"]) * 0.999:
+    if low20_prev and close_now < low20_prev * 0.999:
         triggers.append("breakdown")
     if float(last["rsi14"]) < 30:
         triggers.append("oversold")
@@ -79,13 +92,3 @@ def build_alert_message(symbol: str, triggers: list[str], snap: dict, score: dic
         # pesan HTML Telegram tidak gagal parse
         lines.append(f"  {html.escape(KIND_LABEL.get(t, t))}")
     return "\n".join(lines)
-
-
-def market_hours(jkt_hour: int, jkt_minute: int, weekday: int, open_=None, close=None) -> bool:
-    """Cek apakah sedang dalam jam bursa (Senin-Jumat 09:00-16:00 WIB)."""
-    if weekday >= 5:  # Sabtu = 5, Minggu = 6
-        return False
-    minutes_into_day = jkt_hour * 60 + jkt_minute
-    o = (open_ or (9, 0))
-    c = (close or (16, 0))
-    return o[0] * 60 + o[1] <= minutes_into_day <= c[0] * 60 + c[1]

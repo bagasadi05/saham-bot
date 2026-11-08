@@ -5,7 +5,8 @@ berikutnya, stop-loss & take-profit berbasis ATR, dan filter jebakan momentum
 Entry   : rating BUY / STRONG BUY pada penutupan  ATAU price di rentang BB (optional)
 Entry R : rating >= +20 , skip bila ret20d > TRAP_RET_PCT
 Exit    : TP = entry + 2×ATR | SL = entry − 1×ATR | maksimal HOLD_MAX hari bursa
-Biaya   : COMMISSION 0,25% per transaksi (beli maupun jual, konservatif)
+Sizing  : risiko 1% ekuitas per trade — sama dengan skema /saran
+Biaya   : beli 0,15% / jual 0,25% — sama persis dengan skema /saran
 Cash    : Rp100.000.000
 
 Pakai:
@@ -20,11 +21,21 @@ import pandas as pd
 from backtesting import Backtest, Strategy
 
 from core import analysis, data
+from core.saran import BUY_FEE, SELL_FEE
 
 TRAP_RET_PCT = 15.0   # skip entry bila harga sudah naik >15% (20 hari)
 HOLD_MAX = 20         # hari bursa maksimal tahan
-COMMISSION = 0.0025   # 0,25% per transaksi
+COMMISSION = (BUY_FEE + SELL_FEE) / 2  # hanya untuk ringkasan
 MIN_RATING_PCT = 20.0  # ambil rating BUY ke atas
+RISK_PCT = 0.01       # 1% ekuitas per trade (sama dengan /saran)
+
+
+def commission(order_size: int, price: float) -> float:
+    """Biaya per transaksi identik dengan /saran (beli 0,15%, jual 0,25%)
+
+    backtesting.py memanggil ini per order; order_size < 0 berarti jual.
+    """
+    return BUY_FEE if order_size > 0 else SELL_FEE
 
 
 def build_statistics(ticker: str, period: str = "5y"):
@@ -34,7 +45,6 @@ def build_statistics(ticker: str, period: str = "5y"):
         raise ValueError(f"Data '{ticker}' terlalu pendek untuk backtest nyata.")
     ind = analysis.compute_indicators(df)
 
-    closes = ind["close"].to_numpy()
     score_pct = np.full(len(ind), np.nan)
     for i in range(2, len(ind)):
         try:
@@ -85,14 +95,20 @@ class PowerStrategy(Strategy):
             tp = price + self.atr_mult_tp * atr
             if sl <= 0:
                 return
-            ok = self.buy(size=0.99, sl=sl, tp=tp)
+            # sizing identik dengan /saran: risiko RISK_PCT ekuitas per trade,
+            # bukan all-in — supaya simulasi memvalidasi skema yang dipakai bot.
+            risk_per_share = price - sl
+            size = min(0.99, (RISK_PCT * price) / risk_per_share)
+            if size <= 0:
+                return
+            self.buy(size=size, sl=sl, tp=tp)
             self._entry_bar = i
 
 
 def run_backtest(ticker: str) -> dict:
     df = build_statistics(ticker)
     bt = Backtest(df, PowerStrategy, cash=100_000_000,
-                  commission=COMMISSION, exclusive_orders=True)
+                  commission=commission, exclusive_orders=True)
     stats = bt.run()
     return stats
 
@@ -115,8 +131,10 @@ def fmt_report(ticker: str, stats) -> str:
         f"  Profit factor   : {pf if not pd.isna(pf) else float('nan'):.2f}\n"
         f"  Max drawdown    : {dd:.1f}%\n"
         f"  Waktu terinvestasi: {dur:.0f}%\n"
-        f"  (biaya {COMMISSION*100:.2f}% per transaksi, fill bar berikutnya,\n"
-        f"   SL 1×ATR, TP 2×ATR, maksimal tahan {HOLD_MAX} hari, skip trap momentum)"
+        f"  (biaya beli {BUY_FEE*100:.2f}% / jual {SELL_FEE*100:.2f}% seperti /saran,\n"
+        f"   fill bar berikutnya,\n"
+        f"   SL 1×ATR, TP 2×ATR, maksimal tahan {HOLD_MAX} hari, skip trap momentum,\n"
+        f"   sizing risiko {RISK_PCT*100:.0f}% ekuitas per trade seperti /saran)"
     )
 
 
