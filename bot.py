@@ -2,6 +2,8 @@
 
 Perintah:
   /start, /menu, /help     - menu utama / panduan
+  /beli BBCA / /jual BBCA  - tanya layak beli/jual (atau ketik bebas:
+                            "BBCA beli gak?", "jual TLKM?")
   /analisis BBCA           - laporan teknikal lengkap + chart
   /skor ANTM TLKM          - ringkasan skor (tanpa chart)
   /watch add <TICKER>      - tambah saham ke watchlist
@@ -17,6 +19,7 @@ import asyncio
 import html
 import logging
 import os
+import re
 import time
 from zoneinfo import ZoneInfo
 
@@ -71,6 +74,39 @@ def esc(s) -> str:
 def tokens(update: Update) -> list[str]:
     txt = (update.effective_message.text or "").split()
     return txt[1:]
+
+
+# ---- tanya beli/jual bahasa natural: "BBCA beli gak?", "jual TLKM?" ----
+_TANYA_BELI = {"beli", "borong", "buy", "akumulasi", "serok"}
+_TANYA_JUAL = {"jual", "lepas", "sell", "cut", "cutloss", "tp", "take",
+               "tahan", "hold"}
+_TANYA_STOP = {"atau", "gak", "nggak", "ngga", "apa", "apakah", "kah",
+               "dong", "ya", "lagi", "sekarang", "kapan", "bagus", "layak",
+               "mau", "saya", "aku", "kamu", "untuk", "di", "ke", "dari",
+               "yang", "ini", "itu", "sih", "aja", "saja", "kalau", "gimana",
+               "bagaimana", "harus", "bisa", "boleh", "mending", "sebaiknya",
+               "worth", "nya", "nih", "tolong", "coba", "cek", "saham",
+               "emiten", "loss", "profit"}
+
+
+def parse_tanya(text: str) -> tuple[str, str | None] | None:
+    """Kenali pertanyaan beli/jual dari teks bebas.
+
+    Balik (focus, ticker) — focus: 'beli' | 'jual' | 'umum'
+    (umum = "beli atau jual"); ticker None kalau tidak disebut.
+    None kalau teksnya bukan pertanyaan beli/jual.
+    """
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    has_beli = any(w in _TANYA_BELI for w in words)
+    has_jual = any(w in _TANYA_JUAL for w in words)
+    if not (has_beli or has_jual):
+        return None
+    tickers = [w.upper() for w in words
+               if 2 <= len(w) <= 6 and w.isalpha()
+               and w not in _TANYA_BELI and w not in _TANYA_JUAL
+               and w not in _TANYA_STOP]
+    focus = "umum" if (has_beli and has_jual) else ("beli" if has_beli else "jual")
+    return focus, tickers[0] if tickers else None
 
 
 async def send_typing(update: Update):
@@ -149,6 +185,145 @@ def build_quick(res: dict) -> str:
     )
 
 
+# ---------------------------------------------------------------- tanya beli/jual
+# Jawaban atas "BBCA beli gak?" / "/beli BBCA" / "/jual TLKM": BUKAN perintah
+# beli/jual — melainkan verdict berbasis data (PowerScore + teknikal +
+# fundamental + berita) beserta level SL/TP dan kondisi yang bisa mengubah
+# jawaban. Skor bot = deskripsi kondisi saat itu, bukan ramalan.
+
+def _verdict_beli(pw_pct: float) -> tuple[str, str]:
+    """(judul, alasan singkat) untuk yang belum punya."""
+    if pw_pct >= 50:
+        return ("✅ Layak dipertimbangkan BELI",
+                "Sinyal kuat: teknikal, fundamental, dan berita searah. "
+                "Tetap beli bertahap, jangan all-in.")
+    if pw_pct >= 20:
+        return ("⚠️ Boleh BELI BERTAHAP",
+                "Sinyal positif tapi belum kuat — cicil, dan tunggu konfirmasi "
+                "(mis. harga tembus MA50).")
+    if pw_pct > -20:
+        return ("⏳ TUNGGU dulu",
+                "Belum ada sinyal beli yang jelas. Pantau dari watchlist, "
+                "jangan kejar harga.")
+    if pw_pct > -50:
+        return ("🛑 JANGAN BELI dulu",
+                "Tren dan/atau fundamental belum mendukung. Beli sekarang "
+                "berarti lawan tren.")
+    return ("🔻 HINDARI beli",
+            "Downtrend kuat. Beli sekarang berisiko nyangkut — tunggu tren "
+            "berbalik.")
+
+
+def _verdict_jual(ts_pct: float, close: float, support: float) -> tuple[str, str]:
+    """(judul, alasan singkat) untuk yang sudah pegang."""
+    if ts_pct >= 50:
+        return ("🟢 TAHAN",
+                "Tren naik — biarkan profit jalan, pasang stop loss di bawah "
+                "support.")
+    if ts_pct > -20:
+        return ("🟡 TAHAN dengan SL ketat",
+                "Tren belum jelas — tahan, tapi pasang stop loss supaya profit "
+                "tidak berubah jadi rugi.")
+    if ts_pct > -50:
+        return ("🟠 Pertimbangkan JUAL SEBAGIAN",
+                "Tren melemah — amankan sebagian profit/modal, sisanya pasang "
+                "stop loss.")
+    extra = (" Harga sudah di bawah support "
+             f"{fmt_rp(support)}." if close < support else "")
+    return ("🔴 Pertimbangkan JUAL / cut loss",
+            "Downtrend kuat. Jangan ditahan dengan harapan." + extra)
+
+
+def build_verdict(res: dict, fund: dict | None, news_sent: dict | None,
+                  focus: str) -> str:
+    snap, sc, sr = res["snap"], res["score"], res["sr"]
+    t = res["ticker"]
+    fund_pct = fund["pct"] if fund else None
+    news_pct = news_sent["pct"] if news_sent else None
+    pw = powerscore.combine(sc["pct"], fund_pct, news_pct)
+    close = snap["close"]
+
+    last = res["ind"].iloc[-1]
+    atr = float(last["atr14"]) if not pd.isna(last.get("atr14", float("nan"))) else None
+    sl_beli = close - atr if atr else sr["support"]
+    tp_beli = close + 2 * atr if atr else sr["resistance"]
+
+    beli_judul, beli_alasan = _verdict_beli(pw["pct"])
+    jual_judul, jual_alasan = _verdict_jual(sc["pct"], close, sr["support"])
+
+    title = {"beli": f"🛒 <b>Beli {t}?</b>",
+             "jual": f"💰 <b>Jual {t}?</b>",
+             "umum": f"⚖️ <b>Beli atau jual {t}?</b>"}[focus]
+
+    if focus == "beli":
+        headline = f"<b>Jawaban singkat: {beli_judul}</b>\n{beli_alasan}"
+        other = f"\nKalau sudah pegang: {jual_judul}"
+    elif focus == "jual":
+        headline = f"<b>Jawaban singkat: {jual_judul}</b>\n{jual_alasan}"
+        other = f"\nKalau belum punya: {beli_judul}"
+    else:
+        headline = (f"<b>Kalau belum punya: {beli_judul}</b>\n{beli_alasan}\n"
+                    f"<b>Kalau sudah pegang: {jual_judul}</b>\n{jual_alasan}")
+        other = ""
+
+    reasons = []
+    if sc["pct"] < 0 and sc["bear"]:
+        top = "; ".join(esc(s) for s in sc["bear"][:2])
+        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(sc['rating'])}): {top}")
+    elif sc["bull"]:
+        top = "; ".join(esc(s) for s in sc["bull"][:2])
+        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(sc['rating'])}): {top}")
+    else:
+        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(sc['rating'])})")
+    if fund:
+        notes = "; ".join(esc(n) for n in fund.get("notes", [])[:2])
+        reasons.append(f"Fundamental {fund['pct']:+.0f}% ({esc(fund['label'])}): "
+                       f"{notes}" if notes else
+                       f"Fundamental {fund['pct']:+.0f}% ({esc(fund['label'])})")
+    if news_sent:
+        reasons.append(f"Berita {news_sent['pct']:+.0f}% "
+                       f"({news_sent['n']} berita)")
+    reasons_txt = "\n".join(f"  • {r}" for r in reasons)
+
+    conds = []
+    if snap.get("sma50") and close < snap["sma50"]:
+        conds.append(f"Kalau harga tembus ke atas MA50 ({fmt_rp(snap['sma50'])}) "
+                     "→ teknikal membaik.")
+    elif snap.get("sma20") and close < snap["sma20"]:
+        conds.append(f"Kalau harga tembus ke atas MA20 ({fmt_rp(snap['sma20'])}) "
+                     "→ momentum jangka pendek membaik.")
+    if snap["rsi"] < 30:
+        conds.append("RSI sudah oversold — pantau pantulan, tapi jangan tangkap "
+                     "pisau jatuh.")
+    if abs(close - sr["support"]) / close < 0.03:
+        conds.append(f"Harga dekat support {fmt_rp(sr['support'])} — kalau jebol, "
+                     "sinyal makin buruk.")
+    elif close > sr["resistance"] * 0.97:
+        conds.append(f"Kalau tembus resistance {fmt_rp(sr['resistance'])} → "
+                     "momentum naik.")
+    conds_txt = "\n".join(f"  • {esc(c)}" for c in conds[:2])
+
+    trap = powerscore.trap_warning(snap.get("ret20d"), snap.get("ret1d"))
+    trap_txt = f"\n{trap}" if trap else ""
+
+    return (
+        f"{res.get('stale_note', '')}{title}\n"
+        f"Harga: <b>{fmt_rp(close)}</b> "
+        f"({snap['ret1d']:+.2f}% 1d, {snap['ret20d']:+.2f}% 20d) | "
+        f"PowerScore <b>{pw['pct']:+d}% {pw['emoji']} {pw['rating']}</b>\n\n"
+        f"{headline}{other}\n\n"
+        f"<b>Kenapa:</b>\n{reasons_txt}\n\n"
+        f"<b>Level penting:</b>\n"
+        f"  Support: {fmt_rp(sr['support'])} | Resistance: {fmt_rp(sr['resistance'])}\n"
+        f"  Kalau beli — SL: {fmt_rp(sl_beli)} (1×ATR) | "
+        f"TP: {fmt_rp(tp_beli)} (2×ATR)\n"
+        f"{('<b>Yang bisa mengubah jawaban:</b>\n' + conds_txt + chr(10)) if conds_txt else ''}"
+        f"{trap_txt}\n"
+        f"🔒 <i>Bukan saran investasi. Skor bot = deskripsi kondisi saat itu, "
+        f"bukan ramalan. DYOR!</i>"
+    )
+
+
 # ---------------------------------------------------------------- menu interaktif
 # /start menampilkan tombol; semua fitur bisa dipakai tanpa mengetik perintah.
 # Alur: tombol aksi -> (pilih emiten dari tombol cepat / ketik manual) -> hasil.
@@ -164,6 +339,8 @@ NEED_TICKER = {
     "berita": "📰 Berita",
     "fundamental": "💰 Fundamental",
     "backtest": "📈 Backtest",
+    "beli": "🛒 Beli",
+    "jual": "💰 Jual",
 }
 
 # chat_id -> aksi yang sedang menunggu input emiten
@@ -180,6 +357,8 @@ def main_menu_markup() -> InlineKeyboardMarkup:
          InlineKeyboardButton("💰 Fundamental", callback_data="pick:fundamental")],
         [InlineKeyboardButton("💡 Saran", callback_data="run:saran"),
          InlineKeyboardButton("📈 Backtest", callback_data="pick:backtest")],
+        [InlineKeyboardButton("🛒 Beli", callback_data="pick:beli"),
+         InlineKeyboardButton("💰 Jual", callback_data="pick:jual")],
         [InlineKeyboardButton("👀 Watchlist", callback_data="run:watch"),
          InlineKeyboardButton("🔔 Alert", callback_data="run:alert")],
         [InlineKeyboardButton("🏦 Bandar", callback_data="run:bandar"),
@@ -238,6 +417,8 @@ _MANUAL_PROMPT = {
     "berita": "Ketik kode emiten untuk beritanya (contoh: <code>BBCA</code>):",
     "fundamental": "Ketik kode emiten untuk fundamentalnya (contoh: <code>BBRI</code>):",
     "backtest": "Ketik kode emiten untuk di-backtest (contoh: <code>BBCA</code>):",
+    "beli": "Mau beli emiten apa? Ketik kodenya (contoh: <code>BBCA</code>):",
+    "jual": "Mau jual emiten apa? Ketik kodenya (contoh: <code>TLKM</code>):",
     "watch_add": "Ketik kode emiten yang mau ditambah ke watchlist (contoh: <code>ANTM</code>):",
     "watch_del": "Ketik kode emiten yang mau dihapus dari watchlist:",
     "alert_add": "Ketik kode emiten untuk alarm (jenis default: jump, drop, breakout, oversold, overbought, ma_golden, ma_death):",
@@ -392,6 +573,34 @@ async def _do_backtest(update: Update, ticker: str):
     await msg.reply_text("\n".join(parts), parse_mode=ParseMode.HTML,
                          disable_web_page_preview=True,
                          reply_markup=result_markup("backtest", t))
+
+
+async def _do_tanya(update: Update, ticker: str, focus: str):
+    """Jawab 'beli/jual gak?' untuk satu emiten (focus: beli/jual/umum)."""
+    msg = update.effective_message
+    t = ticker.upper()
+    try:
+        res = await fetch_and_analyze(t)
+    except ValueError as e:
+        await msg.reply_text(f"❌ {e}", reply_markup=home_markup())
+        return
+    fund_f = asyncio.to_thread(fundamental.fetch_fundamentals, t)
+    news_f = asyncio.to_thread(news.fetch_news, t)
+    try:
+        fund, items = await asyncio.gather(fund_f, news_f, return_exceptions=True)
+    except Exception:
+        fund, items = None, None
+    if isinstance(fund, Exception) or fund is None:
+        fund, fsc = None, None
+    else:
+        fsc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
+    if isinstance(items, Exception) or not items:
+        nsent = None
+    else:
+        nsent = await asyncio.to_thread(news.news_sentiment, items)
+    await msg.reply_text(build_verdict(res, fsc, nsent, focus),
+                         parse_mode=ParseMode.HTML,
+                         reply_markup=result_markup(f"tanya_{focus}", t))
 
 
 async def _do_saran(update: Update, list_only: bool = False):
@@ -560,6 +769,16 @@ async def run_menu_action(update: Update, action: str, tickers: list[str]):
         await _do_fundamental(update, tickers[0])
     elif action == "backtest":
         await _do_backtest(update, tickers[0])
+    elif action == "beli":
+        await _do_tanya(update, tickers[0], "beli")
+    elif action == "jual":
+        await _do_tanya(update, tickers[0], "jual")
+    elif action == "tanya_beli":
+        await _do_tanya(update, tickers[0], "beli")
+    elif action == "tanya_jual":
+        await _do_tanya(update, tickers[0], "jual")
+    elif action == "tanya_umum":
+        await _do_tanya(update, tickers[0], "umum")
     elif action == "saran":
         await _do_saran(update)
     elif action == "saran_list":
@@ -662,10 +881,25 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def menu_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Teks biasa: hanya diproses kalau chat sedang menunggu input emiten."""
+    """Teks biasa: hanya diproses kalau chat sedang menunggu input emiten,
+    atau kalau teksnya pertanyaan beli/jual ('BBCA beli gak?')."""
     chat_id = update.effective_chat.id
     action = PENDING.get(chat_id)
     if not action:
+        if ALLOWED_IDS and update.effective_user.id not in ALLOWED_IDS:
+            return
+        parsed = parse_tanya(update.effective_message.text or "")
+        if parsed:
+            focus, ticker = parsed
+            if ticker:
+                await _do_tanya(update, ticker, focus)
+            else:
+                pick_action = "beli" if focus != "jual" else "jual"
+                label = "🛒 Beli" if pick_action == "beli" else "💰 Jual"
+                await update.effective_message.reply_text(
+                    f"{label} — pilih emiten:",
+                    reply_markup=ticker_pick_markup(
+                        pick_action, store.get_watchlist(chat_id)))
         return
     if ALLOWED_IDS and update.effective_user.id not in ALLOWED_IDS:
         PENDING.pop(chat_id, None)
@@ -701,6 +935,8 @@ async def _post_init(app: Application):
         BotCommand("berita", "Berita + sentimen emiten"),
         BotCommand("fundamental", "PER/PBV/ROE/dividen/DER"),
         BotCommand("saran", "Kandidat BUY harian + paper trading"),
+        BotCommand("beli", "Tanya: layak beli? mis. /beli BBCA"),
+        BotCommand("jual", "Tanya: layak jual? mis. /jual BBCA"),
         BotCommand("bandar", "Data resmi BEI / IHSG"),
         BotCommand("backtest", "Backtest 5 tahun emiten"),
         BotCommand("watch", "Kelola watchlist"),
@@ -1147,6 +1383,30 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "\n".join(parts), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+async def cmd_beli(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Jawab 'layak beli gak?' untuk satu emiten."""
+    args = tokens(update)
+    if not args:
+        await update.effective_message.reply_text(
+            "🛒 Beli — pilih emiten:",
+            reply_markup=ticker_pick_markup(
+                "beli", store.get_watchlist(update.effective_chat.id)))
+        return
+    await _do_tanya(update, args[0], "beli")
+
+
+async def cmd_jual(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Jawab 'layak jual gak?' untuk satu emiten (sudut pandang yang pegang)."""
+    args = tokens(update)
+    if not args:
+        await update.effective_message.reply_text(
+            "💰 Jual — pilih emiten:",
+            reply_markup=ticker_pick_markup(
+                "jual", store.get_watchlist(update.effective_chat.id)))
+        return
+    await _do_tanya(update, args[0], "jual")
+
+
 
 
 # ---------------------------------------------------------------- scanner
@@ -1258,6 +1518,8 @@ def main():
     reg("backtest", cmd_backtest)
     reg("watch", cmd_watch)
     reg(["saran", "recommendasi"], cmd_saran)
+    reg(["beli", "buy"], cmd_beli)
+    reg(["jual", "sell"], cmd_jual)
     reg(["bandar", "ihsg"], cmd_bandar)
     reg("alert", cmd_alert)
     ALLOWED_IDS.update(user_ids)
