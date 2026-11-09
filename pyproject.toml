@@ -8,3 +8,6 @@ select = ["F", "E9", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
