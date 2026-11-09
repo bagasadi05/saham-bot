@@ -6,7 +6,8 @@ store.db-shm
 store.json
 store.json.migrated
 heartbeat.txt
-data/
+data/*
+!data/validation.json
 temp/
 
 # model ML besar (diunduh saat build, bukan di-commit)

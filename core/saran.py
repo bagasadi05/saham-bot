@@ -12,7 +12,7 @@ from datetime import date
 
 import pandas as pd
 
-from core import powerscore, store
+from core import powerscore, relatif, store
 
 DEFAULT_UNIVERSE = [
     "BBCA", "BBRI", "BMRI", "BBNI", "TLKM", "ASII",
@@ -109,8 +109,11 @@ def pick(analyzed: list[dict], modal: int | None = None,
          open_recs: dict[str, dict] | None = None) -> dict:
     """Ranking hasil analisis → kandidat BUY & daftar HINDARI.
 
-    analyzed: list of {res, fund, nsent, fund_raw}.
-    open_recs: posisi latihan yang masih open/pending (untuk batas portofolio).
+    Sejak evaluasi OOS (research/evaluation.md), urutan kandidat memakai skor
+    RELATIF antar-emiten (core/relatif.py, IC OOS +0,031) — bukan PowerScore,
+    yang komponennya tidak punya daya prediksi terukur. Kalau universe terlalu
+    kecil (<8 emiten) untuk statistik cross-sectional, kembali ke PowerScore.
+    Batas portofolio (open_recs, MAX_OPEN, MAX_PER_SECTOR) tetap dihormati.
     """
     open_recs = open_recs or {}
     open_count = len(open_recs)
@@ -125,11 +128,37 @@ def pick(analyzed: list[dict], modal: int | None = None,
         except Exception:
             continue
 
+    # peringkat relatif di dalam universe pemindaian
+    items = [a["res"] for a in analyzed if hasattr(a.get("res", {}).get("ind"), "iloc")]
+    relatif.score_universe(items)
+    by_ticker = {it["ticker"]: it for it in items}
+    for c in cands:
+        it = by_ticker.get(c["ticker"], {})
+        c["rel_pct"] = it.get("rel_pct")
+        c["rel_quintil"] = it.get("rel_quintil")
+        c["rel_ok"] = bool(it.get("rel_ok"))
+
+    use_rel = sum(1 for c in cands if c["rel_ok"]) >= relatif.MIN_UNIVERSE
+    if use_rel:
+        pool = [c for c in cands if c["rel_ok"] and c["rel_pct"] is not None]
+        ranked = sorted(pool, key=lambda c: -c["rel_pct"])
+        avoid = sorted(pool, key=lambda c: c["rel_pct"])[:TOP_N]
+        mode = "relatif"
+    else:
+        ranked = sorted(cands, key=lambda c: -c["power"])
+        avoid = sorted(cands, key=lambda c: c["power"])[:TOP_N]
+        mode = "powerscore"
+
     buys: list[dict] = []
-    for c in sorted(cands, key=lambda c: -c["power"]):
+    for c in ranked:
         if len(buys) >= TOP_N:
             break
-        if c["power"] < 20 or c["ret20d"] > TRAP_RET20D:
+        if c["ret20d"] > TRAP_RET20D:
+            continue
+        if use_rel:
+            if c["rel_pct"] < 60:
+                continue
+        elif c["power"] < 20:
             continue
         if c["ticker"] in open_recs:
             continue  # sudah punya posisi (open/pending) di emiten ini
@@ -143,8 +172,7 @@ def pick(analyzed: list[dict], modal: int | None = None,
                 continue
         buys.append(c)
 
-    avoid = sorted(cands, key=lambda c: c["power"])[:TOP_N]
-    return {"picks": buys, "avoid": avoid,
+    return {"picks": buys, "avoid": avoid, "mode": mode,
             "open_count": open_count, "max_open": MAX_OPEN}
 
 

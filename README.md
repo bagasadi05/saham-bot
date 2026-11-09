@@ -25,7 +25,8 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
    hasil backtest statistik kini **net setelah biaya**.
    CLI: `python backtest.py BBCA` & `python backtest_real.py BBCA`.
 - **Watchlist & alert** — `/watch`, `/alert add BBCA jump breakout`: dicek tiap 30 menit saat bursa buka (hari bursa XIDX, 09:00–16:00 WIB). Alert **hanya dikirim saat kondisi berubah** (False → True), tidak lagi diulang tiap 30 menit selama kondisi bertahan.
-- **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**. Posisi dicatat **realistis**: masuk antrean `pending` dan baru dibeli di **harga open sesi berikutnya**, PnL dihitung setelah biaya beli 0,15% & jual 0,25%, ditutup otomatis setelah ±20 hari bursa, maksimal 5 posisi terbuka & 2 per sektor. `/saran list` = rekap posisi + rata-rata hasil net; riwayat menyimpan **20 posisi selesai terakhir** per chat agar rekap tidak membengkak.
+- **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**. Urutan kandidat memakai **skor relatif 12 faktor** (`core/relatif.py`) yang lolos uji walk-forward (fallback ke PowerScore bila universe < 8 emiten) — lihat `/validasi`. Posisi dicatat **realistis**: masuk antrean `pending` dan baru dibeli di **harga open sesi berikutnya**, PnL dihitung setelah biaya beli 0,15% & jual 0,25%, ditutup otomatis setelah ±20 hari bursa, maksimal 5 posisi terbuka & 2 per sektor. `/saran list` = rekap posisi + rata-rata hasil net; riwayat menyimpan **20 posisi selesai terakhir** per chat agar rekap tidak membengkak.
+- **/validasi** — menampilkan hasil uji statistik yang tersimpan: IC skor lama (antar-emiten & dalam satu emiten), excess return per rating, IC walk-forward per tahun, kalibrasi kuintil OOS, dan hasil uji Kronos. Angkanya hasil `research/evaluate.py`, bukan klaim.
 - **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, **±1–2 menit** — 4 emiten diproses paralel, progres bertahap tiap 10 emiten).
 - **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
 - **/banding BBCA BBRI BMRI** — tabel pembanding PER/PBV/ROE/dividend yield/return 1 thn/20 hari/PowerScore + fakta "paling murah/mahal menurut PBV" (deskriptif). Data pembanding yang gagal dilaporkan jujur.
@@ -55,6 +56,8 @@ maksimum ±90% dan rating: STRONG BUY / BUY / NETRAL / SELL / STRONG SELL.
 
 ```bash
 cd saham-bot
+python -m venv .venv
+. .venv/bin/activate        # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 # opsional — model sentimen ML (~500 MB, butuh torch/transformers):
 pip install -r requirements-ml.txt && python download_model.py
@@ -83,7 +86,13 @@ ruff check .     # lint (F, E9, B; line-length 100)
 ./run.sh          # baca BOT_TOKEN dari .env otomatis + fix NO_PROXY VPS
 ```
 
-atau langsung:
+Windows (PowerShell):
+
+```powershell
+.\run.ps1         # padanan run.sh: muat .env, pakai .venv, cek token
+```
+
+`bot.py` juga memuat `.env` sendiri (tanpa dependensi tambahan), jadi ini tetap jalan:
 
 ```bash
 BOT_TOKEN="123456:ABC-DEF..." python bot.py
@@ -135,6 +144,32 @@ masih belum profitable** setelah biaya (win-rate 29-32%, PF 0,48-0,64) — meski
 kalah lebih aman daripada buy & hold pada BBCA/TLKM yang sedang downtrend.
 Pemakaian paling sehat: **pelindung** (skip sinyal buruk, alarm pergerakan),
 bukan mesin buy otomatis.
+
+### Uji statistik 45 emiten (2017–2026, horizon 20 hari)
+
+Setelah skor diuji ulang secara cross-sectional + walk-forward
+(`research/`, ringkasnya di `/validasi`):
+
+| Metrik | Hasil | Arti |
+|---|---|---|
+| IC skor antar-emiten | **+0,0115** (t=2,68) | praktis nol |
+| IC skor dalam satu emiten | **−0,0207** (t=−2,33) | sedikit berlawanan arah |
+| Excess STRONG BUY | +0,46% / 20 hari | tipis (menang 46%) |
+| Excess STRONG SELL | −0,01% / 20 hari | label ekstrem bawah tidak informatif |
+| Walk-forward 12 faktor | +0,047 / +0,048 / +0,025 / **−0,026** / +0,063 | 4 dari 5 tahun positif |
+| Kuintil OOS Q5 vs Q1 | +0,42% vs −0,24% | selisih 0,67% / 20 hari |
+
+Konsekuensinya di kode:
+
+1. **Skor teknikal tidak lagi dipakai memilih saham.** Di `/analisis` labelnya
+   tetap ada sebagai bacaan tren, dengan catatan eksplisit bahwa IC-nya ≈ nol.
+2. **`/saran` memeringkat kandidat dengan skor relatif** 12 faktor
+   (`core/relatif.py`) — bobot dibekukan dari walk-forward, bukan PowerScore.
+   Kalau universe < 8 emiten (statistik cross-sectional tak berarti), bot
+   kembali ke PowerScore dan mengatakannya.
+3. **Tetap tipis.** IC 0,03 bukan mesin uang; biaya transaksi IDX (±0,5%
+   pulang-pergi) memakan sebagian besar selisih kuintil. Perlakukan sebagai
+   pemeringkat kandidat, bukan jaminan.
 
 ## 📚 Sumber terbuka yang menyuporti botini
 

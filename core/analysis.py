@@ -49,6 +49,9 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["low20"] = df["low"].rolling(20).min()
     df["ret1d"] = df["close"].pct_change() * 100
     df["ret20d"] = df["close"].pct_change(20) * 100
+    # volatilitas 20 hari (standar deviasi return harian, fraksi) — dipakai
+    # faktor relatif; definisinya sama persis dengan harness riset
+    df["volat20"] = df["ret1d"].rolling(20).std() / 100
 
     # ---- indikator pro (pandas-ta-classic), untuk sinyal konfirmasi & SL/TP ----
     try:

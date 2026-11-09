@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import html
+import json
 import logging
 import os
 import re
@@ -310,6 +311,8 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
         f"{('\nKonfirmasi indikator pro:\n' + conf_txt) if conf_txt else ''}\n"
         f"{headline_txt}\n\n"
         f"{market_context_line(res, mkt)}\n"
+        f"ℹ️ <i>Skor teknikal = bacaan tren, bukan sinyal beli "
+        f"(uji 2017–2026: IC +0,01 ≈ nol). Peringkat antar-emiten ada di /saran.</i>\n"
         f"🔒 <i>Bukan saran investasi. DYOR!</i>"
     )
 
@@ -1351,13 +1354,23 @@ async def saran_scan_text(chat_id: int, universe: list[str] | None = None,
              f"(maks {saranmod.MAX_PER_SECTOR} per sektor)\n"]
     if result["picks"]:
         saranmod.queue_paper(chat_id, result["picks"], today)
-        lines.append("Kandidat BUY (urut PowerScore, diantre sebagai posisi latihan):")
+        label = ("Kandidat (urut skor relatif antar-emiten — IC OOS +0,03, "
+                 "tipis; setelah biaya ≈ 0)"
+                 if result.get("mode") == "relatif"
+                 else "Kandidat (urut PowerScore — universe terlalu kecil "
+                      "untuk skor relatif)")
+        lines.append(f"{label}, diantre sebagai posisi latihan:")
         for c in result["picks"]:
             fund_txt = "—" if c["fund"] is None else f"{c['fund']:+.0f}"
             news_txt = "—" if c["news"] is None else f"{c['news']:+.0f}"
+            rel_txt = ""
+            if c.get("rel_ok") and c.get("rel_pct") is not None:
+                rel_txt = (f"\n      📊 Relatif {c['rel_pct']:.0f}/100 "
+                           f"(kuintil {c['rel_quintil']}/5)")
             lines.append(
                 f"  {c['emoji']} <b>{c['ticker']}</b> power {c['power']:+d}% "
-                f"(tek {c['tech']:+.0f}, fund {fund_txt}, berita {news_txt})\n"
+                f"(tek {c['tech']:+.0f}, fund {fund_txt}, berita {news_txt})"
+                f"{rel_txt}\n"
                 f"      Entry {saranmod.fmt(c['entry'])} | SL {saranmod.fmt(c['sl'])} | "
                 f"TP {saranmod.fmt(c['tp'])}")
             # [P5] ukuran posisi: risiko 1% modal, floor ke lot 100
@@ -1378,13 +1391,125 @@ async def saran_scan_text(chat_id: int, universe: list[str] | None = None,
                      "(semua skor tak mencukupi / terkena filter jebakan momentum).")
     lines.append("\n🚫 HINDARI (terlemah):")
     for c in result["avoid"]:
-        lines.append(f"  {c['emoji']} <b>{c['ticker']}</b> {c['power']:+d}% — "
-                     f"{'jebakan momentum' if c['ret20d'] > 15 else 'teknikal lemah'}")
+        rel_txt = (f"relatif {c['rel_pct']:.0f}/100"
+                   if c.get("rel_ok") and c.get("rel_pct") is not None
+                   else f"{c['power']:+d}%")
+        reason = ("jebakan momentum" if c["ret20d"] > saranmod.TRAP_RET20D
+                  else "terlemah di universe")
+        lines.append(f"  {c['emoji']} <b>{c['ticker']}</b> {rel_txt} — {reason}")
     if paper_msgs:
         lines.append("")
         lines.extend(paper_msgs)
     lines.append("\n⚠️ Alat bantu latihan, bukan saran formal. DYOR!")
     return "\n".join(lines)
+
+
+VALIDASI_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "data", "validation.json")
+
+
+def load_validation(path: str = VALIDASI_FILE) -> dict | None:
+    """Baca hasil riset yang di-commit. None kalau belum ada / rusak."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def format_validasi(v: dict) -> str:
+    """Susun laporan /validasi. Semua angka berasal dari file hasil uji."""
+    m = v.get("meta", {})
+    sc = v.get("score", {})
+    ic = sc.get("ic", {})
+    ts = sc.get("ic_timeseries", {})
+    L = ["🔬 <b>VALIDASI SKOR — hasil uji, bukan klaim</b>",
+         f"{m.get('start')} → {m.get('end')} · {m.get('n_tickers')} emiten · "
+         f"{m.get('n_rows', 0):,} observasi · horizon {m.get('horizon')} hari bursa",
+         ""]
+
+    def verdict(val, hi=0.03):
+        if val is None:
+            return "tidak tersedia"
+        a = abs(val)
+        if a < hi:
+            return "praktis nol"
+        if a < 0.05:
+            return "lemah"
+        return "layak"
+
+    L.append("<b>1. Skor teknikal lama</b>")
+    L.append(f"IC antar-emiten: {ic.get('mean_ic')} (t={ic.get('t')}) — "
+             f"{verdict(ic.get('mean_ic'))}")
+    ts_note = ("sedikit berlawanan arah" if (ts.get("mean_ic") or 0) < 0
+               else verdict(ts.get("mean_ic")))
+    L.append(f"IC dalam satu emiten: {ts.get('mean_ic')} (t={ts.get('t')}) — "
+             f"{ts_note}")
+    L.append("→ jadi skor dipakai sebagai <b>bacaan tren</b>, bukan sinyal beli.")
+    L.append("")
+
+    L.append("<b>2. Excess return per rating</b> (vs rata-rata pasar, 20 hari)")
+    for r in v.get("ratings", []):
+        L.append(f"  {r['rating']}: {r['excess_pct']:+.2f}% "
+                 f"(menang {r['excess_win_rate']:.0f}%, n={r['n']:,})")
+    L.append("")
+
+    L.append("<b>3. Walk-forward</b> (latih masa lalu → uji tahun berikutnya)")
+    for r in v.get("walk_forward", []):
+        if r.get("ic_model") is None:
+            continue
+        L.append(f"  {r['year']}: skor lama {r['ic_score']:+.3f} | "
+                 f"model {r['ic_model']:+.3f} | gabungan {r['ic_blend']:+.3f}")
+    L.append("")
+
+    q = v.get("quintiles", [])
+    if q:
+        L.append("<b>4. Kuintil prediksi OOS</b> (excess per 20 hari)")
+        L.append("  " + " · ".join(f"Q{r['quintile']} {r['excess_pct']:+.2f}%"
+                                    for r in q))
+        L.append("")
+
+    p = v.get("portfolio")
+    if p:
+        L.append(f"<b>5. Setelah biaya transaksi</b> (kuintil teratas, "
+                 f"rebalance {p.get('holding_days')} hari)")
+        L.append(f"  alpha bruto {p['alpha_gross_mean_pct']:+.2f}% → "
+                 f"<b>neto {p['alpha_net_mean_pct']:+.2f}%</b> per periode "
+                 f"(biaya {p['cost_per_round_trip_pct']:.2f}%, "
+                 f"turnover {p['avg_turnover_pct']:.0f}%)")
+        L.append(f"  {p['phases_net_positive']}/{p['n_phases']} fase positif · "
+                 f"median neto {p['alpha_net_median_pct']:+.2f}%")
+        L.append("  → biaya hampir menghabiskan keunggulan; jangan baca "
+                 "peringkat sebagai jaminan untung.")
+        L.append("")
+
+    k = v.get("kronos")
+    if k:
+        ic_k = (k.get("ic") or {}).get("kronos") or {}
+        ic_s = (k.get("ic") or {}).get("score") or {}
+        L.append("<b>6. Kronos vs skor</b> (uji OOS, data yang sama)")
+        L.append(f"  Kronos IC {ic_k.get('mean_ic')} (t={ic_k.get('t')}) vs "
+                 f"skor {ic_s.get('mean_ic')} (t={ic_s.get('t')})")
+        L.append(f"  {k.get('n_obs')} titik · {k.get('n_tickers')} emiten · "
+                 f"{k.get('n_dates')} tanggal")
+        L.append("")
+
+    L.append("<i>Angka di atas bisa berbeda antar periode; IC 0,03 tetap tipis "
+             "dan setelah biaya transaksi keunggulannya ≈ 0. Skor relatif "
+             "dipakai untuk memeringkat kandidat, bukan menjamin keuntungan.</i>")
+    return "\n".join(L)
+
+
+async def cmd_validasi(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Tampilkan hasil uji statistik yang tersimpan (tanpa hitung ulang)."""
+    v = await asyncio.to_thread(load_validation)
+    if v is None:
+        await update.effective_message.reply_text(
+            "Belum ada data validasi. Jalankan `python research/evaluate.py` "
+            "lalu `python research/publish.py`.", parse_mode=ParseMode.HTML)
+        return
+    await update.effective_message.reply_text(format_validasi(v),
+                                              parse_mode=ParseMode.HTML)
 
 
 async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1681,6 +1806,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <b>/backtest BBCA</b> — akurasi statistik + simulasi transaksi\n"
         "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n"
         "• <b>/belajar RSI</b> — kamus istilah: cara baca + jebakan umumnya\n"
+        "• <b>/validasi</b> — hasil uji statistik skor (IC, walk-forward, Kronos)\n"
         "• <b>/beli BBCA</b> / <b>/jual BBCA</b> — tanya layak beli/jual\n"
         "• <b>/auto on</b> — ringkasan harian otomatis ±08:30 WIB (Senin–Jumat)\n\n"
         "⚠️ Bukan saran investasi — selalu DYOR!",
@@ -2199,6 +2325,7 @@ def main():
     reg(["banding", "bandingkan"], cmd_banding)
     reg("alert", cmd_alert)
     reg(["agenda", "korporasi"], cmd_agenda)
+    reg(["validasi", "validity"], cmd_validasi)
     reg("modal", cmd_modal)
     reg("auto", cmd_auto)
     reg("status", cmd_status)
