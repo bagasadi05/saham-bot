@@ -112,3 +112,59 @@ def market_open(now: dt.datetime | None = None) -> bool:
 
 def now_wib() -> dt.datetime:
     return dt.datetime.now(WIB)
+
+
+def _coerce_date(val) -> dt.date | None:
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple)):
+        for item in val:
+            parsed = _coerce_date(item)
+            if parsed is not None:
+                return parsed
+        return None
+    if isinstance(val, dt.datetime):
+        return val.date()
+    if isinstance(val, dt.date):
+        return val
+    if hasattr(val, "date") and callable(val.date):
+        try:
+            return val.date()
+        except Exception:
+            return None
+    try:
+        return dt.date.fromisoformat(str(val)[:10])
+    except ValueError:
+        return None
+
+
+def upcoming_dividend_exdate(ticker: str,
+                             today: dt.date | None = None) -> dict | None:
+    """[P10] Ambil ex-date dividen mendatang dari Yahoo calendar jika ada."""
+    from core import data as datamod
+    import yfinance as yf
+
+    today = today or now_wib().date()
+    try:
+        sym = datamod.normalize_ticker(ticker)
+        tk = yf.Ticker(sym)
+        cal = tk.calendar or {}
+    except Exception:
+        return None
+    if isinstance(cal, list) and cal:
+        cal = cal[0] if isinstance(cal[0], dict) else {}
+    if not isinstance(cal, dict):
+        return None
+    ex_date = _coerce_date(cal.get("Ex-Dividend Date"))
+    if ex_date is None or ex_date < today:
+        return None
+    amt_raw = cal.get("Dividend Rate") or cal.get("Dividend")
+    amount = None
+    if amt_raw is not None:
+        try:
+            f = float(amt_raw)
+            if f > 0:
+                amount = f
+        except (TypeError, ValueError):
+            amount = None
+    return {"ex_date": ex_date, "amount": amount}

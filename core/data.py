@@ -26,7 +26,7 @@ _CACHE_DIR = os.getenv("SAHAMBOT_CACHE", os.path.join("temp", "cache"))
 _MAX_RETRIES = int(os.getenv("YF_RETRIES", "3"))
 _TTL_SECONDS = int(os.getenv("SAHAMBOT_TTL", "300") or 0)
 
-_mem: dict[tuple[str, str], tuple[float, pd.DataFrame]] = {}
+_mem: dict[tuple, tuple[float, pd.DataFrame]] = {}
 _mem_lock = threading.Lock()
 _stats = {"hit": 0, "miss": 0}
 
@@ -72,7 +72,7 @@ def _as_of(df) -> str:
 
 # ------------------------------------------------------------ cache RAM -----
 
-def _mem_get(key: tuple[str, str]):
+def _mem_get(key: tuple):
     if _TTL_SECONDS <= 0:
         return None
     with _mem_lock:
@@ -85,7 +85,7 @@ def _mem_get(key: tuple[str, str]):
     return df.copy()
 
 
-def _mem_put(key: tuple[str, str], df):
+def _mem_put(key: tuple, df):
     if _TTL_SECONDS <= 0:
         return
     with _mem_lock:
@@ -94,14 +94,15 @@ def _mem_put(key: tuple[str, str], df):
 
 # ------------------------------------------------------------ cache disk ----
 
-def _cache_path(symbol: str) -> str:
-    return os.path.join(_CACHE_DIR, f"{symbol}.csv")
+def _cache_path(symbol: str, interval: str = "1d") -> str:
+    suffix = "" if interval == "1d" else f"_{interval}"
+    return os.path.join(_CACHE_DIR, f"{symbol}{suffix}.csv")
 
 
-def _save_cache(symbol: str, df):
+def _save_cache(symbol: str, df, interval: str = "1d"):
     try:
         os.makedirs(_CACHE_DIR, exist_ok=True)
-        path = _cache_path(symbol)
+        path = _cache_path(symbol, interval)
         tmp = path + ".tmp"
         df.to_csv(tmp)
         os.replace(tmp, path)  # atomik: pembaca tak pernah lihat file setengah jadi
@@ -109,8 +110,8 @@ def _save_cache(symbol: str, df):
         pass  # cache gagal menulis tak menggagalkan bot
 
 
-def _load_cache(symbol: str):
-    p = _cache_path(symbol)
+def _load_cache(symbol: str, interval: str = "1d"):
+    p = _cache_path(symbol, interval)
     if not os.path.exists(p):
         return None
     try:
@@ -141,15 +142,11 @@ def _validate(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     return df
 
 
-def fetch_history(ticker: str, period: str = DEFAULT_PERIOD,
-                  raw_symbol: bool = False):
-    """Ambil OHLCV history. Return DataFrame (attrs STALE bisa true) atau None.
-
-    raw_symbol=True dipakai untuk simbol non-emiten seperti indeks '^JKSE'.
-    Hasil live dicache di memori selama SAHAMBOT_TTL detik.
-    """
+def _fetch_bars(ticker: str, period: str = DEFAULT_PERIOD,
+                interval: str = "1d", raw_symbol: bool = False):
+    """Ambil OHLCV dengan cache memori, retry, dan fallback cache disk."""
     symbol = ticker if raw_symbol else normalize_ticker(ticker)
-    key = (symbol, period)
+    key = (symbol, period) if interval == "1d" else (symbol, period, interval)
     cached_mem = _mem_get(key)
     if cached_mem is not None:
         return cached_mem
@@ -158,7 +155,7 @@ def fetch_history(ticker: str, period: str = DEFAULT_PERIOD,
     last_exc = None
     for attempt in range(_MAX_RETRIES):
         try:
-            df = yf.download(symbol, period=period, interval="1d",
+            df = yf.download(symbol, period=period, interval=interval,
                              auto_adjust=True, progress=False)
             if df is not None and not df.empty:
                 last_exc = None
@@ -169,7 +166,7 @@ def fetch_history(ticker: str, period: str = DEFAULT_PERIOD,
             time.sleep(5 * (2 ** attempt))  # 5, 10 detik — tanpa tidur sia-sia di akhir
 
     if df is None or df.empty:
-        cached = _load_cache(symbol)
+        cached = _load_cache(symbol, interval)
         if cached is not None:
             return cached
         if last_exc:
@@ -181,7 +178,7 @@ def fetch_history(ticker: str, period: str = DEFAULT_PERIOD,
     df = df.rename(columns=str.lower)
     needed = {"open", "high", "low", "close", "volume"}
     if not needed.issubset(df.columns):
-        cached = _load_cache(symbol)
+        cached = _load_cache(symbol, interval)
         return cached if cached is not None else None
     df = df.dropna(subset=["close"])
     df = _validate(df, symbol)
@@ -189,9 +186,27 @@ def fetch_history(ticker: str, period: str = DEFAULT_PERIOD,
         return None
     df.attrs["stale"] = False
     df.attrs["as_of"] = _as_of(df)
-    _save_cache(symbol, df)
+    _save_cache(symbol, df, interval)
     _mem_put(key, df)
     return df
+
+
+def fetch_history(ticker: str, period: str = DEFAULT_PERIOD,
+                  raw_symbol: bool = False):
+    """Ambil OHLCV harian. Return DataFrame (attrs STALE bisa true) atau None.
+
+    raw_symbol=True dipakai untuk simbol non-emiten seperti indeks '^JKSE'.
+    Hasil live dicache di memori selama SAHAMBOT_TTL detik.
+    """
+    return _fetch_bars(ticker, period=period, interval="1d", raw_symbol=raw_symbol)
+
+
+def fetch_weekly(ticker: str, period: str = "2y", raw_symbol: bool = False):
+    """[P9] Ambil candle mingguan (`interval=1wk`) untuk konfirmasi tren."""
+    try:
+        return _fetch_bars(ticker, period=period, interval="1wk", raw_symbol=raw_symbol)
+    except Exception:
+        return None
 
 
 _name_cache: dict[str, str] = {}

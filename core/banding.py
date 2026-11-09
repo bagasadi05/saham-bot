@@ -1,4 +1,4 @@
-"""P2 — perbandingan antar-emiten & konteks pasar (IHSG, ^JKSE via Yahoo).
+"""P2 & P9 — perbandingan antar-emiten, konteks pasar (IHSG), & peer sektor.
 
 Semua angka dari sumber yang sama dengan /fundamental & /analisis (Yahoo).
 Data yang gagal diambil dilaporkan jujur — tidak ada angka karangan."""
@@ -11,6 +11,19 @@ from core import data, fundamental, powerscore
 _MKT_TTL = 6 * 3600      # cache IHSG 6 jam (pembanding tidak perlu real-time)
 _MKT_FAIL_TTL = 5 * 60   # gagal: coba lagi 5 menit lagi, jangan dikunci 6 jam
 _mkt_cache: dict = {"ts": 0.0, "val": None}
+
+# Kluster emiten likuid BEI untuk pembanding sektor cepat tanpa spam `.info`
+SECTOR_CLUSTERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Financial Services", ("BBCA", "BBRI", "BMRI", "BBNI", "BRIS")),
+    ("Communication Services", ("TLKM", "ISAT", "EXCL", "TBIG")),
+    ("Energy", ("ADRO", "PTBA", "ITMG", "MEDC", "PGAS", "AADI", "PGEO")),
+    ("Basic Materials", ("ANTM", "MDKA", "MBMA", "TPIA", "BRPT", "SMGR", "INKP", "AMMN")),
+    ("Consumer Defensive", ("ICBP", "INDF", "UNVR", "AMRT", "CPIN", "JPFA", "HMSP", "GGRM")),
+    ("Industrials", ("ASII", "UNTR", "JSMR")),
+    ("Healthcare", ("KLBF",)),
+    ("Consumer Cyclical", ("MAPI", "EMTK")),
+    ("Real Estate", ("CTRA",)),
+)
 
 
 def market_context() -> dict | None:
@@ -44,6 +57,60 @@ def market_context() -> dict | None:
     return out
 
 
+def pick_sector_peers(ticker: str, sector: str | None = None,
+                      watchlist: list[str] | None = None,
+                      limit: int = 2) -> list[str]:
+    """Pilih hingga 2 emiten se-sektor dari watchlist atau kluster BEI."""
+    sym = ticker.strip().upper().replace(".JK", "")
+    candidates: list[str] = []
+    for _sec_name, members in SECTOR_CLUSTERS:
+        if sym in members or (sector and _sec_name.lower() in sector.lower()):
+            for m in members:
+                if m != sym and m not in candidates:
+                    candidates.append(m)
+    if watchlist:
+        wl_clean = [w.strip().upper().replace(".JK", "") for w in watchlist]
+        prioritized = [c for c in candidates if c in wl_clean]
+        others = [c for c in candidates if c not in wl_clean]
+        candidates = prioritized + others
+    return candidates[:limit]
+
+
+def sector_context(ticker: str, sector: str | None = None,
+                   watchlist: list[str] | None = None) -> dict | None:
+    """[P9] Rata-rata return 20h & 1thn dari 1-2 pembanding se-sektor."""
+    peers = pick_sector_peers(ticker, sector, watchlist)
+    if not peers:
+        return None
+    r20s: list[float] = []
+    r1ys: list[float] = []
+    used: list[str] = []
+    for peer in peers:
+        try:
+            df = data.fetch_history(peer, "1y")
+        except Exception:
+            df = None
+        if df is None or len(df) < 25:
+            continue
+        close = df["close"].reset_index(drop=True)
+        try:
+            r20 = float(close.iloc[-1] / close.iloc[-21] - 1) * 100
+            r1y = float(close.iloc[-1] / close.iloc[0] - 1) * 100
+            r20s.append(r20)
+            r1ys.append(r1y)
+            used.append(peer)
+        except Exception:
+            continue
+    if not used:
+        return None
+    return {
+        "peers": used,
+        "sector": sector,
+        "ret20d": sum(r20s) / len(r20s),
+        "ret1y": sum(r1ys) / len(r1ys),
+    }
+
+
 def compare_row(ticker: str, res: dict | None, fund: dict | None) -> dict:
     """Bundel angka pembanding satu emiten (semua bisa None = tak tersedia)."""
     out = {"ticker": ticker.upper(),
@@ -62,11 +129,10 @@ def compare_row(ticker: str, res: dict | None, fund: dict | None) -> dict:
             fundamental.score_fundamentals(fund)["pct"] if fund else None,
             None)["pct"]
     if fund:
-        roe, dy = fund.get("roe"), fund.get("div_yield")
         out["per"] = fund.get("per")
         out["pbv"] = fund.get("pbv")
-        out["roe"] = (roe * 100 if (roe is not None and roe < 3) else roe)
-        out["dy"] = (dy * 100 if (dy is not None and dy < 1) else dy)
+        out["roe"] = fundamental.normalize_roe(fund.get("roe"))
+        out["dy"] = fundamental.normalize_div_yield(fund.get("div_yield"))
     return out
 
 
@@ -88,4 +154,4 @@ def pbv_verdict(rows: list[dict]) -> str | None:
     priciest = max(with_pbv, key=lambda x: x[1])
     return (f"Fakta dari angka PBV: paling murah {cheapest[0]} ({cheapest[1]:.2f}), "
             f"paling mahal {priciest[0]} ({priciest[1]:.2f}). "
-            f"PBV rendah ≠ pasti lebih baik — baca bersama ROE & tren laba.")
+            "PBV rendah ≠ pasti lebih baik — baca bersama ROE & tren laba.")

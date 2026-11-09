@@ -1,6 +1,8 @@
 """Perhitungan indikator teknikal & skor rating saham."""
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 
 
@@ -16,7 +18,10 @@ def rsi(series: pd.Series, n: int = 14) -> pd.Series:
     avg_gain = gain.ewm(alpha=1 / n, min_periods=n, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / n, min_periods=n, adjust=False).mean()
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    out = 100 - (100 / (1 + rs))
+    # harga datar sempurna -> avg_gain=avg_loss=0 -> netral 50, bukan NaN
+    both_zero = (avg_gain == 0) & (avg_loss == 0)
+    return out.where(~both_zero, 50.0)
 
 
 def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
@@ -264,22 +269,65 @@ def _as_of(ind: pd.DataFrame) -> str:
         return ""
 
 
+def _num_or(val, ndigits: int | None = None, default=None):
+    if val is None or pd.isna(val):
+        return default
+    f = float(val)
+    if not math.isfinite(f):
+        return default
+    return round(f, ndigits) if ndigits is not None else f
+
+
 def last_snapshot(ind: pd.DataFrame) -> dict:
     last = ind.iloc[-1]
+    close = round(float(last["close"]), 2)
+    vol_avg = _num_or(last.get("vol_avg20"), default=1.0)
+    if vol_avg is None or vol_avg <= 0:
+        vol_avg = 1.0
     return {
-        "close": round(float(last["close"]), 2),
+        "close": close,
         "as_of": _as_of(ind),
-        "ret1d": round(float(last["ret1d"]), 2),
-        "ret20d": round(float(last["ret20d"]), 2),
-        "rsi": round(float(last["rsi14"]), 1),
-        "macd_hist": round(float(last["macd_hist"]), 3),
-        "volume": float(last["volume"]),
-        "vol_avg20": float(last["vol_avg20"]) or 1.0,
-        "sma20": round(float(last["sma20"]), 2) if not pd.isna(last["sma20"]) else None,
-        "sma50": round(float(last["sma50"]), 2) if not pd.isna(last["sma50"]) else None,
-        "sma200": round(float(last["sma200"]), 2) if not pd.isna(last["sma200"]) else None,
-        "high20": round(float(last["high20"]), 2),
-        "low20": round(float(last["low20"]), 2),
+        "ret1d": _num_or(last.get("ret1d"), 2, 0.0),
+        "ret20d": _num_or(last.get("ret20d"), 2, 0.0),
+        "rsi": _num_or(last.get("rsi14"), 1, None),
+        "macd_hist": _num_or(last.get("macd_hist"), 3, 0.0),
+        "volume": _num_or(last.get("volume"), default=0.0),
+        "vol_avg20": vol_avg,
+        "sma20": _num_or(last.get("sma20"), 2, None),
+        "sma50": _num_or(last.get("sma50"), 2, None),
+        "sma200": _num_or(last.get("sma200"), 2, None),
+        "high20": _num_or(last.get("high20"), 2, close),
+        "low20": _num_or(last.get("low20"), 2, close),
+    }
+
+
+def weekly_trend(df_weekly: pd.DataFrame | None,
+                 daily_score_pct: float | None = None) -> dict | None:
+    """[P9] Konfirmasi tren mingguan: close vs MA20 mingguan + cek divergensi."""
+    if df_weekly is None or len(df_weekly) < 20 or "close" not in df_weekly.columns:
+        return None
+    close = df_weekly["close"].dropna().astype(float)
+    if len(close) < 20:
+        return None
+    ma20 = close.rolling(20).mean().iloc[-1]
+    last_c = float(close.iloc[-1])
+    if pd.isna(ma20) or ma20 <= 0 or not math.isfinite(last_c):
+        return None
+    ma20 = float(ma20)
+    pct_vs_ma = (last_c / ma20 - 1.0) * 100.0
+    direction = "naik" if last_c > ma20 else ("turun" if last_c < ma20 else "datar")
+    warning = None
+    if daily_score_pct is not None:
+        if direction == "turun" and daily_score_pct >= 20:
+            warning = "daily membaik tapi weekly masih downtrend — pantulan, bukan pembalikan"
+        elif direction == "naik" and daily_score_pct <= -20:
+            warning = "daily melemah di dalam uptrend mingguan — koreksi jangka pendek"
+    return {
+        "direction": direction,
+        "close": round(last_c, 2),
+        "ma20": round(ma20, 2),
+        "pct_vs_ma": round(pct_vs_ma, 1),
+        "warning": warning,
     }
 
 

@@ -44,6 +44,19 @@ CREATE TABLE IF NOT EXISTS paper (
     rec     TEXT NOT NULL,
     PRIMARY KEY (chat_id, symbol)
 );
+CREATE TABLE IF NOT EXISTS score_bands (
+    chat_id TEXT NOT NULL,
+    symbol  TEXT NOT NULL,
+    band    TEXT NOT NULL,
+    PRIMARY KEY (chat_id, symbol)
+);
+CREATE TABLE IF NOT EXISTS div_reminders (
+    chat_id  TEXT NOT NULL,
+    symbol   TEXT NOT NULL,
+    ex_date  TEXT NOT NULL,
+    days     INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, symbol, ex_date, days)
+);
 """
 
 
@@ -225,6 +238,42 @@ def update_alert_state(chat_id: int | str, symbol: str, hits: set[str]) -> set[s
             "UPDATE alerts SET active=? WHERE chat_id=? AND symbol=?",
             (json.dumps(sorted(hits)), str(chat_id), symbol))
     return hits - prev
+
+
+# -------------------------------------------------- [P10] proaktif ----------
+
+def update_score_band(chat_id: int | str, symbol: str, band: str) -> str | None:
+    """Simpan band PowerScore terakhir; return band lama hanya jika BERUBAH.
+
+    Saat pertama kali diamati (belum ada catatan), baseline disimpan diam-diam
+    dan fungsi mengembalikan None supaya tidak membanjiri chat.
+    """
+    cid = str(chat_id)
+    with _db() as conn:
+        _ensure_chat(conn, cid)
+        row = conn.execute(
+            "SELECT band FROM score_bands WHERE chat_id=? AND symbol=?",
+            (cid, symbol)).fetchone()
+        conn.execute(
+            "INSERT INTO score_bands(chat_id, symbol, band) VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_id, symbol) DO UPDATE SET band=excluded.band",
+            (cid, symbol, band))
+        if row is None or row["band"] == band:
+            return None
+        return str(row["band"])
+
+
+def mark_div_reminder(chat_id: int | str, symbol: str,
+                      ex_date: str, days_left: int) -> bool:
+    """Catat pengingat dividen; True hanya jika pengingat ini baru pertama kali."""
+    cid = str(chat_id)
+    with _db() as conn:
+        _ensure_chat(conn, cid)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO div_reminders(chat_id, symbol, ex_date, days) "
+            "VALUES (?, ?, ?, ?)",
+            (cid, symbol, ex_date, int(days_left)))
+        return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------- paper -----
