@@ -3,7 +3,8 @@ __pycache__/
 *.pyc
 .env
 store.json
-data/
+data/*
+!data/validation.json
 models/
 .git/
 *.md

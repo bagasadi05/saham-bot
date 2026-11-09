@@ -82,9 +82,9 @@ def check_triggers(ind: pd.DataFrame) -> list[str]:
 
 
 def build_alert_message(symbol: str, triggers: list[str], snap: dict, score: dict) -> str:
-    lines = [f"🔔 <b>ALERT</b> — <b>{symbol}</b>",
-             f"Harga: Rp{snap['close']:,} ({snap['ret1d']:+.2f}% HARI INI)",
-             f"Skor: {score['pct']:+.0f}% {score['emoji']} {score['rating']}",
+    lines = [f"🔔 <b>ALERT</b> — <b>{html.escape(str(symbol))}</b>",
+             f"Harga: Rp{snap['close']:,.0f}".replace(",", ".") + f" ({snap['ret1d']:+.2f}% HARI INI)",
+             f"Skor: {score['pct']:+.0f}% {score['emoji']} {html.escape(str(score['rating']))}",
              "",
              "Pemicu aktif:"]
     for t in triggers:

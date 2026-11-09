@@ -108,31 +108,81 @@ class PowerStrategy(Strategy):
 def run_backtest(ticker: str) -> dict:
     df = build_statistics(ticker)
     bt = Backtest(df, PowerStrategy, cash=100_000_000,
-                  commission=commission, exclusive_orders=True)
+                  commission=commission, exclusive_orders=True,
+                  finalize_trades=True)
     stats = bt.run()
     return stats
 
 
+def _clean_stat(val) -> float | None:
+    if val is None or pd.isna(val):
+        return None
+    f = float(val)
+    return f if np.isfinite(f) else None
+
+
+def _annualize_return(total_pct: float | None, stats) -> float | None:
+    """Konversi return kumulatif (%) -> return per tahun (CAGR %)."""
+    if total_pct is None:
+        return None
+    dur = stats.get("Duration") if hasattr(stats, "get") else None
+    days = getattr(dur, "days", None)
+    if days is None and hasattr(stats, "get"):
+        start, end = stats.get("Start"), stats.get("End")
+        if start is not None and end is not None:
+            try:
+                days = (pd.Timestamp(end) - pd.Timestamp(start)).days
+            except Exception:
+                days = None
+    if not days or days <= 0:
+        return None
+    years = days / 365.25
+    growth = 1.0 + total_pct / 100.0
+    if growth <= 0:
+        return -100.0
+    return (growth ** (1.0 / years) - 1.0) * 100.0
+
+
+def summarize_stats(ticker: str, stats) -> dict:
+    """Ekstrak metrik ringkas backtest dengan Buy & Hold disetahunkan & NaN aman."""
+    bh_total = _clean_stat(stats.get("Buy & Hold Return [%]"))
+    end_dt = stats.get("End") if hasattr(stats, "get") else None
+    as_of = str(pd.Timestamp(end_dt).date()) if end_dt is not None else ""
+    trades_raw = _clean_stat(stats.get("# Trades"))
+    return {
+        "ticker": ticker.upper().replace(".JK", ""),
+        "as_of": as_of,
+        "ret_ann": _clean_stat(stats.get("Return (Ann.) [%]")),
+        "bh_ann": _annualize_return(bh_total, stats),
+        "bh_total": bh_total,
+        "trades": int(trades_raw) if trades_raw is not None else 0,
+        "win_rate": _clean_stat(stats.get("Win Rate [%]")),
+        "profit_factor": _clean_stat(stats.get("Profit Factor")),
+        "max_dd": _clean_stat(stats.get("Max. Drawdown [%]")),
+        "exposure": _clean_stat(stats.get("Exposure Time [%]")),
+    }
+
+
+def _fmt_num(val: float | None, tpl: str, suffix: str = "") -> str:
+    return "—" if val is None else (tpl.format(val) + suffix)
+
+
 def fmt_report(ticker: str, stats) -> str:
     """Laporan perbandingan statistik vs simulasi transaksi nyata."""
-    ret_pct = stats["Return (Ann.) [%]"]
-    bh_pct = stats["Buy & Hold Return [%]"]
-    trades = stats["# Trades"]
-    win = stats["Win Rate [%]"]
-    pf = stats.get("Profit Factor", float("nan"))
-    dd = stats["Max. Drawdown [%]"]
-    dur = stats.get("Exposure Time [%]", float("nan"))
+    s = summarize_stats(ticker, stats)
+    bh_extra = (f" (total {s['bh_total']:+.1f}%)"
+                if s["bh_total"] is not None else "")
     return (
         f"\n=== {ticker} — simulasi transaksi nyata ===\n"
-        f"  Return strategi : {ret_pct:+.1f}% per tahun\n"
-        f"  Buy & hold      : {bh_pct:+.1f}% per tahun\n"
-        f"  Jumlah transaksi: {trades:.0f}\n"
-        f"  Win-rate        : {win:.1f}%\n"
-        f"  Profit factor   : {pf if not pd.isna(pf) else float('nan'):.2f}\n"
-        f"  Max drawdown    : {dd:.1f}%\n"
-        f"  Waktu terinvestasi: {dur:.0f}%\n"
+        f"  Return strategi : {_fmt_num(s['ret_ann'], '{:+.1f}', '% per tahun')}\n"
+        f"  Buy & hold      : {_fmt_num(s['bh_ann'], '{:+.1f}', '% per tahun')}{bh_extra}\n"
+        f"  Jumlah transaksi: {s['trades']}\n"
+        f"  Win-rate        : {_fmt_num(s['win_rate'], '{:.1f}', '%')}\n"
+        f"  Profit factor   : {_fmt_num(s['profit_factor'], '{:.2f}')}\n"
+        f"  Max drawdown    : {_fmt_num(s['max_dd'], '{:.1f}', '%')}\n"
+        f"  Waktu terinvestasi: {_fmt_num(s['exposure'], '{:.0f}', '%')}\n"
         f"  (biaya beli {BUY_FEE*100:.2f}% / jual {SELL_FEE*100:.2f}% seperti /saran,\n"
-        f"   fill bar berikutnya,\n"
+        "   fill bar berikutnya,\n"
         f"   SL 1×ATR, TP 2×ATR, maksimal tahan {HOLD_MAX} hari, skip trap momentum,\n"
         f"   sizing risiko {RISK_PCT*100:.0f}% ekuitas per trade seperti /saran)"
     )

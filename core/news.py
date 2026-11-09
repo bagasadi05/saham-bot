@@ -25,13 +25,14 @@ def clear_cache():
     with _news_lock:
         _news_cache.clear()
 
+
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
 # ------------------------------------------------------------------ lexicon
 # Bobot positif / negatif khas berita saham Indonesia. Kata di-match sebagai
-# frasa (bukan substring mentah) supaya "lapa" tidak tertukar dengna "lapangan".
+# frasa (bukan substring mentah) supaya "lapa" tidak tertukar dengan "lapangan".
 
 POS = {  # kata: bobot
     "naik": 1.0, "menguat": 1.0, "melejit": 2.0, "melonjak": 2.0,
@@ -59,16 +60,12 @@ def score_title(title: str) -> tuple[float, list[str]]:
     """Skor sentimen judul berita satu kalimat. Return (skor, kata_ketemuan)."""
     text = _clean_wordbag(title)
     words = re.findall(r"[a-z\-]+", text)
-    ws = set()
-    for w in words:
-        ws.add(w)
     score = 0.0
     hits: list[str] = []
-    # negasi paling sederhana: kata "tidak/bukan/negatif" sebelum kata pos → flips.
+    # negasi paling sederhana: kata "tidak/bukan/belum" sebelum kata pos -> flips.
     negators = {"tidak", "bukan", "belum"}
-    tokens = words
-    for i, w in enumerate(tokens):
-        negated = i > 0 and tokens[i - 1] in negators
+    for i, w in enumerate(words):
+        negated = i > 0 and words[i - 1] in negators
         if w in POS and POS[w]:
             delta = POS[w] * (-1 if negated else 1)
             score += delta

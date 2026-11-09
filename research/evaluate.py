@@ -308,7 +308,7 @@ def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
             "ic_model": round(float(ic_model.mean()), 4) if len(ic_model) else None,
             "ic_score": round(float(ic_score.mean()), 4) if len(ic_score) else None,
             "ic_blend": round(float(ic_blend.mean()), 4) if len(ic_blend) else None,
-            "weights": {f: round(float(v), 4) for f, v in zip(feats, w[1:])},
+            "weights": {f: round(float(v), 4) for f, v in zip(feats, w[1:], strict=True)},
             "intercept": round(float(w[0]), 4),
         })
 
@@ -333,7 +333,7 @@ def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
 # ---------------------------------------------------------------- laporan
 
 def fmt_row(cells, widths):
-    return "".join(str(c).ljust(w) for c, w in zip(cells, widths))
+    return "".join(str(c).ljust(w) for c, w in zip(cells, widths, strict=True))
 
 
 def render_md(res: dict) -> str:
@@ -348,7 +348,7 @@ def render_md(res: dict) -> str:
 
     L.append("## 1. IC cross-sectional (skor vs forward return)\n")
     s = res["ic_score"]
-    L.append(f"| metrik | nilai |\n|---|---|")
+    L.append("| metrik | nilai |\n|---|---|")
     L.append(f"| rata-rata IC | {s['mean_ic']} |")
     L.append(f"| IR (mean/std) | {s['ir']} |")
     L.append(f"| t-stat | {s['t']} |")

@@ -7,6 +7,7 @@ Tanpa cache, satu `/saran` 12 emiten = 24 permintaan jaringan yang sama persis.
 """
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
@@ -18,6 +19,37 @@ from core import data as datamod
 _FUND_TTL = int(os.getenv("SAHAMBOT_FUND_TTL", "21600") or 0)  # 6 jam
 _fund_cache: dict[str, tuple[float, dict]] = {}
 _fund_lock = threading.Lock()
+
+
+def _finite_float(v) -> float | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def normalize_roe(v) -> float | None:
+    """Normalisasi ROE (yfinance kadang fraksi 0.18, kadang persen 18.0)."""
+    f = _finite_float(v)
+    if f is None:
+        return None
+    return f * 100.0 if abs(f) < 3.0 else f
+
+
+def normalize_div_yield(v) -> float | None:
+    """Normalisasi dividend yield (fraksi 0.04 -> 4.0%)."""
+    f = _finite_float(v)
+    if f is None:
+        return None
+    return f * 100.0 if 0 <= f < 1.0 else f
+
+
+def normalize_der(v) -> float | None:
+    """DER dari Yahoo `debtToEquity` sudah berbentuk persen (mis. 45.2 = 45.2%)."""
+    return _finite_float(v)
 
 
 def fetch_fundamentals(ticker: str) -> dict | None:
@@ -56,13 +88,13 @@ def _fetch_uncached(symbol: str) -> dict | None:
         "name": g("longName", "shortName") or symbol.replace(".JK", ""),
         "sector": g("sector", "industry"),
         "market_cap": g("marketCap"),
-        "per": g("trailingPE"),
-        "pbv": g("priceToBook"),
-        "eps": g("trailingEps"),
-        "div_yield": g("dividendYield"),
-        "roe": g("returnOnEquity"),
-        "margin": g("profitMargins"),
-        "debt_eq": g("debtToEquity"),
+        "per": _finite_float(g("trailingPE")),
+        "pbv": _finite_float(g("priceToBook")),
+        "eps": _finite_float(g("trailingEps")),
+        "div_yield": _finite_float(g("dividendYield")),
+        "roe": _finite_float(g("returnOnEquity")),
+        "margin": _finite_float(g("profitMargins")),
+        "debt_eq": _finite_float(g("debtToEquity")),
     }
     if all(fields[k] is None for k in ("per", "pbv", "div_yield", "roe")):
         return None
@@ -111,7 +143,7 @@ def score_fundamentals(f: dict) -> dict:
     points = []
     verdicts = []
 
-    per = f.get("per")
+    per = _finite_float(f.get("per"))
     if per is not None:
         if per < 0:
             points.append(-15); verdicts.append("🔴 PER negatif (labanya rugi)")
@@ -124,7 +156,7 @@ def score_fundamentals(f: dict) -> dict:
         else:
             points.append(-8); verdicts.append(f"🔴 PER {per:.1f} — mahal")
 
-    pbv = f.get("pbv")
+    pbv = _finite_float(f.get("pbv"))
     if pbv is not None:
         if pbv < 1:
             points.append(10); verdicts.append(f"🟢 PBV {pbv:.2f} — di bawah nilai buku")
@@ -133,9 +165,8 @@ def score_fundamentals(f: dict) -> dict:
         else:
             points.append(-5); verdicts.append(f"🔴 PBV {pbv:.2f} — premium tinggi")
 
-    roe = f.get("roe")
+    roe = normalize_roe(f.get("roe"))
     if roe is not None:
-        roe *= 100 if roe < 3 else 1  # yfinance kadang persen, kadang fraksi
         if roe < 0:
             points.append(-10); verdicts.append(f"🔴 ROE {roe:.1f}% negatif")
         elif roe > 15:
@@ -145,9 +176,8 @@ def score_fundamentals(f: dict) -> dict:
         else:
             points.append(-5); verdicts.append(f"🔴 ROE {roe:.1f}% lemah")
 
-    dy = f.get("div_yield")
+    dy = normalize_div_yield(f.get("div_yield"))
     if dy is not None:
-        dy = dy * 100 if dy < 1 else dy  # konsisten: 0.03 -> 3%
         if dy >= 5:
             points.append(10); verdicts.append(f"🟢 Dividend yield {dy:.1f}% — bagus buat pasif")
         elif dy >= 3:
@@ -155,11 +185,12 @@ def score_fundamentals(f: dict) -> dict:
         elif dy > 0:
             points.append(0); verdicts.append(f"⚪ Dividend yield {dy:.1f}% rendah")
 
-    d = f.get("debt_eq")
-    if d is not None:
-        de = d if d > 5 else d * 100  # fraksi vs persen
-        if de < 50:
-            points.append(5); verdicts.append(f"🟢 DER {de:.0f}% - hati-hati sehat")
+    de = normalize_der(f.get("debt_eq"))
+    if de is not None:
+        if de < 0:
+            points.append(-5); verdicts.append(f"🔴 DER {de:.0f}% negatif (ekuitas bermasalah)")
+        elif de < 50:
+            points.append(5); verdicts.append(f"🟢 DER {de:.0f}% — sehat")
         elif de < 100:
             points.append(0); verdicts.append(f"🟡 DER {de:.0f}% biasa")
         else:

@@ -221,6 +221,8 @@ def fill_pending(chat_id: int | str, bars: dict[str, pd.DataFrame],
             entry = float(df["open"].loc[bar])
         except Exception:
             entry = float(df["open"].iloc[-1])
+        if pd.isna(entry) or entry <= 0:
+            continue
         atr = float(rec.get("atr") or entry * 0.03)
         sl = round(entry - atr, 0)
         tp = round(entry + 2 * atr, 0)
@@ -320,7 +322,7 @@ def update_paper(chat_id: int | str, quotes: dict,
     return msgs
 
 
-def quotes_forgotten(chat_id: int | str) -> list[str]:
+def paper_summary(chat_id: int | str) -> list[str]:
     """Ringkasan posisi latihan untuk /saran list."""
     paper = store.get_paper(chat_id)
     if not paper:
@@ -368,6 +370,10 @@ def quotes_forgotten(chat_id: int | str) -> list[str]:
     lines.append(f"Biaya dihitung: beli {BUY_FEE * 100:.2f}%, "
                  f"jual {SELL_FEE * 100:.2f}%.")
     return lines
+
+
+# Backward-compat alias (dipakai kode & test lama)
+quotes_forgotten = paper_summary
 
 
 def fmt(v: float) -> str:
