@@ -30,6 +30,7 @@ _state = {"model": None, "tokenizer": None, "failed": False}
 _lock = threading.Lock()
 
 _cache: dict[str, dict | None] = {}
+_cache_lock = threading.Lock()
 _CACHE_MAX = 500
 
 
@@ -57,21 +58,37 @@ def get_model():
             return None, None
 
 
+def _id_to_label(model) -> dict[int, str]:
+    raw = getattr(getattr(model, "config", None), "id2label", None)
+    if isinstance(raw, dict) and raw:
+        mapped: dict[int, str] = {}
+        for k, v in raw.items():
+            try:
+                mapped[int(k)] = str(v).strip().lower()
+            except (TypeError, ValueError):
+                continue
+        if mapped:
+            return mapped
+    return LABEL_MAP
+
+
 def _remember(text: str, result: dict):
-    if len(_cache) >= _CACHE_MAX:
-        _cache.pop(next(iter(_cache)))
-    _cache[text] = result
+    with _cache_lock:
+        if len(_cache) >= _CACHE_MAX and text not in _cache:
+            _cache.pop(next(iter(_cache)))
+        _cache[text] = result
 
 
 def classify_batch(texts: list[str]) -> list[dict | None]:
     """Klasifikasi banyak judul sekaligus. Return list sejajar dengan input."""
     out: list[dict | None] = [None] * len(texts)
     todo: list[int] = []
-    for i, text in enumerate(texts):
-        if text in _cache:
-            out[i] = _cache[text]
-        else:
-            todo.append(i)
+    with _cache_lock:
+        for i, text in enumerate(texts):
+            if text in _cache:
+                out[i] = _cache[text]
+            else:
+                todo.append(i)
     if not todo:
         return out
 
@@ -80,6 +97,7 @@ def classify_batch(texts: list[str]) -> list[dict | None]:
         return out
     try:
         import torch
+        id2lbl = _id_to_label(model)
         batch = [texts[i] for i in todo]
         inputs = tok(batch, return_tensors="pt", truncation=True,
                      max_length=128, padding=True)
@@ -88,9 +106,9 @@ def classify_batch(texts: list[str]) -> list[dict | None]:
         for i, probs in zip(todo, probs_all, strict=True):
             idx = int(max(range(len(probs)), key=lambda j: probs[j]))
             res = {
-                "label": LABEL_MAP.get(idx, str(idx)),
+                "label": id2lbl.get(idx, str(idx)),
                 "score": round(probs[idx], 3),
-                "probs": {LABEL_MAP.get(j, str(j)): round(p, 3)
+                "probs": {id2lbl.get(j, str(j)): round(p, 3)
                           for j, p in enumerate(probs)},
             }
             out[i] = res

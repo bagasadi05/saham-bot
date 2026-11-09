@@ -43,6 +43,7 @@ PRO_NOTES: list[tuple[str, str]] = [
     ("di luar Bollinger atas", "harga ekstrem di atas pita atas — sering disusul jeda atau koreksi"),
     ("di bawah Bollinger bawah", "harga ekstrem di bawah pita bawah — bisa memantul atau lanjut melemah (walking the band)"),
     ("Bollinger: harga di", "posisi harga dalam rentang pita Bollinger (0% = terendah, 100% = tertinggi)"),
+    ("Bollinger: rentang 0%", "pita menyempit ke nol karena harga tidak berubah — tidak ada volatilitas aktif"),
     ("ATR 14", "ATR = rata-rata rentang gerak harian; SL 1×ATR memberi ruang napas volatilitas normal sebelum cut loss"),
     ("StochRSI", "osilator lebih cepat dari RSI; <20 = jenuh jual pendek, >80 = jenuh beli pendek (sering memberi sinyal dini)"),
     ("OBV 20 hari", "OBV menjumlahkan volume: naik = akumulasi (dana masuk), turun = distribusi (dana keluar)"),

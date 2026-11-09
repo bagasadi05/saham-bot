@@ -12,7 +12,7 @@ from datetime import date
 
 import pandas as pd
 
-from core import powerscore, relatif, store
+from core import marketcal, powerscore, relatif, store
 
 DEFAULT_UNIVERSE = [
     "BBCA", "BBRI", "BMRI", "BBNI", "TLKM", "ASII",
@@ -52,7 +52,11 @@ def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
     snap = res["snap"]
     atr = res["ind"]["atr14"].iloc[-1] if "atr14" in res["ind"] else None
     entry = snap["close"]
-    atr_v = float(atr) if atr is not None and not pd.isna(atr) else entry * 0.03
+    atr_v = (
+        float(atr)
+        if atr is not None and not pd.isna(atr) and float(atr) > 0
+        else entry * 0.03
+    )
     c = {
         "ticker": res["ticker"],
         "price": entry,
@@ -223,7 +227,12 @@ def fill_pending(chat_id: int | str, bars: dict[str, pd.DataFrame],
             entry = float(df["open"].iloc[-1])
         if pd.isna(entry) or entry <= 0:
             continue
-        atr = float(rec.get("atr") or entry * 0.03)
+        raw_atr = rec.get("atr")
+        atr = (
+            float(raw_atr)
+            if raw_atr is not None and not pd.isna(raw_atr) and float(raw_atr) > 0
+            else entry * 0.03
+        )
         sl = round(entry - atr, 0)
         tp = round(entry + 2 * atr, 0)
         rec.update(status="open", entry=entry, sl=sl, tp=tp,
@@ -244,11 +253,34 @@ def _expired(rec: dict, today: date) -> bool:
         filled = date.fromisoformat(str(raw))
     except ValueError:
         return False
-    return (today - filled).days >= round(MAX_HOLD_DAYS * 7 / 5)  # 20 hari bursa ≈ 28 hari
+    return marketcal.trading_days_between(filled, today) >= MAX_HOLD_DAYS
 
 
 def _close(rec: dict, exit_price: float, hit: str):
     rec.update(status="closed", hit=hit, exit_price=float(exit_price))
+
+
+def _bar_date(q) -> date | None:
+    """Ambil tanggal bar jika tersedia (Series/DataFrame); None untuk angka polos."""
+    if q is None:
+        return None
+    raw = None
+    if isinstance(q, pd.DataFrame):
+        if not q.empty:
+            raw = q.index[-1]
+    elif isinstance(q, pd.Series):
+        raw = q.name
+    elif isinstance(q, dict):
+        raw = q.get("date")
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    try:
+        ts = pd.Timestamp(raw)
+        if pd.isna(ts):
+            return None
+        return ts.date()
+    except Exception:
+        return None
 
 
 def _ohlc(q) -> tuple[float, float, float] | None:
@@ -292,7 +324,15 @@ def update_paper(chat_id: int | str, quotes: dict,
     for symbol, rec in store.get_paper(chat_id).items():
         if rec.get("status") != "open" or symbol not in quotes:
             continue
-        bar = _ohlc(quotes[symbol])
+        q = quotes[symbol]
+        bar_dt = _bar_date(q)
+        if bar_dt is not None and rec.get("filled_at"):
+            try:
+                if bar_dt < date.fromisoformat(str(rec["filled_at"])):
+                    continue  # bar cache lebih lama daripada tanggal entry terisi
+            except ValueError:
+                pass
+        bar = _ohlc(q)
         if bar is None:
             continue
         close, high, low = bar

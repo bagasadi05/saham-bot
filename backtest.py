@@ -47,6 +47,8 @@ def backtest(ticker: str, horizon: int = 20, period: str = "5y") -> pd.DataFrame
 
 
 def summarize(bt: pd.DataFrame) -> str:
+    if bt is None or bt.empty:
+        return "Tidak ada observasi backtest."
     base = bt["fwd_ret"].mean()
     out = [f"Baseline (tanpa filter): rata² {base:+.2f}% net "
            f"per {len(bt)} observasi",

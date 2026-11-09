@@ -39,6 +39,14 @@ def normalize_roe(v) -> float | None:
     return f * 100.0 if abs(f) < 3.0 else f
 
 
+def normalize_margin(v) -> float | None:
+    """Normalisasi net profit margin (Yahoo fraksi 0.22 -> 22.0%)."""
+    f = _finite_float(v)
+    if f is None:
+        return None
+    return f * 100.0 if abs(f) < 3.0 else f
+
+
 def normalize_div_yield(v) -> float | None:
     """Normalisasi dividend yield (fraksi 0.04 -> 4.0%)."""
     f = _finite_float(v)
@@ -50,6 +58,15 @@ def normalize_div_yield(v) -> float | None:
 def normalize_der(v) -> float | None:
     """DER dari Yahoo `debtToEquity` sudah berbentuk persen (mis. 45.2 = 45.2%)."""
     return _finite_float(v)
+
+
+def is_financial_sector(sector: str | None) -> bool:
+    """Bank/asuransi/keuangan: DPK dihitung sebagai liabilitas sehingga DER alami tinggi."""
+    if not sector:
+        return False
+    s = str(sector).strip().lower()
+    return any(k in s for k in ("financial", "bank", "insurance",
+                                "perbankan", "keuangan", "asuransi"))
 
 
 def fetch_fundamentals(ticker: str) -> dict | None:
@@ -84,6 +101,17 @@ def _fetch_uncached(symbol: str) -> dict | None:
                 return v
         return None
 
+    # Disambiguasi dividendYield Yahoo: versi baru mengirim 0.85 untuk 0.85%,
+    # padahal trailingAnnualDividendYield tetap fraksi (0.0085).
+    dy_raw = _finite_float(g("dividendYield"))
+    trail_dy = _finite_float(g("trailingAnnualDividendYield"))
+    if dy_raw is None:
+        dy_val = trail_dy
+    elif 0 < dy_raw < 1.0 and trail_dy is not None and 0 < trail_dy < dy_raw / 10.0:
+        dy_val = dy_raw / 100.0
+    else:
+        dy_val = dy_raw
+
     fields = {
         "name": g("longName", "shortName") or symbol.replace(".JK", ""),
         "sector": g("sector", "industry"),
@@ -91,7 +119,7 @@ def _fetch_uncached(symbol: str) -> dict | None:
         "per": _finite_float(g("trailingPE")),
         "pbv": _finite_float(g("priceToBook")),
         "eps": _finite_float(g("trailingEps")),
-        "div_yield": _finite_float(g("dividendYield")),
+        "div_yield": dy_val,
         "roe": _finite_float(g("returnOnEquity")),
         "margin": _finite_float(g("profitMargins")),
         "debt_eq": _finite_float(g("debtToEquity")),
@@ -119,15 +147,19 @@ def _fetch_uncached(symbol: str) -> dict | None:
                 if key in qs.index:
                     profit_row = qs.loc[key, cols]
                     break
+            def _q_label(q) -> str:
+                if hasattr(q, "quarter") and hasattr(q, "year"):
+                    return f"Q{q.quarter} {q.year}"
+                return str(q)[:10]
+
             def _series(row, n=4):
                 if row is None:
                     return None
                 s = row.dropna()
-                s = s[s != 0]
                 if len(s) == 0:
                     return None
                 s = s.iloc[-n:]
-                labels = [f"Q{q.quarter} {q.year}" for q in s.index]
+                labels = [_q_label(q) for q in s.index]
                 return [(lbl, float(v)) for lbl, v in zip(labels, s.values, strict=True)]
             fields["rev_trend"] = _series(rev_row)
             fields["profit_trend"] = _series(profit_row)
@@ -140,8 +172,8 @@ def _fetch_uncached(symbol: str) -> dict | None:
 
 def score_fundamentals(f: dict) -> dict:
     """Skor valuasi -100..+100 lewat poin per aspek (heuristik standar)."""
-    points = []
-    verdicts = []
+    points: list[float] = []
+    verdicts: list[str] = []
 
     per = _finite_float(f.get("per"))
     if per is not None:
@@ -158,7 +190,9 @@ def score_fundamentals(f: dict) -> dict:
 
     pbv = _finite_float(f.get("pbv"))
     if pbv is not None:
-        if pbv < 1:
+        if pbv <= 0:
+            points.append(-15); verdicts.append(f"🔴 PBV {pbv:.2f} negatif/nol (ekuitas negatif)")
+        elif pbv < 1:
             points.append(10); verdicts.append(f"🟢 PBV {pbv:.2f} — di bawah nilai buku")
         elif pbv < 3:
             points.append(5); verdicts.append(f"🟡 PBV {pbv:.2f} — wajar")
@@ -176,6 +210,17 @@ def score_fundamentals(f: dict) -> dict:
         else:
             points.append(-5); verdicts.append(f"🔴 ROE {roe:.1f}% lemah")
 
+    margin = normalize_margin(f.get("margin"))
+    if margin is not None:
+        if margin < 0:
+            points.append(-5); verdicts.append(f"🔴 Margin bersih {margin:.1f}% negatif")
+        elif margin >= 15:
+            points.append(5); verdicts.append(f"🟢 Margin bersih {margin:.1f}% — tebal")
+        elif margin >= 5:
+            points.append(0); verdicts.append(f"🟡 Margin bersih {margin:.1f}% — wajar")
+        else:
+            points.append(-3); verdicts.append(f"🟡 Margin bersih {margin:.1f}% tipis")
+
     dy = normalize_div_yield(f.get("div_yield"))
     if dy is not None:
         if dy >= 5:
@@ -186,9 +231,15 @@ def score_fundamentals(f: dict) -> dict:
             points.append(0); verdicts.append(f"⚪ Dividend yield {dy:.1f}% rendah")
 
     de = normalize_der(f.get("debt_eq"))
+    fin_sector = is_financial_sector(f.get("sector"))
     if de is not None:
         if de < 0:
             points.append(-5); verdicts.append(f"🔴 DER {de:.0f}% negatif (ekuitas bermasalah)")
+        elif fin_sector:
+            points.append(0)
+            verdicts.append(
+                f"🏦 DER {de:.0f}% (sektor keuangan/bank — DPK dihitung sebagai liabilitas)"
+            )
         elif de < 50:
             points.append(5); verdicts.append(f"🟢 DER {de:.0f}% — sehat")
         elif de < 100:

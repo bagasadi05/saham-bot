@@ -61,17 +61,44 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ---- indikator pro (pandas-ta-classic), untuk sinyal konfirmasi & SL/TP ----
     try:
         import pandas_ta_classic  # noqa: F401 — import ini memasang ekstensi df.ta
-        atr = df.ta.atr(14)
-        bb = df.ta.bbands(20, std=2.0)
-        df["atr14"] = atr
-        df["bb_upper"] = bb.iloc[:, 2]  # BBL/BBM/BBU
-        df["bb_mid"] = bb.iloc[:, 1]
-        df["bb_lower"] = bb.iloc[:, 0]
-        df["obv"] = df.ta.obv()
-        df["stochrsi"] = df.ta.stochrsi().iloc[:, 0]  # %K primera
-        df["obv_slope20"] = df["obv"].diff(20)
-    except Exception:  # library tidak terpasang → indikator pro dilewati
-        df["atr14"] = ((df["high"] - df["low"]).rolling(14).mean())
+        has_ta = True
+    except Exception:
+        has_ta = False
+
+    atr = None
+    if has_ta:
+        try:
+            atr = df.ta.atr(14)
+        except Exception:
+            atr = None
+    df["atr14"] = (atr if atr is not None and not getattr(atr, "isna", lambda: pd.Series([True]))().all()
+                   else (df["high"] - df["low"]).rolling(14).mean())
+
+    if has_ta:
+        try:
+            bb = df.ta.bbands(20, std=2.0)
+            if bb is not None and bb.shape[1] >= 3:
+                df["bb_upper"] = bb.iloc[:, 2]  # BBL/BBM/BBU
+                df["bb_mid"] = bb.iloc[:, 1]
+                df["bb_lower"] = bb.iloc[:, 0]
+        except Exception:
+            pass
+        try:
+            obv = df.ta.obv()
+            if obv is not None:
+                df["obv"] = obv
+                df["obv_slope20"] = obv.diff(20)
+        except Exception:
+            pass
+        try:
+            sr = df.ta.stochrsi()
+            if sr is not None and sr.shape[1] >= 1:
+                st = sr.iloc[:, 0]
+                # Harga datar membuat RSI konstan (0/0 -> 0 di pandas-ta), bukan oversold
+                rsi_span = df["rsi14"].rolling(14).max() - df["rsi14"].rolling(14).min()
+                df["stochrsi"] = st.where(rsi_span > 1e-9, float("nan"))
+        except Exception:
+            pass
 
     return df
 
@@ -83,24 +110,32 @@ def extra_confirmations(ind: pd.DataFrame) -> list[str]:
     out: list[str] = []
     if pd.isna(last.get("atr14", float("nan"))):
         return out
-    atr_pct = float(last["atr14"]) / float(last["close"]) * 100
-    out.append(f"ATR 14: {atr_pct:.1f}% dari harga (dasar SL ±1×ATR ≈ "
-               f"{money_fmt(float(last['close'] - last['atr14']))})")
+    atr_val = float(last["atr14"])
+    close = float(last["close"])
+    if close > 0 and atr_val > 0:
+        atr_pct = atr_val / close * 100
+        out.append(f"ATR 14: {atr_pct:.1f}% dari harga (dasar SL ±1×ATR ≈ "
+                   f"{money_fmt(max(0.0, close - atr_val))})")
+    else:
+        out.append("ATR 14: 0.0% dari harga (harga datar / tidak bergerak)")
     bb_mid, bb_upper = last.get("bb_mid"), last.get("bb_upper")
-    bb_lower, close = last.get("bb_lower"), float(last["close"])
-    if not any(pd.isna(v) for v in (bb_mid, bb_upper, bb_lower)):
+    bb_lower = last.get("bb_lower")
+    if not any(pd.isna(v) for v in (bb_mid, bb_upper, bb_lower)) and float(bb_mid) > 0:
         width = float(bb_upper) - float(bb_lower)
-        squeeze = width / float(bb_mid) * 100
-        pos = (close - float(bb_lower)) / width * 100 if width else 50
-        if squeeze < 8:
-            out.append(f"Bollinger SQUEEZE ({squeeze:.1f}%) — rentang makin "
-                       "sempit: sering dikuti pergerakan besar 💤")
-        elif pos > 100:
-            out.append("🚨 Harga di luar Bollinger atas — bawaan ekstrem, waspada koreksi")
-        elif pos < 0:
-            out.append("🚨 Harga di bawah Bollinger bawah — ekstrem lainnya, waspada bertahan lama")
+        if width <= 0:
+            out.append("Bollinger: rentang 0% (harga datar / tidak bergerak)")
         else:
-            out.append(f"Bollinger: harga di {pos:.0f}% rentang band")
+            squeeze = width / float(bb_mid) * 100
+            pos = (close - float(bb_lower)) / width * 100
+            if squeeze < 8:
+                out.append(f"Bollinger SQUEEZE ({squeeze:.1f}%) — rentang makin "
+                           "sempit: sering diikuti pergerakan besar 💤")
+            elif pos > 100:
+                out.append("🚨 Harga di luar Bollinger atas — bawaan ekstrem, waspada koreksi")
+            elif pos < 0:
+                out.append("🚨 Harga di bawah Bollinger bawah — ekstrem lainnya, waspada bertahan lama")
+            else:
+                out.append(f"Bollinger: harga di {pos:.0f}% rentang band")
     if not pd.isna(last.get("stochrsi", float("nan"))):
         st = float(last["stochrsi"])
         if st < 20:
@@ -109,7 +144,12 @@ def extra_confirmations(ind: pd.DataFrame) -> list[str]:
             out.append(f"StochRSI {st:.0f} — overbought pendek 🥵")
     obv_slope = last.get("obv_slope20")
     if obv_slope is not None and not pd.isna(obv_slope):
-        direction = "akumulasi 💰" if obv_slope > 0 else "distribusi 🚪"
+        if obv_slope > 0:
+            direction = "akumulasi 💰"
+        elif obv_slope < 0:
+            direction = "distribusi 🚪"
+        else:
+            direction = "datar ➖"
         out.append(f"OBV 20 hari: {direction} ({obv_slope:+,.0f})")
     return out
 
@@ -200,10 +240,11 @@ def score_from_rows(last, prev) -> dict:
     # hari ini vs rata-rata hari penuh itu apel lawan jeruk).
     vol = _f(last, "volume")
     vol_avg = _f(last, "vol_avg20")
-    vol_bull = vol > vol_avg and ret1d_v > 0
-    if vol > vol_avg:
+    vol_missing = pd.isna(vol) or pd.isna(vol_avg) or pd.isna(ret1d_v) or vol_avg <= 0
+    vol_bull = (not vol_missing) and (vol > vol_avg and ret1d_v > 0)
+    if not vol_missing and vol > vol_avg:
         vol_bear = "Volume di atas rata-rata, tapi harga turun"
-    elif ret1d_v > 0:
+    elif not vol_missing and ret1d_v > 0:
         vol_bear = "Harga naik, tapi volume di bawah rata-rata"
     else:
         vol_bear = "Volume di bawah rata-rata, harga turun"
@@ -215,7 +256,7 @@ def score_from_rows(last, prev) -> dict:
     except Exception:
         pass
     add(SCORE_WEIGHTS["volume_momentum"],
-        None if pd.isna(vol_avg) or pd.isna(ret1d_v) else vol_bull,
+        None if vol_missing else vol_bull,
         "Volume di atas rata-rata dengan harga naik", vol_bear)
     add(SCORE_WEIGHTS["price_above_sma20"], _cmp(close, _f(last, "sma20")),
         "Harga di atas MA20", "Harga di bawah MA20")

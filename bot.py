@@ -412,8 +412,19 @@ def _verdict_jual(ts_pct: float, close: float, support: float) -> tuple[str, str
             "Downtrend kuat. Jangan ditahan dengan harapan." + extra)
 
 
+def _weekly_from_daily(ind: pd.DataFrame, score_pct: float) -> dict | None:
+    """Hitung tren mingguan dari data harian (tanpa panggilan Yahoo ekstra bila cukup >=20 pekan)."""
+    if ind is None or "close" not in ind.columns or not isinstance(ind.index, pd.DatetimeIndex):
+        return None
+    w_close = ind["close"].resample("W-FRI").last().dropna()
+    if len(w_close) < 20:
+        return None
+    return analysis.weekly_trend(w_close.to_frame(name="close"), score_pct)
+
+
 def build_verdict(res: dict, fund: dict | None, news_sent: dict | None,
-                  focus: str, bt_summary: dict | None = None) -> str:
+                  focus: str, bt_summary: dict | None = None,
+                  weekly: dict | None = None) -> str:
     snap, sc, sr = res["snap"], res["score"], res["sr"]
     t = res["ticker"]
     fund_pct = fund["pct"] if fund else None
@@ -462,6 +473,15 @@ def build_verdict(res: dict, fund: dict | None, news_sent: dict | None,
     if news_sent:
         reasons.append(f"Berita {news_sent['pct']:+.0f}% "
                        f"({news_sent['n']} berita)")
+    if weekly:
+        arrow_w = ("📈" if weekly["direction"] == "naik"
+                   else ("📉" if weekly["direction"] == "turun" else "➖"))
+        reasons.append(
+            f"Tren mingguan: {arrow_w} {esc(weekly['direction'])} "
+            f"({weekly['pct_vs_ma']:+.1f}% vs MA20)"
+        )
+        if weekly.get("warning"):
+            reasons.append(f"⚠️ {esc(weekly['warning'])}")
     reasons_txt = "\n".join(f"  • {r}" for r in reasons)
 
     conds = []
@@ -641,8 +661,7 @@ async def _do_analisis(update: Update, tickers: list[str]):
         else:
             res["weekly"] = analysis.weekly_trend(weekly_df, res["score"]["pct"])
         try:
-            close = res["ind"]["close"].reset_index(drop=True)
-            res["ret1y"] = float(close.iloc[-1] / close.iloc[0] - 1) * 100
+            res["ret1y"] = banding.year_return(res["ind"]["close"])
         except Exception:
             res["ret1y"] = None
         try:
@@ -716,9 +735,16 @@ async def _do_berita(update: Update, ticker: str):
         )
         return
     sent = await asyncio.to_thread(news.news_sentiment, items)
+    n_ml = sent.get("engine_ml", 0)
+    if n_ml == sent["n"] and sent["n"] > 0:
+        engine_tag = "ML lokal"
+    elif n_ml > 0:
+        engine_tag = f"ML {n_ml}/{sent['n']} + lexicon"
+    else:
+        engine_tag = "lexicon"
     lines = [
         f"📰 <b>Berita {esc(t)}</b> — sentimen {sent['emoji']} "
-        f"({sent['pct']:+.0f}%, {sent['n']} berita)"
+        f"({sent['pct']:+.0f}%, {sent['n']} berita, mesin: {engine_tag})"
     ]
     for d in sent["details"][:7]:
         har = f" {d['sent']:+.0f}" if d["sent"] else ""
@@ -745,13 +771,15 @@ def _trend_line(trend: list[tuple[str, float]] | None) -> str | None:
         return None
 
     def _rp(v: float) -> str:
-        tril = v / 1e12
-        return f"Rp{tril:.2f}T" if abs(tril) >= 1 else f"Rp{v / 1e9:.0f}M"
+        sign = "-" if v < 0 else ""
+        av = abs(v)
+        tril = av / 1e12
+        return f"{sign}Rp{tril:.2f}T" if tril >= 1 else f"{sign}Rp{av / 1e9:.0f}M"
 
     labels = [lbl for lbl, _ in trend]
     vals = [v for _, v in trend]
     base = "→".join(_rp(v) for v in vals)
-    chg = (vals[-1] / abs(vals[-2]) - 1) * 100 if vals[-2] != 0 else None
+    chg = (vals[-1] - vals[-2]) / abs(vals[-2]) * 100 if vals[-2] != 0 else None
     arrow = " 📈" if (chg or 0) > 0 else (" 📉" if (chg or 0) < 0 else "")
     out = f"{base}{arrow}"
     if chg is not None:
@@ -804,8 +832,14 @@ async def _do_fundamental(update: Update, ticker: str):
     rows.append(f"  PER: {_fmt('per', '%.1f')}   PBV: {_fmt('pbv', '%.2f')}")
     rows.append(f"  EPS: {_fmt('eps', '%d')}   DER: {der_txt}")
     roe = fundamental.normalize_roe(fund.get("roe"))
+    margin = fundamental.normalize_margin(fund.get("margin"))
+    roe_parts = []
     if roe is not None:
-        rows.append(f"  ROE: {roe:.1f}%")
+        roe_parts.append(f"ROE: {roe:.1f}%")
+    if margin is not None:
+        roe_parts.append(f"Margin: {margin:.1f}%")
+    if roe_parts:
+        rows.append("  " + "   ".join(roe_parts))
     dy = fundamental.normalize_div_yield(fund.get("div_yield"))
     if dy is not None:
         rows.append(f"  Dividend yield: {dy:.1f}%")
@@ -878,6 +912,7 @@ async def _do_backtest(update: Update, ticker: str, from_menu: bool = False):
             f"Transaksi       : {summary['trades']}\n"
             f"Win-rate        : {_f(summary['win_rate'], '{:.1f}%')}\n"
             f"Profit factor   : {_f(summary['profit_factor'], '{:.2f}')}\n"
+            f"Expectancy/trade: {_f(summary.get('expectancy'), '{:+.2f}%')}\n"
             f"Max drawdown    : {_f(summary['max_dd'], '{:.1f}%')}"
             "</pre>"
         )
@@ -925,9 +960,16 @@ async def _do_tanya(update: Update, ticker: str, focus: str):
         nsent = await asyncio.to_thread(news.news_sentiment, items)
     if isinstance(bt_sum, Exception):
         bt_sum = None
+    weekly = _weekly_from_daily(res["ind"], res["score"]["pct"])
+    if weekly is None:
+        try:
+            wdf = await asyncio.to_thread(data.fetch_weekly, t)
+            weekly = analysis.weekly_trend(wdf, res["score"]["pct"])
+        except Exception:
+            weekly = None
     await reply_long(
         msg,
-        build_verdict(res, fsc, nsent, focus, bt_sum),
+        build_verdict(res, fsc, nsent, focus, bt_sum, weekly=weekly),
         reply_markup=result_markup(f"tanya_{focus}", t),
     )
 
@@ -1773,21 +1815,8 @@ async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "❌ Data pembanding tidak tersedia (semua sumber gagal) — coba lagi nanti.")
         return
 
-    hdr = f"{'EMITEN':<7}{'PER':>6}{'PBV':>6}{'ROE%':>7}{'DY%':>6}{'1 thn':>9}{'20h':>8}{'Pow':>5}"
-
-    def _row(r) -> str:
-        pow_txt = "—" if r["power"] is None else f"{r['power']:+.0f}"
-        return (
-            f"{r['ticker']:<7}"
-            f"{banding.fmt_cell(r['per'], '%.1f'):>6}"
-            f"{banding.fmt_cell(r['pbv'], '%.2f'):>6}"
-            f"{banding.fmt_cell(r['roe'], '%.1f'):>7}"
-            f"{banding.fmt_cell(r['dy'], '%.1f'):>6}"
-            f"{banding.fmt_cell(r['ret1y'], '%+.0f', '%'):>10}"
-            f"{banding.fmt_cell(r['ret20d'], '%+.1f'):>8}"
-            f"{pow_txt:>5}")
-
-    body = "\n".join(_row(r) for r in rows)
+    hdr = banding.format_table_header()
+    body = "\n".join(banding.format_table_row(r) for r in rows)
     lines = [f"⚖️ <b>PERBANDINGAN {', '.join(esc(t) for t in emiten)}</b>",
              "<pre>" + esc(hdr) + "\n" + esc(body) + "</pre>"]
     verdict = banding.pbv_verdict(rows)

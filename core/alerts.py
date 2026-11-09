@@ -45,7 +45,13 @@ def check_triggers(ind: pd.DataFrame) -> list[str]:
     if len(ind) < 25:
         return []
     last, prev = ind.iloc[-1], ind.iloc[-2]
-    ret = float(last.get("ret1d", 0)) or 0
+    close_raw = last.get("close")
+    if close_raw is None or pd.isna(close_raw):
+        return []
+    close_now = float(close_raw)
+
+    ret_raw = last.get("ret1d")
+    ret = float(ret_raw) if ret_raw is not None and pd.notna(ret_raw) else 0.0
     triggers: list[str] = []
 
     # Indikator "level" — cek posisi sekarang
@@ -55,24 +61,46 @@ def check_triggers(ind: pd.DataFrame) -> list[str]:
         triggers.append("drop")
     # high20/low20 baris terakhir SUDAH memuat high/low hari ini, sehingga close
     # tidak mungkin melewatinya. Pakai level 20 hari sampai dengan kemarin.
-    high20_prev = float(prev["high20"]) if pd.notna(prev.get("high20")) else None
-    low20_prev = float(prev["low20"]) if pd.notna(prev.get("low20")) else None
-    close_now = float(last["close"])
+    high20_prev = (
+        float(prev["high20"])
+        if pd.notna(prev.get("high20")) and float(prev["high20"]) > 0
+        else None
+    )
+    low20_prev = (
+        float(prev["low20"])
+        if pd.notna(prev.get("low20")) and float(prev["low20"]) > 0
+        else None
+    )
     if high20_prev and close_now > high20_prev * 1.001:
         triggers.append("breakout")
     if low20_prev and close_now < low20_prev * 0.999:
         triggers.append("breakdown")
-    if float(last["rsi14"]) < 30:
-        triggers.append("oversold")
-    if float(last["rsi14"]) > 70:
-        triggers.append("overbought")
-    if float(last["vol_avg20"]) and float(last["volume"]) >= 3 * float(last["vol_avg20"]):
-        triggers.append("vol_spike")
 
-    # Indikator "cross" — butuh nilai prev
-    if pd.notna(prev["macd"]) and pd.notna(prev["macd_signal"]):
-        cross_golden = float(prev["macd"]) <= float(prev["macd_signal"]) < float(last["macd"])
-        cross_death = float(prev["macd"]) >= float(prev["macd_signal"]) > float(last["macd"])
+    rsi_raw = last.get("rsi14")
+    if rsi_raw is not None and pd.notna(rsi_raw):
+        rsi_v = float(rsi_raw)
+        if rsi_v < 30:
+            triggers.append("oversold")
+        if rsi_v > 70:
+            triggers.append("overbought")
+
+    vol_raw, vavg_raw = last.get("volume"), last.get("vol_avg20")
+    if (
+        vol_raw is not None and vavg_raw is not None
+        and pd.notna(vol_raw) and pd.notna(vavg_raw) and float(vavg_raw) > 0
+    ):
+        if float(vol_raw) >= 3 * float(vavg_raw):
+            triggers.append("vol_spike")
+
+    # Indikator "cross" — butuh nilai prev & last yang valid
+    p_macd, p_sig = prev.get("macd"), prev.get("macd_signal")
+    l_macd, l_sig = last.get("macd"), last.get("macd_signal")
+    if (
+        pd.notna(p_macd) and pd.notna(p_sig)
+        and pd.notna(l_macd) and pd.notna(l_sig)
+    ):
+        cross_golden = float(p_macd) <= float(p_sig) and float(l_macd) > float(l_sig)
+        cross_death = float(p_macd) >= float(p_sig) and float(l_macd) < float(l_sig)
         if cross_golden:
             triggers.append("ma_golden")
         if cross_death:

@@ -2,6 +2,7 @@
 Bahasa Indonesia untuk berita pasar modal. Tanpa API key, tanpa biaya."""
 from __future__ import annotations
 
+import email.utils
 import os
 import re
 import threading
@@ -35,20 +36,48 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
 # frasa (bukan substring mentah) supaya "lapa" tidak tertukar dengan "lapangan".
 
 POS = {  # kata: bobot
-    "naik": 1.0, "menguat": 1.0, "melejit": 2.0, "melonjak": 2.0,
-    "lonjakan": 2.0, "kencang": 1.0,
-    "untung": 2.0, "laba": 1.5, "profit": 1.5, "surplus": 1.5,
+    "naik": 1.0, "menguat": 1.0, "melejit": 2.0, "melonjak": 2.0, "melesat": 2.0,
+    "lonjakan": 2.0, "kencang": 1.0, "rebound": 1.5, "bangkit": 1.5, "pulih": 1.2,
+    "ara": 2.0, "cuan": 1.5, "meningkat": 1.2, "positif": 1.0,
+    "untung": 2.0, "laba": 0.5, "profit": 0.5, "surplus": 1.5,
     "tumbuh": 1.5, "percepatan": 1.0, "memperbaiki": 1.0, "menembus": 1.0,
-    "breakout": 2.0, "dividen": 1.0, "akumulasi": 1.5, "buy": 1.0,
-    "ekspansi": 1.5, "akuisisi": 1.0, "rekor": 1.0,
+    "breakout": 2.0, "dividen": 1.0, "akumulasi": 1.5, "buy": 1.0, "buyback": 1.2,
+    "inflow": 1.2, "ekspansi": 1.5, "akuisisi": 1.0, "rekor": 1.0,
 }
 NEG = {
-    "turun": 1.0, "menurun": 1.0, "melemah": 1.5, "anjlok": 2.5,
-    "merosot": 2.0, "koreksi": 0.5, "ambles": 2.0, "rugi": 2.0,
-    "defisit": 1.5, "sanksi": 2.0, "denda": 1.5, "gagal": 1.5,
+    "turun": 1.0, "menurun": 1.0, "melemah": 1.5, "anjlok": 2.5, "ambruk": 2.5,
+    "merosot": 2.0, "terkoreksi": 1.0, "koreksi": 0.8, "ambles": 2.0,
+    "jeblok": 2.0, "longsor": 2.0, "boncos": 2.0, "tergerus": 1.5,
+    "tertekan": 1.2, "susut": 1.2, "pangkas": 1.0, "merugi": 2.0, "rugi": 2.0,
+    "defisit": 1.5, "negatif": 1.0, "sanksi": 2.0, "denda": 1.5, "gagal": 1.5,
     "redam": 1.0, "tekanan": 1.0, "divestasi": 1.5, "dilusi": 1.5,
-    "hutang": 0.5, "suspend": 2.0, "probe": 1.5, "bocor": 1.0,
+    "hutang": 0.5, "suspend": 2.0, "suspensi": 2.0, "digembok": 2.0,
+    "pailit": 2.5, "pkpu": 2.0, "default": 2.0, "delisting": 2.5, "arb": 2.0,
+    "outflow": 1.2, "probe": 1.5, "bocor": 1.0,
 }
+_NEGATORS = {"tidak", "bukan", "belum", "tak", "tanpa", "kurang"}
+_NEG_BRIDGES = {
+    "kunjung", "pernah", "jadi", "mampu", "berhasil", "terbukti",
+    "juga", "sempat", "bisa", "dapat",
+}
+_SOURCE_SUFFIX_RE = re.compile(r"\s+[-|—]\s+[A-Z0-9][A-Za-z0-9.&'/ ]{1,40}$")
+
+
+def strip_source_suffix(title: str, source: str | None = None) -> str:
+    """Buang akhiran nama media Google News ('Judul - Bisnis.com') agar tidak mengacaukan sentimen."""
+    t = re.sub(r"\s+", " ", (title or "").strip())
+    if not t:
+        return ""
+    if source:
+        src = source.strip()
+        for sep in (" - ", " | ", " — "):
+            suffix = sep + src
+            if t.lower().endswith(suffix.lower()) and len(t) > len(suffix) + 4:
+                return t[: -len(suffix)].strip()
+    m = _SOURCE_SUFFIX_RE.search(t)
+    if m and m.start() >= 12:
+        return t[: m.start()].strip()
+    return t
 
 
 def _clean_wordbag(text: str) -> str:
@@ -58,14 +87,16 @@ def _clean_wordbag(text: str) -> str:
 
 def score_title(title: str) -> tuple[float, list[str]]:
     """Skor sentimen judul berita satu kalimat. Return (skor, kata_ketemuan)."""
-    text = _clean_wordbag(title)
+    text = _clean_wordbag(strip_source_suffix(title))
     words = re.findall(r"[a-z\-]+", text)
     score = 0.0
     hits: list[str] = []
-    # negasi paling sederhana: kata "tidak/bukan/belum" sebelum kata pos -> flips.
-    negators = {"tidak", "bukan", "belum"}
+    # negasi + 1 kata jembatan ('tidak kunjung naik', 'belum menguat') -> balik arah
     for i, w in enumerate(words):
-        negated = i > 0 and words[i - 1] in negators
+        negated = (
+            (i > 0 and words[i - 1] in _NEGATORS)
+            or (i > 1 and words[i - 2] in _NEGATORS and words[i - 1] in _NEG_BRIDGES)
+        )
         if w in POS and POS[w]:
             delta = POS[w] * (-1 if negated else 1)
             score += delta
@@ -106,23 +137,32 @@ def fetch_news(ticker: str, limit: int = 12) -> list[dict]:
     xml_bytes = _http_get(f"{GOOGLE_NEWS_RSS}?{qs}")
     root = ET.fromstring(xml_bytes)
     items = []
+    seen_titles: set[str] = set()
     for item in root.iter("item"):
-        title = (item.findtext("title") or "").strip()
+        raw_title = (item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
         pub = (item.findtext("pubDate") or "").strip()
         source = None
         src_el = item.find("source")
         if src_el is not None and src_el.text:
             source = src_el.text.strip()
+        title = strip_source_suffix(raw_title, source)
         if not title:
             continue
+        t_key = title.lower()
+        if t_key in seen_titles:
+            continue
+        seen_titles.add(t_key)
         dt = None
-        for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"):
+        if pub:
             try:
-                dt = datetime.strptime(pub, fmt).replace(tzinfo=timezone.utc)
-                break
-            except ValueError:
-                continue
+                parsed = email.utils.parsedate_to_datetime(pub)
+                if parsed is not None:
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    dt = parsed.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                dt = None
         items.append({"title": title, "link": link, "date": dt, "source": source})
         if len(items) >= limit:
             break
@@ -146,7 +186,10 @@ def news_sentiment(items: list[dict]) -> dict:
     if pending:
         try:
             from core import news_ml
-            ml_results = news_ml.classify_batch([it["title"] for it in pending])
+            clean_titles = [
+                strip_source_suffix(it["title"], it.get("source")) for it in pending
+            ]
+            ml_results = news_ml.classify_batch(clean_titles)
         except Exception:
             ml_results = [None] * len(pending)
     ml_iter = iter(ml_results)
@@ -164,7 +207,7 @@ def news_sentiment(items: list[dict]) -> dict:
                 hits = [f"ML {res['label']}:{res['score']:.0%}"]
                 engine = "ml"
             else:
-                s, hits = score_title(it["title"])
+                s, hits = score_title(strip_source_suffix(it["title"], it.get("source")))
                 engine = "lexicon"
         it.update({"sent": s, "hits": hits, "engine": engine})
 

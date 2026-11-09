@@ -115,28 +115,40 @@ def score_universe(items: list[dict]) -> list[dict]:
             it.update(rel_z=None, rel_pct=None, rel_quintil=None, rel_ok=False)
         return items
 
-    feats = {it["ticker"]: factors_from_ind(it["ind"]) for it in usable}
+    feats = [factors_from_ind(it["ind"]) for it in usable]
     stats = {}
     for name in WEIGHTS:
-        vals = [f[name] for f in feats.values() if not pd.isna(f.get(name, float("nan")))]
+        vals = [f[name] for f in feats if not pd.isna(f.get(name, float("nan")))]
         if len(vals) >= MIN_UNIVERSE:
             mu = sum(vals) / len(vals)
-            var = sum((v - mu) ** 2 for v in vals) / len(vals)
+            # Samakan dengan std() pandas (ddof=1) di research/evaluate.py
+            var = sum((v - mu) ** 2 for v in vals) / (len(vals) - 1)
             stats[name] = (mu, math.sqrt(var))
         else:
             stats[name] = (0.0, 0.0)   # fitur tak tersedia → diabaikan
 
-    ranked = sorted(usable, key=lambda it: zscore(feats[it["ticker"]], stats))
-    n = len(ranked)
-    for pos, it in enumerate(ranked):
-        z = zscore(feats[it["ticker"]], stats)
-        pct = (pos + 0.5) / n * 100
-        it.update(
-            rel_z=round(z, 5),
-            rel_pct=round(pct, 1),
-            rel_quintil=max(1, min(5, int(pct // 20) + 1)),
-            rel_ok=True,
-        )
+    zscores = [zscore(f, stats) for f in feats]
+    order = sorted(range(len(usable)), key=lambda idx: zscores[idx])
+    n = len(order)
+    # Penanganan tie adil: nilai z yang sama persis mendapat persentil rata-rata grup
+    i = 0
+    while i < n:
+        j = i + 1
+        zi = zscores[order[i]]
+        while j < n and abs(zscores[order[j]] - zi) <= 1e-12:
+            j += 1
+        avg_pos = (i + j - 1) / 2.0
+        pct = (avg_pos + 0.5) / n * 100.0
+        q = max(1, min(5, int(pct // 20) + 1))
+        for k in range(i, j):
+            idx = order[k]
+            usable[idx].update(
+                rel_z=round(zscores[idx], 5),
+                rel_pct=round(pct, 1),
+                rel_quintil=q,
+                rel_ok=True,
+            )
+        i = j
     # emiten yang datanya tidak layak tetap diberi status jujur
     for it in items:
         if not it.get("rel_ok"):

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import matplotlib
 matplotlib.use("Agg")  # tanpa GUI / display
-import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
+import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
 
@@ -30,8 +31,13 @@ def _style(fig, axes):
 
 
 def build_chart(symbol: str, ind: pd.DataFrame, score_pct: float, out_path: str) -> str:
-    df = ind.tail(180)  # sekitar 6 bulan bursa
-    x = df.index
+    df = ind.tail(180)  # sekitar 6-9 bulan bursa
+    # Pakai indeks integer berurutan agar celah akhir pekan / libur panjang tidak melebar
+    x = np.arange(len(df))
+    dates = [
+        idx.strftime("%d %b %y") if hasattr(idx, "strftime") else str(idx)[:10]
+        for idx in df.index
+    ]
 
     fig = Figure(figsize=CHART_SIZE, dpi=CHART_DPI)
     ax1, ax2, ax3, ax4 = fig.subplots(
@@ -50,15 +56,21 @@ def build_chart(symbol: str, ind: pd.DataFrame, score_pct: float, out_path: str)
         ax1.fill_between(x, df["bb_lower"], df["bb_upper"], color="#16344a", alpha=.35)
     ax1.fill_between(x, df["low20"], df["high20"], color="#2b3a4d", alpha=.5,
                      label="Rentang 20 hari")
+    c_vals = df["close"].dropna()
+    if len(c_vals) and float(c_vals.min()) == float(c_vals.max()):
+        c0 = float(c_vals.iloc[0])
+        pad = max(abs(c0) * 0.02, 1.0)
+        ax1.set_ylim(c0 - pad, c0 + pad)
     ax1.set_title(f"{symbol} — skor momentum {score_pct:+.0f}%",
                   color="white", fontsize=12, loc="left")
     ax1.legend(loc="upper left", frameon=False, fontsize=9, labelcolor="white", ncols=5)
     ax1.set_ylabel("Harga (Rp)", color="white", fontsize=9)
 
     # Panel 2 — volume
+    vols = df["volume"].fillna(0.0)
     bar_c = ["#26a69a" if o <= c else "#ef5350"
              for o, c in zip(df["open"], df["close"], strict=True)]
-    ax2.bar(x, df["volume"], color=bar_c, width=1.0, alpha=.8)
+    ax2.bar(x, vols, color=bar_c, width=0.75, alpha=.8)
     ax2.plot(x, df["vol_avg20"], color="#546e7a", lw=1, label="Vol avg 20d")
     ax2.set_ylabel("Volume", color="white", fontsize=9)
     ax2.legend(loc="upper left", frameon=False, fontsize=8, labelcolor="white")
@@ -72,15 +84,24 @@ def build_chart(symbol: str, ind: pd.DataFrame, score_pct: float, out_path: str)
     ax3.set_ylabel("RSI 14", color="white", fontsize=9)
 
     # Panel 4 — MACD
-    hist_c = ["#26a69a" if h >= 0 else "#ef5350" for h in df["macd_hist"]]
-    ax4.bar(x, df["macd_hist"], color=hist_c, width=1.0, alpha=.85, label="Histogram")
+    hist = df["macd_hist"].fillna(0.0)
+    hist_c = ["#26a69a" if h >= 0 else "#ef5350" for h in hist]
+    ax4.bar(x, hist, color=hist_c, width=0.75, alpha=.85, label="Histogram")
     ax4.plot(x, df["macd"], color="#29b6f6", lw=1.1, label="MACD")
     ax4.plot(x, df["macd_signal"], color="#ff8a65", lw=1.1, label="Signal")
     ax4.axhline(0, color="#607d8b", lw=.7)
     ax4.set_ylabel("MACD", color="white", fontsize=9)
     ax4.set_xlabel("Tanggal", color="white", fontsize=9)
     ax4.legend(loc="upper left", frameon=False, fontsize=8, labelcolor="white")
-    ax4.xaxis.set_major_formatter(mdates.DateFormatter("%b %y"))
+
+    def _fmt_date(val, _pos=None):
+        idx = int(round(val))
+        return dates[idx] if 0 <= idx < len(dates) else ""
+
+    ax4.xaxis.set_major_locator(mticker.MaxNLocator(nbins=7, integer=True))
+    ax4.xaxis.set_major_formatter(mticker.FuncFormatter(_fmt_date))
+    if len(df) > 0:
+        ax4.set_xlim(-0.5, len(df) - 0.5)
 
     fig.savefig(out_path, bbox_inches="tight", facecolor=fig.get_facecolor())
     return out_path

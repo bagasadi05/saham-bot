@@ -9,6 +9,8 @@ import time as _time
 from core import data, fundamental, powerscore
 
 _MKT_TTL = 6 * 3600      # cache IHSG 6 jam (pembanding tidak perlu real-time)
+MIN_YEAR_BARS = 180      # butuh minimal ~9 bulan data untuk disebut return "1 tahun"
+TRADING_DAYS_1Y = 250    # jendela 1 tahun bursa BEI (~245-252 hari)
 _MKT_FAIL_TTL = 5 * 60   # gagal: coba lagi 5 menit lagi, jangan dikunci 6 jam
 _mkt_cache: dict = {"ts": 0.0, "val": None}
 
@@ -24,6 +26,20 @@ SECTOR_CLUSTERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Consumer Cyclical", ("MAPI", "EMTK")),
     ("Real Estate", ("CTRA",)),
 )
+
+
+def year_return(close) -> float | None:
+    """Return ~1 tahun bursa (%), atau None jika riwayat terlalu pendek (<180 hari)."""
+    if close is None:
+        return None
+    c = close.dropna().reset_index(drop=True)
+    if len(c) < MIN_YEAR_BARS:
+        return None
+    back = min(TRADING_DAYS_1Y, len(c) - 1)
+    base = float(c.iloc[-1 - back])
+    if base <= 0:
+        return None
+    return float(c.iloc[-1] / base - 1) * 100
 
 
 def market_context() -> dict | None:
@@ -51,7 +67,7 @@ def market_context() -> dict | None:
             except Exception:
                 return None
 
-        out = {"ret20d": _pct(20), "ret1y": _pct(min(245, len(close) - 1))}
+        out = {"ret20d": _pct(20), "ret1y": year_return(close)}
     _mkt_cache["ts"] = _time.time()
     _mkt_cache["val"] = out  # gagal juga dicache sebentar agar tidak spam
     return out
@@ -95,9 +111,10 @@ def sector_context(ticker: str, sector: str | None = None,
         close = df["close"].reset_index(drop=True)
         try:
             r20 = float(close.iloc[-1] / close.iloc[-21] - 1) * 100
-            r1y = float(close.iloc[-1] / close.iloc[0] - 1) * 100
+            r1y = year_return(close)
             r20s.append(r20)
-            r1ys.append(r1y)
+            if r1y is not None:
+                r1ys.append(r1y)
             used.append(peer)
         except Exception:
             continue
@@ -107,7 +124,7 @@ def sector_context(ticker: str, sector: str | None = None,
         "peers": used,
         "sector": sector,
         "ret20d": sum(r20s) / len(r20s),
-        "ret1y": sum(r1ys) / len(r1ys),
+        "ret1y": (sum(r1ys) / len(r1ys)) if r1ys else None,
     }
 
 
@@ -120,8 +137,7 @@ def compare_row(ticker: str, res: dict | None, fund: dict | None) -> dict:
         snap = res["snap"]
         out["ret20d"] = snap.get("ret20d")
         try:
-            close = res["ind"]["close"].reset_index(drop=True)
-            out["ret1y"] = float(close.iloc[-1] / close.iloc[0] - 1) * 100
+            out["ret1y"] = year_return(res["ind"]["close"])
         except Exception:
             out["ret1y"] = None
         out["power"] = powerscore.combine(
@@ -143,6 +159,29 @@ def fmt_cell(v, tpl: str, suffix: str = "") -> str:
         return (tpl % v) + suffix
     except Exception:
         return "—"
+
+
+def format_table_header() -> str:
+    """Header tabel /banding (lebar kolom tepat sejajar dengan format_table_row)."""
+    return (
+        f"{'EMITEN':<7}{'PER':>6}{'PBV':>6}{'ROE%':>7}"
+        f"{'DY%':>6}{'1 thn':>10}{'20h':>8}{'Pow':>5}"
+    )
+
+
+def format_table_row(r: dict) -> str:
+    """Satu baris emiten untuk tabel /banding."""
+    pow_txt = "—" if r["power"] is None else f"{r['power']:+.0f}"
+    return (
+        f"{r['ticker']:<7}"
+        f"{fmt_cell(r['per'], '%.1f'):>6}"
+        f"{fmt_cell(r['pbv'], '%.2f'):>6}"
+        f"{fmt_cell(r['roe'], '%.1f'):>7}"
+        f"{fmt_cell(r['dy'], '%.1f'):>6}"
+        f"{fmt_cell(r['ret1y'], '%+.0f', '%'):>10}"
+        f"{fmt_cell(r['ret20d'], '%+.1f'):>8}"
+        f"{pow_txt:>5}"
+    )
 
 
 def pbv_verdict(rows: list[dict]) -> str | None:

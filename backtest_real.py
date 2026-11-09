@@ -23,6 +23,7 @@ from backtesting import Backtest, Strategy
 from core import analysis, data
 from core.saran import BUY_FEE, SELL_FEE
 
+WARMUP = 210          # tunggu MA200 terbentuk sebelum sinyal aktif
 TRAP_RET_PCT = 15.0   # skip entry bila harga sudah naik >15% (20 hari)
 HOLD_MAX = 20         # hari bursa maksimal tahan
 COMMISSION = (BUY_FEE + SELL_FEE) / 2  # hanya untuk ringkasan
@@ -46,7 +47,7 @@ def build_statistics(ticker: str, period: str = "5y"):
     ind = analysis.compute_indicators(df)
 
     score_pct = np.full(len(ind), np.nan)
-    for i in range(2, len(ind)):
+    for i in range(WARMUP, len(ind)):
         try:
             score_pct[i] = analysis.score_from_rows(ind.iloc[i], ind.iloc[i - 1])["pct"]
         except Exception:
@@ -158,6 +159,7 @@ def summarize_stats(ticker: str, stats) -> dict:
         "trades": int(trades_raw) if trades_raw is not None else 0,
         "win_rate": _clean_stat(stats.get("Win Rate [%]")),
         "profit_factor": _clean_stat(stats.get("Profit Factor")),
+        "expectancy": _clean_stat(stats.get("Expectancy [%]")),
         "max_dd": _clean_stat(stats.get("Max. Drawdown [%]")),
         "exposure": _clean_stat(stats.get("Exposure Time [%]")),
     }
@@ -179,6 +181,7 @@ def fmt_report(ticker: str, stats) -> str:
         f"  Jumlah transaksi: {s['trades']}\n"
         f"  Win-rate        : {_fmt_num(s['win_rate'], '{:.1f}', '%')}\n"
         f"  Profit factor   : {_fmt_num(s['profit_factor'], '{:.2f}')}\n"
+        f"  Expectancy/trade: {_fmt_num(s['expectancy'], '{:+.2f}', '%')}\n"
         f"  Max drawdown    : {_fmt_num(s['max_dd'], '{:.1f}', '%')}\n"
         f"  Waktu terinvestasi: {_fmt_num(s['exposure'], '{:.0f}', '%')}\n"
         f"  (biaya beli {BUY_FEE*100:.2f}% / jual {SELL_FEE*100:.2f}% seperti /saran,\n"
