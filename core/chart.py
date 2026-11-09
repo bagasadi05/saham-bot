@@ -1,11 +1,16 @@
-"""Membuat chart analisis teknikal: harga + MA + rentang 20 hari, volume, RSI, MACD."""
+"""Membuat chart analisis teknikal: harga + MA + rentang 20 hari, volume, RSI, MACD.
+
+Dibuat lewat `matplotlib.figure.Figure` (bukan pyplot) supaya aman dipanggil
+dari beberapa thread sekaligus — bot memakai asyncio.to_thread per permintaan
+dan pyplot menyimpan state global yang bisa saling menimpa.
+"""
 from __future__ import annotations
 
 import matplotlib
 matplotlib.use("Agg")  # tanpa GUI / display
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import pandas as pd
+from matplotlib.figure import Figure
 
 from config import CHART_SIZE, CHART_DPI
 
@@ -28,9 +33,10 @@ def build_chart(symbol: str, ind: pd.DataFrame, score_pct: float, out_path: str)
     df = ind.tail(180)  # sekitar 6 bulan bursa
     x = df.index
 
-    fig, (ax1, ax2, ax3, ax4) = plt.subplots(
-        4, 1, figsize=CHART_SIZE, dpi=CHART_DPI,
-        gridspec_kw={"height_ratios": [3, 1, 1, 1], "hspace": 0.12}, sharex=True)
+    fig = Figure(figsize=CHART_SIZE, dpi=CHART_DPI)
+    ax1, ax2, ax3, ax4 = fig.subplots(
+        4, 1, sharex=True,
+        gridspec_kw={"height_ratios": [3, 1, 1, 1], "hspace": 0.12})
     _style(fig, (ax1, ax2, ax3, ax4))
 
     # Panel 1 — harga, MA, rentang 20 hari
@@ -77,5 +83,4 @@ def build_chart(symbol: str, ind: pd.DataFrame, score_pct: float, out_path: str)
     ax4.xaxis.set_major_formatter(mdates.DateFormatter("%b %y"))
 
     fig.savefig(out_path, bbox_inches="tight", facecolor=fig.get_facecolor())
-    plt.close(fig)
     return out_path

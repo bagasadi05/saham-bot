@@ -71,6 +71,9 @@ def _ensure_ready(conn):
 @contextmanager
 def _db():
     """Koneksi + transaksi singkat (satu operasi tulis = satu transaksi)."""
+    folder = os.path.dirname(STORE_DB)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
     conn = sqlite3.connect(STORE_DB, timeout=15)
     conn.row_factory = sqlite3.Row
     try:

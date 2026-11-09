@@ -200,7 +200,8 @@ async def fetch_and_analyze(ticker: str) -> dict:
     if df is None:
         raise ValueError(f"Data untuk '{ticker}' tidak ditemukan (kursor tidak valid atau koneksi gagal).")
     res = await asyncio.to_thread(analysis.analyze, ticker, df)
-    res["ticker"] = ticker.upper().replace(".", "").replace("JK", "")
+    # ticker yang tampil di laporan: kode emiten saja ("BBCA.JK" -> "BBCA")
+    res["ticker"] = data.normalize_ticker(ticker).replace(".JK", "")
     # [kendala 1] kalau data berasal dari cache (Yahoo 429 dsb), sampaikan jujur
     res["stale_note"] = df.attrs.get("stale_note", "")
     # cache bisa berumur hari-an (libur panjang / Yahoo mati) — sebutkan umurnya
@@ -565,11 +566,12 @@ _MANUAL_PROMPT = {
 
 async def _do_analisis(update: Update, tickers: list[str]):
     msg = update.effective_message
+    mkt = await asyncio.to_thread(banding.market_context)
     for t in tickers[:5]:
         try:
             res = await fetch_and_analyze(t)
         except ValueError as e:
-            await msg.reply_text(f"❌ {e}", reply_markup=home_markup())
+            await msg.reply_text(f"❌ {esc(e)}", reply_markup=home_markup())
             continue
         fund_f = asyncio.to_thread(fundamental.fetch_fundamentals, t)
         news_f = asyncio.to_thread(news.fetch_news, t)
@@ -585,20 +587,31 @@ async def _do_analisis(update: Update, tickers: list[str]):
             nsent = None
         else:
             nsent = await asyncio.to_thread(news.news_sentiment, items)
-        await msg.reply_text(build_report(res, fsc, nsent),
+        try:
+            close = res["ind"]["close"].reset_index(drop=True)
+            res["ret1y"] = float(close.iloc[-1] / close.iloc[0] - 1) * 100
+        except Exception:
+            res["ret1y"] = None
+        res["mkt"] = mkt
+        await msg.reply_text(build_report(res, fsc, nsent, mkt),
                              parse_mode=ParseMode.HTML,
                              reply_markup=result_markup("analisis", t))
         path = os.path.join(TMP_DIR, f"chart_{int(time.time() * 1000)}.png")
-        await asyncio.to_thread(build_chart, res["ticker"].upper(), res["ind"],
-                                res["score"]["pct"], path)
         try:
+            await asyncio.to_thread(build_chart, res["ticker"].upper(), res["ind"],
+                                    res["score"]["pct"], path)
             with open(path, "rb") as f:
                 await msg.reply_photo(
                     photo=f, caption=f"📈 Chart {res['ticker']} (6 bulan terakhir)",
                     reply_markup=result_markup("analisis", t))
+        except Exception:
+            log.exception("chart gagal utk %s", res["ticker"])
         finally:
-            if os.path.exists(path):
-                os.remove(path)
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
 
 
 async def _do_skor(update: Update, tickers: list[str]):
@@ -753,44 +766,14 @@ async def _do_saran(update: Update, list_only: bool = False):
     wl = store.get_watchlist(chat_id)
     universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
     await msg.reply_text(
-        f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 3-4 menit...",
+        f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 1-2 menit...",
         reply_markup=home_markup())
-    analyzed, latest = [], {}
-    for t in universe:
-        a = await gather_candidate(t)
-        if a:
-            analyzed.append(a)
-            latest[a["res"]["ticker"]] = a["res"]["snap"]["close"]
-        await asyncio.sleep(.2)
-    if not analyzed:
+    txt = await saran_scan_text(chat_id, universe)
+    if txt is None:
         await msg.reply_text("❌ Data sumber error, coba lagi nanti.",
                              reply_markup=home_markup())
         return
-    result = saranmod.pick(analyzed)
-    saranmod.update_paper(chat_id, latest)
-    lines = [f"🧭 <b>RINGKASAN SARAN HARIAN — {pd.Timestamp.now(tz=WIB):%d %b %Y}</b>",
-             "Skema cais: jual dibeli penutupan | SL 1×ATR | TP 2×ATR\n"]
-    if result["picks"]:
-        saranmod.open_paper(chat_id, result["picks"], f"{pd.Timestamp.now(tz=WIB):%d %b}")
-        lines.append("Kandidat BUY (urut PowerScore, tersimpan sebagai posisi latihan):")
-        for c in result["picks"]:
-            fund_txt = "—" if c["fund"] is None else f"{c['fund']:+.0f}"
-            news_txt = "—" if c["news"] is None else f"{c['news']:+.0f}"
-            lines.append(
-                f"  {c['emoji']} <b>{c['ticker']}</b> power {c['power']:+d}% "
-                f"(tek {c['tech']:+.0f}, fund {fund_txt}, berita {news_txt})\n"
-                f"      Entry {saranmod.fmt(c['entry'])} | SL {saranmod.fmt(c['sl'])} | "
-                f"TP {saranmod.fmt(c['tp'])}")
-    else:
-        lines.append("Tidak ada kandidat layak BUY hari ini "
-                     "(semua skor tak mencukupi / terkena filter jebakan momentum).")
-    lines.append("\n🚫 HINDARI (terlemah):")
-    for c in result["avoid"]:
-        lines.append(f"  {c['emoji']} <b>{c['ticker']}</b> {c['power']:+d}% — "
-                     f"{'jebakan momentum' if c['ret20d'] > 15 else 'teknikal lemah'}")
-    lines.append("\n⚠️ Alat bantu latihan, bukan saran formal. DYOR!")
-    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
-                         disable_web_page_preview=True, reply_markup=home_markup())
+    await reply_long(msg, txt, disable_web_page_preview=True, reply_markup=home_markup())
 
 
 async def _do_watch_list(update: Update):
@@ -1754,16 +1737,22 @@ async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=result_markup("analisis", t))
 
         path = os.path.join(TMP_DIR, f"chart_{int(time.time() * 1000)}.png")
-        await asyncio.to_thread(build_chart, res["ticker"].upper(), res["ind"],
-                                res["score"]["pct"], path)
         try:
+            await asyncio.to_thread(build_chart, res["ticker"].upper(), res["ind"],
+                                    res["score"]["pct"], path)
             with open(path, "rb") as f:
                 await update.effective_message.reply_photo(
                     photo=f, caption=f"📈 Chart {res['ticker']} (6 bulan terakhir)",
                     reply_markup=result_markup("analisis", t))
+        except Exception:
+            # laporan teks sudah terkirim — chart gagal tak boleh menggagalkan sisanya
+            log.exception("chart gagal utk %s", res["ticker"])
         finally:
-            if os.path.exists(path):
-                os.remove(path)
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
 
 
 async def cmd_skor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2166,7 +2155,7 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Entry point: python bot.py"""
-    token = config.BOT_TOKEN or os.getenv("BOT_TOKEN", "").strip()
+    token = config.BOT_TOKEN  # config sudah memuat .env & menyaring placeholder
     if not token:
         raise SystemExit(
             "BOT_TOKEN belum diset.\n"

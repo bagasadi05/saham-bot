@@ -15,9 +15,11 @@ _mkt_cache: dict = {"ts": 0.0, "val": None}
 
 def market_context() -> dict | None:
     """Return IHSG {'ret20d', 'ret1y'} (%) atau None kalau Yahoo gagal."""
-    ttl = _MKT_TTL if _mkt_cache["val"] else _MKT_FAIL_TTL
-    if _time.time() - _mkt_cache["ts"] < ttl:
+    age = _time.time() - _mkt_cache["ts"]
+    if _mkt_cache["val"] is not None and age < _MKT_TTL:
         return _mkt_cache["val"]
+    if _mkt_cache["val"] is None and age < _MKT_FAIL_TTL:
+        return None  # kegagalan baru: jangan spam Yahoo tiap request
     df = None
     for _ in range(2):
         try:

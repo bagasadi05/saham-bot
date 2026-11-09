@@ -1,8 +1,42 @@
 """Konfigurasi bot — bisa dioverride lewat environment variables."""
 import os
+from pathlib import Path
+
+
+def load_dotenv(path: str = ".env") -> None:
+    """Muat file .env sederhana (KEY=VALUE) tanpa dependensi tambahan.
+
+    Variabel yang SUDAH ada di environment tidak ditimpa — nilai eksplisit
+    dari Docker/systemd selalu menang. File yang tidak ada diabaikan.
+    """
+    p = Path(path)
+    if not p.is_file():
+        return
+    try:
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, val)
+
+
+load_dotenv()
+
+
+def clean_token(value: str | None) -> str:
+    """Token kosong/placeholder dari .env.example dianggap belum di-set."""
+    v = (value or "").strip()
+    return "" if v.lower().startswith("tempel") else v
+
 
 # Token bot dari @BotFather (wajib)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = clean_token(os.getenv("BOT_TOKEN", ""))
 
 # Database SQLite untuk watchlist/alert/paper trading
 STORE_DB = os.getenv("STORE_DB", "store.db")

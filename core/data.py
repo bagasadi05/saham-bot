@@ -207,14 +207,14 @@ def fetch_quote_name(ticker: str) -> str:
     try:
         symbol = normalize_ticker(ticker)
     except ValueError:
-        return str(ticker).upper()
+        return str(ticker).strip().upper()
     with _name_lock:
         if symbol in _name_cache:
             return _name_cache[symbol]
     fallback = symbol.replace(".JK", "")
     name = None
     try:
-        info = yf.Ticker(symbol).info
+        info = yf.Ticker(symbol).info or {}
         name = info.get("longName") or info.get("shortName")
     except Exception:
         name = None

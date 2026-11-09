@@ -79,16 +79,22 @@ def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
 def position_size(modal: float, entry: float, sl: float) -> dict:
     """Risiko 1% modal per trade: min. lot 100 lembar (floor).
 
-    Return {risk, shares, lots, value, real_risk}. lots bisa 0 → terlalu kecil.
+    Nilai posisi dibatasi modal — risiko per lembar yang sangat kecil tidak
+    boleh menghasilkan saran beli melebihi uang yang ada. lots bisa 0
+    (risiko/lembar melebihi 1% modal) → sinyal dilewati.
     """
-    risk = max(float(entry) - float(sl), 0.0)
-    budget = float(modal) * 0.01          # 1% modal
+    entry, sl, modal = float(entry), float(sl), float(modal)
+    risk = max(entry - sl, 0.0)
+    budget = modal * 0.01                 # 1% modal
     shares = budget / risk if risk > 0 else 0.0
     lots = int(shares // 100)
-    value = lots * 100 * float(entry)
-    real_risk = lots * 100 * risk
+    max_lots = int(modal // (entry * 100)) if entry > 0 else 0
+    lots = max(0, min(lots, max_lots))
+    shares = lots * 100                   # konsisten: lembar = lot × 100
+    value = shares * entry
+    real_risk = shares * risk
     return {"risk": round(risk, 1), "budget": round(budget),
-            "shares": int(shares), "lots": lots,
+            "shares": shares, "lots": lots,
             "value": round(value), "real_risk": round(real_risk)}
 
 
