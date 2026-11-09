@@ -13,8 +13,9 @@ latihan & watchlist bertahan di volume.
   sudo usermod -aG docker $USER && newgrp docker
   ```
 - Token bot dari [@BotFather](https://t.me/BotFather): `/newbot` → salin token
-- (Disarankan) ID Telegram-mu — tanyakan ke [@userinfobot](https://t.me/userinfobot),
-  untuk mengisi `ALLOWED_USER_IDS` supaya bot hanya bisa dipakai kamu sendiri
+- (Disarankan) ID Telegram-mu — kirim `/id` langsung ke bot-mu saat start awal
+  (atau tanyakan ke [@userinfobot](https://t.me/userinfobot)), lalu isi
+  `ALLOWED_USER_IDS` (dan opsional `REQUIRE_ALLOWLIST=1`) supaya bot privat
 
 ## Langkah (Docker — cara utama)
 
@@ -115,6 +116,9 @@ journalctl -u saham-bot -f        # lihat log
   `.dockerignore` & chunk 4 MB anti-putus)
 - 📊 Data BEI (`/bandar`) kadang diblokir Cloudflare saat bot ditempatkan di
   IP datacenter — itu normal, bot kasih pesan jujur + alternatif `/analisis`
+- 🔄 **Restart cepat setelah VM reboot (mode supervisor):** bila menjalankan tanpa
+  Docker/systemd, hidupkan ulang dengan satu perintah:
+  `nohup ./run-supervised.sh >> bot.log 2>&1 &`
 - 🗓️ Kalender bursa memakai paket `exchange_calendars` (XIDX). Kalau SKB cuti
   bersama tahun berjalan belum masuk paket, isi `MARKET_HOLIDAYS` di `.env`
   supaya job alert & autoscan tidak jalan di hari libur

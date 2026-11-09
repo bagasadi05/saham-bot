@@ -11,8 +11,8 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 ## Fitur
 
 - **/analisis BBCA** — PowerScore (gabungan 3 pin) + chart 4 panel + konfirmasi
-   indikator pro (ATR/Bollinger/StochRSI/OBV) + 2 headline berita paling berimbas.
-   Bisa multi emiten: `/analisis BBCA TLKM BBRI` (maks 5).
+   **tren mingguan (1wk vs MA20 + peringatan pantulan)** + pembanding **IHSG & emiten
+   se-sektor** (20h & 1th) + indikator pro + 2 headline berita. Multi emiten hingga 5 kode.
 - **/skor TLKM BBRI** — ringkasan cepat skor teknikal tanpa chart.
 - **/berita BBCA** — 7 berita terbaru + skor sentimen per judul (ML lokal, fallback lexicon).
 - **/fundamental BBRI** — PER/PBV/ROE/dividen/DER + penilaian valuasi, plus
@@ -23,6 +23,8 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
    dengan `/saran`**, fill bar berikutnya, entry sinyal BUY (skip jebakan
    momentum >15%/bulanan), SL 1×ATR, TP 2×ATR, maksimal tahan 20 hari. Imbal
    hasil backtest statistik kini **net setelah biaya**.
+   Hasil simulasi 5 tahun disimpan di cache `temp/` (24 jam) sehingga `/beli`/`/jual`
+   bisa mengutip rekam jejak historis secara instan.
    CLI: `python backtest.py BBCA` & `python backtest_real.py BBCA`.
 - **Watchlist & alert** — `/watch`, `/alert add BBCA jump breakout`: dicek tiap 30 menit saat bursa buka (hari bursa XIDX, 09:00–16:00 WIB). Alert **hanya dikirim saat kondisi berubah** (False → True), tidak lagi diulang tiap 30 menit selama kondisi bertahan.
 - **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**. Urutan kandidat memakai **skor relatif 12 faktor** (`core/relatif.py`) yang lolos uji walk-forward (fallback ke PowerScore bila universe < 8 emiten) — lihat `/validasi`. Posisi dicatat **realistis**: masuk antrean `pending` dan baru dibeli di **harga open sesi berikutnya**, PnL dihitung setelah biaya beli 0,15% & jual 0,25%, ditutup otomatis setelah ±20 hari bursa, maksimal 5 posisi terbuka & 2 per sektor. `/saran list` = rekap posisi + rata-rata hasil net; riwayat menyimpan **20 posisi selesai terakhir** per chat agar rekap tidak membengkak.
@@ -32,8 +34,10 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 - **/banding BBCA BBRI BMRI** — tabel pembanding PER/PBV/ROE/dividend yield/return 1 thn/20 hari/PowerScore + fakta "paling murah/mahal menurut PBV" (deskriptif). Data pembanding yang gagal dilaporkan jujur.
 - **/agenda BBCA** — ex-date dividen (terakhir/berikutnya) + split & aksi korporasi dari Yahoo (bisa telat — cek juga situs emiten).
 - **/belajar RSI** — kamus istilah dalam bahasa sederhana (18 topik: RSI, MACD, MA20/50/200, Bollinger, ATR, OBV, StochRSI, PER, PBV, ROE, dividend yield, DER, volume, breakout, IHSG, PowerScore + alias).
-- **/auto on** — ringkasan `/saran` + rekap watchlist dikirim otomatis tiap hari bursa ±08:30 WIB (default off).
+- **/beli BBCA** / **/jual BBCA** (atau ketik bebas `"BBCA beli gak?"`) — verdict + level SL/TP + rekam jejak backtest 5 thn (dari cache `/backtest`).
+- **/auto on** — aktifkan pemindaian otomatis: ringkasan `/saran` + rekap watchlist ±08:30 WIB, **pengingat ex-date dividen (H-3 & H-1)**, serta **alert perubahan band PowerScore** watchlist (default off).
 - **/status** — kesehatan bot: uptime, jumlah perintah/error, rata-rata waktu proses, isi store, cache harga, status bursa (khusus `ADMIN_IDS` bila diisi).
+- **/id** — tampilkan ID Telegram numerik kamu untuk mengisi `ALLOWED_USER_IDS` di `.env`.
 - **Kalender bursa sungguhan** — job alert & autoscan mengikuti kalender XIDX (`exchange_calendars`) plus libur tambahan via `MARKET_HOLIDAYS`, jadi tidak berisik di hari libur nasional/cuti bersama.
 - **Cache harga ber-TTL** (default 5 menit, `SAHAMBOT_TTL`) — `/skor`, `/analisis`, dan `/saran` pada emiten yang sama tidak menembak Yahoo berulang, dan tiap laporan menyebut **“data per <tanggal>”**.
 - Setiap sinyal di `/analisis` kini diberi **penjelasan 1 baris** ("MA20 < MA50 → tren jangka pendek di bawah tren menengah — harga sedang downtrend") + laporan menyertakan **konteks IHSG** (20 hari & 1 tahun, berapa poin unggul/tertinggal).
@@ -98,7 +102,13 @@ Windows (PowerShell):
 BOT_TOKEN="123456:ABC-DEF..." python bot.py
 ```
 
-Deployment 24/7 (Docker/systemd) → lihat **[deploy.md](deploy.md)**.
+Deployment 24/7 (Docker/systemd/supervisor) → lihat **[deploy.md](deploy.md)**.
+
+### Mengaktifkan Allowlist (disarankan untuk bot pribadi)
+
+1. Kirim `/id` ke bot-mu untuk melihat angka ID Telegram kamu.
+2. Isi di `.env`: `ALLOWED_USER_IDS=<angka_id>` (pisahkan koma jika >1 user) dan `REQUIRE_ALLOWLIST=1`.
+3. Restart bot; hanya ID terdaftar yang dapat mengakses command & tombol menu.
 
 ### Konfigurasi env penting
 
@@ -171,7 +181,7 @@ Konsekuensinya di kode:
    pulang-pergi) memakan sebagian besar selisih kuintil. Perlakukan sebagai
    pemeringkat kandidat, bukan jaminan.
 
-## 📚 Sumber terbuka yang menyuporti botini
+## 📚 Sumber terbuka yang mendukung bot ini
 
 - [idx-bei](https://github.com/nichsedge/idx-bei) — toolkit BEI resmi (bandarmology, aliran asing, tindakan korporasi) → ide lanjutan
 - [saham-fundamental-toolkit](https://github.com/Kuroburns2/SAHAM-ANALISA-saham-analyzer-TP-SL-create) — berita GDELT + analisis laporan resmi IDX
