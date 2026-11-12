@@ -224,6 +224,9 @@ async def fetch_and_analyze(ticker: str) -> dict:
                 f"⚠️ <i>Data terakhir {esc(as_of)} ({gap} hari bursa lalu) — "
                 "angka mungkin sudah tidak berlaku.</i>\n")
     res["quality_note"] = data_quality.summary_line(df.attrs.get("quality"))
+    notes = res.get("fallbacks") or []
+    res["fallback_note"] = (
+        f"🧩 <i>Indikator cadangan: {esc('; '.join(notes))}.</i>\n" if notes else "")
     return res
 
 
@@ -336,6 +339,7 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
     return (
         f"{res.get('stale_note', '')}"
         f"{res.get('quality_note', '')}"
+        f"{res.get('fallback_note', '')}"
         f"{res.get('history_note', '')}"
         f"📊 <b>{esc(res['ticker'])}</b>\n"
         f"Harga: <b>{fmt_rp(snap['close'])}</b> "
@@ -1731,6 +1735,12 @@ async def saran_scan_text(chat_id: int, universe: list[str] | None = None,
         reason = ("jebakan momentum" if c["ret20d"] > saranmod.TRAP_RET20D
                   else "terlemah di universe")
         lines.append(f"  {c['emoji']} <b>{esc(c['ticker'])}</b> {rel_txt} — {reason}")
+    skipped = result.get("skipped") or []
+    if skipped:
+        lines.append("")
+        lines.append(f"⚠️ {len(skipped)} emiten dilewati karena datanya tidak lengkap: "
+                     + ", ".join(esc(t) for t in skipped[:10])
+                     + ("…" if len(skipped) > 10 else ""))
     if paper_msgs:
         lines.append("")
         lines.extend(paper_msgs)

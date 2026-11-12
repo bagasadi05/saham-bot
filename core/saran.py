@@ -7,6 +7,7 @@ backtest yang memakai fill bar berikutnya + komisi.
 """
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from datetime import date
 
@@ -14,6 +15,8 @@ import pandas as pd
 
 from config import IDX_BUY_FEE, IDX_SELL_FEE
 from core import marketcal, powerscore, pricing, relatif, store
+
+log = logging.getLogger("sahambuddy.saran")
 
 DEFAULT_UNIVERSE = [
     "BBCA", "BBRI", "BMRI", "BBNI", "TLKM", "ASII",
@@ -143,12 +146,16 @@ def pick(analyzed: list[dict], modal: int | None = None,
         r.get("sector") for r in open_recs.values() if r.get("sector"))
 
     cands = []
+    skipped: list[str] = []
     for a in analyzed:
         try:
             cands.append(build_candidate(a["res"], a.get("fund"), a.get("nsent"),
                                          modal, a.get("fund_raw")))
         except Exception:
-            continue
+            ticker = str((a.get("res") or {}).get("ticker") or "?")
+            skipped.append(ticker)
+            log.warning("kandidat %s dilewati: data tidak lengkap", ticker,
+                        exc_info=True)
 
     # peringkat relatif di dalam universe pemindaian
     items = [a["res"] for a in analyzed if hasattr(a.get("res", {}).get("ind"), "iloc")]
@@ -195,7 +202,8 @@ def pick(analyzed: list[dict], modal: int | None = None,
         buys.append(c)
 
     return {"picks": buys, "avoid": avoid, "mode": mode,
-            "open_count": open_count, "max_open": MAX_OPEN}
+            "open_count": open_count, "max_open": MAX_OPEN,
+            "skipped": skipped}
 
 
 def queue_paper(chat_id: int | str, picks: list[dict], trade_date) -> int:

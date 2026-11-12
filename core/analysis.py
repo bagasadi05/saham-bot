@@ -44,6 +44,7 @@ def support_resistance(df: pd.DataFrame, lookback: int = 20) -> dict:
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    fallbacks: list[str] = []
     df["sma20"] = sma(df["close"], 20)
     df["sma50"] = sma(df["close"], 50)
     df["sma200"] = sma(df["close"], 200)
@@ -64,6 +65,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         has_ta = True
     except Exception:
         has_ta = False
+        fallbacks.append(
+            "pandas-ta-classic tidak tersedia: BB/OBV/StochRSI dilewati")
 
     atr = None
     if has_ta:
@@ -71,8 +74,11 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
             atr = df.ta.atr(14)
         except Exception:
             atr = None
-    df["atr14"] = (atr if atr is not None and not getattr(atr, "isna", lambda: pd.Series([True]))().all()
-                   else (df["high"] - df["low"]).rolling(14).mean())
+    atr_ok = (atr is not None
+              and not getattr(atr, "isna", lambda: pd.Series([True]))().all())
+    if not atr_ok:
+        fallbacks.append("ATR 14 memakai rentang high-low (fallback)")
+    df["atr14"] = atr if atr_ok else (df["high"] - df["low"]).rolling(14).mean()
 
     if has_ta:
         try:
@@ -82,14 +88,14 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
                 df["bb_mid"] = bb.iloc[:, 1]
                 df["bb_lower"] = bb.iloc[:, 0]
         except Exception:
-            pass
+            fallbacks.append("Bollinger gagal dihitung")
         try:
             obv = df.ta.obv()
             if obv is not None:
                 df["obv"] = obv
                 df["obv_slope20"] = obv.diff(20)
         except Exception:
-            pass
+            fallbacks.append("OBV gagal dihitung")
         try:
             sr = df.ta.stochrsi()
             if sr is not None and sr.shape[1] >= 1:
@@ -98,8 +104,10 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
                 rsi_span = df["rsi14"].rolling(14).max() - df["rsi14"].rolling(14).min()
                 df["stochrsi"] = st.where(rsi_span > 1e-9, float("nan"))
         except Exception:
-            pass
+            fallbacks.append("StochRSI gagal dihitung")
 
+    df.attrs["fallbacks"] = fallbacks
+    df.attrs["has_ta"] = has_ta
     return df
 
 
@@ -395,4 +403,5 @@ def analyze(ticker: str, df_raw) -> dict:
         "score": score_stock(ind),
         "sr": support_resistance(ind),
         "history_note": history_note,
+        "fallbacks": list(ind.attrs.get("fallbacks") or []),
     }
