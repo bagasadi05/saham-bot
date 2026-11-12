@@ -1,7 +1,8 @@
 """Uji portofolio: apakah keunggulan skor relatif bertahan SETELAH biaya transaksi.
 
 IC mengukur kemampuan memeringkat, bukan cuan. Selisih kuintil Q5-Q1 hanya
-+0,67% per 20 hari; biaya pulang-pergi di IDX bisa 0,5%. Jadi pertanyaan yang
++0,67% per 20 hari; biaya pulang-pergi all-in 0,40% (pajak jual sudah
+termasuk). Jadi pertanyaan yang
 harus dijawab sebelum fitur ini dipakai: **masih untung, atau habis di biaya?**
 
 Desain:
@@ -9,8 +10,10 @@ Desain:
     (temp/research/oos_predictions.pkl) — bukan model yang dilatih ulang.
   - Rebalance tiap 20 hari bursa (non-overlapping), bukan harian.
   - Pilih kuintil teratas prediksi, bobot sama, long-only.
-  - Biaya IDX: beli 0,15%, jual 0,25%, pajak jual 0,1%. Biaya hanya dikenakan
-    pada bagian portofolio yang BERGANTI (turnover).
+  - Biaya IDX: beli 0,15%, jual 0,25% all-in (pajak 0,1% sudah termasuk).
+    Biaya dihitung per sisi dari perubahan bobot: sum|w_baru - w_lama|.
+  - Opsional hysteresis: nama lama ditahan selama masih di band tahan
+    (--hold), bukan langsung dilepas saat keluar dari top-N.
   - Pembanding: rata-rata seluruh universe hari itu (equal weight), bruto.
 
 PENTING — kenapa ada 20 fase:
@@ -66,42 +69,88 @@ def summarize(series: np.ndarray) -> dict:
     }
 
 
-def one_phase(oos: pd.DataFrame, q: float, step: int, offset: int) -> pd.DataFrame:
+def turnover_cost(prev: dict[str, float], cur: dict[str, float]) -> dict:
+    """Biaya per sisi + turnover.
+
+    `two_way` = sum|w_baru - w_lama| (2,0 untuk tukar seluruh isi portofolio);
+    `turnover` = setengahnya (satu arah) agar sebanding dengan angka lama.
+    Biaya dihitung per sisi: beli 0,15%, jual 0,25%.
+    """
+    tickers = set(prev) | set(cur)
+    buys = sum(max(0.0, cur.get(t, 0.0) - prev.get(t, 0.0)) for t in tickers)
+    sells = sum(max(0.0, prev.get(t, 0.0) - cur.get(t, 0.0)) for t in tickers)
+    two_way = buys + sells
+    return {
+        "buy": buys, "sell": sells,
+        "two_way": two_way,
+        "turnover": two_way / 2.0,
+        "cost": buys * BUY_COST + sells * SELL_COST,
+    }
+
+
+def _select(g: pd.DataFrame, prev_weights: dict[str, float],
+            take_frac: float, hold_frac: float) -> list[str]:
+    """Pilih nama: pemegang lama bertahan selama masih di dalam band tahan."""
+    n_top = max(1, int(round(len(g) * take_frac)))
+    ranked = g.sort_values("pred", ascending=False)
+    pct = ranked["pred"].rank(pct=True)
+    entry_pct = 1.0 - take_frac
+    exit_pct = 1.0 - max(take_frac, hold_frac)
+
+    held: list[str] = []
+    entrants: list[str] = []
+    for ticker, p in zip(ranked["ticker"], pct, strict=True):
+        if ticker in prev_weights and p >= exit_pct:
+            held.append(ticker)
+        elif p >= entry_pct:
+            entrants.append(ticker)
+    return (held + entrants)[:n_top]
+
+
+def one_phase(oos: pd.DataFrame, q: float, step: int, offset: int,
+              hold: float | None = None) -> pd.DataFrame:
     """Satu fase rebalance. Return baris per periode (gross/net/bench/turnover)."""
     dates = np.array(sorted(oos["date"].unique()))
     periods = list(dates[offset::step])
+    hold_frac = q if hold is None else max(q, hold)
 
-    prev: set[str] = set()
+    prev: dict[str, float] = {}
     rows = []
     for d in periods:
         g = oos[oos["date"] == d].dropna(subset=["pred", "fwd"])
         if len(g) < 5:
             continue
-        n_top = max(1, int(round(len(g) * q)))
-        ranked = g.sort_values("pred", ascending=False)
-        top = ranked.head(n_top)
-
+        names = _select(g, prev, q, hold_frac)
+        if not names:
+            prev = {}
+            continue
+        weight = 1.0 / len(names)
+        cur = {t: weight for t in names}
+        top = g[g["ticker"].isin(names)]
         gross = float(top["fwd"].mean())
         bench = float(g["fwd"].mean())          # universe equal weight
-        names = set(top["ticker"])
-        turnover = 1.0 if not prev else 1.0 - len(names & prev) / len(names)
-        cost = turnover * ROUND_TRIP
+        tc = turnover_cost(prev, cur)
+        ranked = g.sort_values("pred", ascending=False)
+        bottom = float(ranked.tail(max(1, len(names)))["fwd"].mean())
 
         rows.append({
             "date": str(pd.Timestamp(d).date()),
             "n": int(len(g)),
             "gross": gross, "bench": bench,
-            "net": gross - cost, "cost": cost, "turnover": turnover,
-            "bottom": float(ranked.tail(n_top)["fwd"].mean()),
+            "net": gross - tc["cost"], "cost": tc["cost"],
+            "buy": tc["buy"], "sell": tc["sell"],
+            "turnover": tc["turnover"], "turnover_two_way": tc["two_way"],
+            "bottom": bottom,
         })
-        prev = names
+        prev = cur
     return pd.DataFrame(rows)
 
 
-def run(oos: pd.DataFrame, q: float, step: int) -> dict:
+def run(oos: pd.DataFrame, q: float, step: int,
+        hold: float | None = None) -> dict:
     phases = []
     for off in range(step):
-        df = one_phase(oos, q, step, off)
+        df = one_phase(oos, q, step, off, hold)
         if df.empty:
             continue
         alpha_gross = (df["gross"] - df["bench"]).to_numpy()
@@ -111,6 +160,8 @@ def run(oos: pd.DataFrame, q: float, step: int) -> dict:
             "n_periods": int(len(df)),
             "start": df["date"].iloc[0], "end": df["date"].iloc[-1],
             "turnover_pct": round(float(df["turnover"].mean()) * 100, 1),
+            "turnover_two_way_pct": round(
+                float(df["turnover_two_way"].mean()) * 100, 1),
             "gross": summarize(df["gross"].to_numpy()),
             "net": summarize(df["net"].to_numpy()),
             "alpha_gross": summarize(alpha_gross),
@@ -135,6 +186,8 @@ def run(oos: pd.DataFrame, q: float, step: int) -> dict:
         "n_phases": len(phases),
         "holding_days": step,
         "quintile": q,
+        "hold_quintile": q if hold is None else max(q, hold),
+        "hysteresis": bool(hold is not None and hold > q),
         "cost_per_round_trip_pct": round(ROUND_TRIP * 100, 2),
         "phases": phases,
         "across_phases": {
@@ -152,6 +205,8 @@ def run(oos: pd.DataFrame, q: float, step: int) -> dict:
         "all_dates_q5_excess": summarize(all_exc.to_numpy()),
         "avg_turnover_pct": round(
             float(np.mean([p["turnover_pct"] for p in phases])), 1),
+        "avg_turnover_two_way_pct": round(
+            float(np.mean([p["turnover_two_way_pct"] for p in phases])), 1),
     }
 
 
@@ -161,6 +216,9 @@ def main():
                     help="fraksi universe yang dibeli (0.2 = kuintil teratas)")
     ap.add_argument("--step", type=int, default=20,
                     help="jarak rebalance dalam hari bursa (default 20)")
+    ap.add_argument("--hold", type=float, default=None,
+                    help="batas tahan (mis. 0.4 = tetap pegang selama masih "
+                         "top 40%%); default sama dengan --quintile")
     ap.add_argument("--src", default=os.path.join("temp", "research",
                                                   "oos_predictions.pkl"))
     ap.add_argument("--out", default=os.path.join("temp", "research"))
@@ -171,7 +229,7 @@ def main():
             f"{args.src} belum ada — jalankan research/evaluate.py dulu "
             "(sekarang menyimpan prediksi OOS).")
     oos = pd.read_pickle(args.src)
-    res = run(oos, args.quintile, args.step)
+    res = run(oos, args.quintile, args.step, args.hold)
     if "error" in res:
         raise SystemExit(res["error"])
 
@@ -182,8 +240,12 @@ def main():
 
     a = res["across_phases"]
     print(f"\nPortofolio kuintil teratas · rebalance tiap {args.step} hari bursa")
-    print(f"{res['n_phases']} fase · turnover rata-rata {res['avg_turnover_pct']}%"
-          f" · biaya pulang-pergi {res['cost_per_round_trip_pct']}%\n")
+    print(f"{res['n_phases']} fase · turnover satu arah {res['avg_turnover_pct']}%"
+          f" (dua arah {res['avg_turnover_two_way_pct']}%)"
+          f" · biaya pulang-pergi {res['cost_per_round_trip_pct']}%")
+    if res["hysteresis"]:
+        print(f"hysteresis aktif: masuk top {args.quintile * 100:.0f}%, "
+              f"tahan sampai top {res['hold_quintile'] * 100:.0f}%\n")
     print(f"alpha bruto antar-fase : rata-rata {a['alpha_gross_mean_pct']:+.3f}%"
           f" · median {a['alpha_gross_median_pct']:+.3f}%"
           f" · rentang [{a['alpha_gross_min_pct']:+.2f}, {a['alpha_gross_max_pct']:+.2f}]")

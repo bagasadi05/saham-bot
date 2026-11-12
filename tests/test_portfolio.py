@@ -47,17 +47,20 @@ def test_one_phase_rebalance_non_overlapping():
     # 60 tanggal → 3 periode (0, 20, 40)
     assert len(df) == 3
     assert df["n"].eq(10).all()
-    # periode pertama selalu 100% turnover (belum punya posisi)
-    assert df["turnover"].iloc[0] == pytest.approx(1.0)
-    assert df["cost"].iloc[0] == pytest.approx(portfolio.ROUND_TRIP)
+    # periode pertama: beli penuh (belum punya posisi), tanpa penjualan
+    assert df["turnover_two_way"].iloc[0] == pytest.approx(1.0)
+    assert df["turnover"].iloc[0] == pytest.approx(0.5)
+    assert df["cost"].iloc[0] == pytest.approx(portfolio.BUY_COST)
 
 
 def test_biaya_hanya_pada_bagian_yang_berganti():
     oos = make_oos()
     df = portfolio.one_phase(oos, q=0.2, step=20, offset=0)
     for r in df.itertuples():
-        assert r.cost == pytest.approx(r.turnover * portfolio.ROUND_TRIP)
+        expected = r.buy * portfolio.BUY_COST + r.sell * portfolio.SELL_COST
+        assert r.cost == pytest.approx(expected)
         assert r.net == pytest.approx(r.gross - r.cost)
+        assert r.turnover_two_way == pytest.approx(r.buy + r.sell)
 
 
 def test_kuintil_teratas_memang_prediksi_tertinggi():
