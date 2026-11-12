@@ -3084,6 +3084,16 @@ async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_scan(update, tokens(update), ctx.job_queue)
 
 
+async def backup_job(app: Application):
+    """Salin SQLite harian (WAL-safe) + rotasi. Diam saja kalau sukses."""
+    try:
+        path = await asyncio.to_thread(
+            store.backup_to, config.BACKUP_DIR, config.BACKUP_KEEP)
+        log.info("backup store: %s", path)
+    except Exception:
+        log.exception("backup store gagal")
+
+
 async def full_market_scan_job(app: Application):
     """Job harian 16:15 WIB: snapshot sinyal untuk chat /auto on."""
     if not config.FULL_SCAN_AUTO:
@@ -3189,6 +3199,9 @@ def main():
                         name="full-market-scan")
     # heartbeat tiap 5 menit: dipakai healthcheck Docker untuk tahu bot masih hidup
     job_queue.run_repeating(heartbeat, interval=300, first=5, name="heartbeat")
+    if config.BACKUP_AUTO and config.BACKUP_DIR:
+        job_queue.run_daily(backup_job, time=_dt.time(23, 30, tzinfo=WIB),
+                            name="backup-store")
 
     log.info("Bot jalan. Tekan Ctrl+C untuk berhenti.")
     app.add_error_handler(on_error)

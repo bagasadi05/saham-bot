@@ -72,6 +72,12 @@ ALERT_SCAN_MINUTES = 30
 FULL_SCAN_AUTO = os.getenv("FULL_SCAN_AUTO", "on").strip().lower() not in (
     "0", "off", "false", "no", "")
 
+# Cadangan SQLite otomatis (job harian 23:30 WIB)
+BACKUP_DIR = os.getenv("BACKUP_DIR", "backups")
+BACKUP_KEEP = max(1, int(os.getenv("BACKUP_KEEP", "7") or 7))
+BACKUP_AUTO = os.getenv("BACKUP_AUTO", "on").strip().lower() not in (
+    "0", "off", "false", "no", "")
+
 # ------------------------------------------------------- biaya transaksi BEI
 # Asumsi ritel all-in yang dipakai konsisten oleh /saran, /rencana, backtest,
 # dan riset portofolio. Beli 0,15% (broker). Jual 0,25% SUDAH termasuk pajak

@@ -120,6 +120,36 @@ CREATE TABLE IF NOT EXISTS plan_cache (
 _init_lock = threading.Lock()
 _ready_for: str | None = None
 
+SCHEMA_VERSION = 2          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
+BACKUP_PREFIX = "store-"
+
+
+def _user_version(conn) -> int:
+    row = conn.execute("PRAGMA user_version").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _migrate_v2(conn):
+    """v2: index parsial untuk baris histori sinyal yang belum ditutup."""
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scan_history_open "
+        "ON scan_history(trade_date) WHERE closed_at IS NULL")
+
+
+_MIGRATIONS = {2: _migrate_v2}
+
+
+def _run_migrations(conn, current: int) -> int:
+    """Jalankan langkah migrasi bernomor sampai SCHEMA_VERSION."""
+    version = current
+    for target in range(current + 1, SCHEMA_VERSION + 1):
+        step = _MIGRATIONS.get(target)
+        if step:
+            step(conn)
+        conn.execute(f"PRAGMA user_version = {int(target)}")
+        version = target
+    return version
+
 
 def _migrate_scan_columns(conn):
     """Tambah kolom snapshot baru pada DB lama tanpa menghapus data."""
@@ -144,6 +174,10 @@ def _ensure_ready(conn):
         conn.executescript(_SCHEMA)
         _migrate_scan_columns(conn)
         _migrate_json(conn)
+        current = _user_version(conn)
+        if current < SCHEMA_VERSION:
+            _run_migrations(conn, current)
+            log.info("skema store: v%s -> v%s", current, SCHEMA_VERSION)
         _ready_for = STORE_DB
 
 
@@ -598,6 +632,49 @@ def scan_history_counts() -> dict:
                 "pending": int(row["pending"] or 0),
                 "first": row["first"] or "",
                 "last": row["last"] or ""}
+
+
+def _rotate_backups(dest_dir: str, keep: int) -> list[str]:
+    """Sisakan `keep` cadangan terbaru; return path yang dihapus."""
+    files = sorted(
+        (os.path.join(dest_dir, f) for f in os.listdir(dest_dir)
+         if f.startswith(BACKUP_PREFIX) and f.endswith(".db")),
+        key=lambda p: os.path.getmtime(p), reverse=True)
+    removed = []
+    for old in files[keep:]:
+        try:
+            os.remove(old)
+            removed.append(old)
+        except OSError:
+            pass
+    return removed
+
+
+def backup_to(dest_dir: str, keep: int = 7) -> str:
+    """Cadangkan DB secara konsisten (aman WAL), cek integritas, lalu rotasi.
+
+    `cp store.db` bukan backup saat WAL aktif; `Connection.backup` menyalin
+    snapshot yang konsisten. File hasil dicek `PRAGMA integrity_check`.
+    """
+    keep = max(1, int(keep))
+    os.makedirs(dest_dir, exist_ok=True)
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    path = os.path.join(dest_dir, f"{BACKUP_PREFIX}{stamp}.db")
+    with _db() as conn:
+        dst = sqlite3.connect(path)
+        try:
+            conn.backup(dst)
+        finally:
+            dst.close()
+    check = sqlite3.connect(path)
+    try:
+        status = check.execute("PRAGMA integrity_check").fetchone()[0]
+    finally:
+        check.close()
+    if status != "ok":
+        raise RuntimeError(f"backup rusak: {path} (integrity_check={status})")
+    _rotate_backups(dest_dir, keep)
+    return path
 
 
 def save_plan_cache(cache_key: str, payload: dict, trade_date: str = ""):

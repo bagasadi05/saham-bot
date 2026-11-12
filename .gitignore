@@ -10,6 +10,7 @@ data/*
 !data/validation.json
 !data/idx_universe.json
 temp/
+backups/
 
 # model ML besar (diunduh saat build, bukan di-commit)
 models/
