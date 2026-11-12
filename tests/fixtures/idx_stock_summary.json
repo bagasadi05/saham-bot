@@ -1,0 +1,30 @@
+{
+ "data": [
+  {
+   "StockCode": "BBCA",
+   "StockName": "Bank Central Asia Tbk.",
+   "PreviousPrice": 8750,
+   "OpenPrice": 8800,
+   "HighestPrice": 8900,
+   "LowestPrice": 8725,
+   "ClosingPrice": 8850,
+   "Volume": 45000000,
+   "Value": 397000000000,
+   "ForeignNet": 12500000000,
+   "Date": "2026-11-11"
+  },
+  {
+   "StockCode": "TLKM",
+   "StockName": "Telkom Indonesia Tbk.",
+   "PreviousPrice": 2800,
+   "OpenPrice": 2810,
+   "HighestPrice": 2840,
+   "LowestPrice": 2780,
+   "ClosingPrice": 2820,
+   "Volume": 80000000,
+   "Value": 225000000000,
+   "ForeignNet": -3400000000,
+   "Date": "2026-11-11"
+  }
+ ]
+}

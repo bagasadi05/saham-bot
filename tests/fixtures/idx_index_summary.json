@@ -1,0 +1,26 @@
+{
+ "data": [
+  {
+   "IndexCode": "COMPOSITE",
+   "IndexClose": 7650.12,
+   "IndexChange": 21.4,
+   "Date": "2026-11-11"
+  },
+  {
+   "IndexCode": "IDXENERGY",
+   "IndexClose": 2410.5,
+   "IndexChange": 49.6,
+   "Date": "2026-11-11"
+  },
+  {
+   "IndexCode": "IDXFINANCE",
+   "IndexClose": 1580.2,
+   "IndexChange": -12.7,
+   "Date": "2026-11-11"
+  },
+  {
+   "IndexCode": "IDXTRANS",
+   "Date": "2026-11-11"
+  }
+ ]
+}

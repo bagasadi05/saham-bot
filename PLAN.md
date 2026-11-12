@@ -1,10 +1,9 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
-> **Baseline terukur sesi ini:** `502 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 80%` (gerbang CI 75%) · `bot.py` 3.652 baris +
-> `core/reports.py` 199 · `handlers/portfolio.py` 222 ·
-> `handlers/cek.py` 216.
+> **Baseline terukur sesi ini:** `517 passed` · `ruff check .` bersih ·
+> coverage tetap di atas gerbang 75% · `bot.py` 3.415 baris +
+> `handlers/` (portfolio, cek, sinyal, sektor) + `core/reports.py`.
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim
@@ -61,7 +60,7 @@ ada di Fase 3 (P14–P18) dan Fase 4 (arsitektur & operasional).
 |---|---|---|---|
 | **Fase 1** | Bug, regresi & ketahanan runtime | ✅ selesai | P0 |
 | **Fase 2** | Kalibrasi riset & catatan sinyal live | ✅ selesai | P1 |
-| **Fase 3** | Backlog UX (`P12`–`P18`) | 🟡 6 dari 7 selesai (P12–P17) | P1–P2 |
+| **Fase 3** | Backlog UX (`P12`–`P18`) | ✅ 7 dari 7 (P12–P18) | P1–P2 |
 | **Fase 4** | Arsitektur, CI & operasional | 🟡 sebagian (D2, formatter, admin alert) | P2 |
 
 ---
@@ -183,11 +182,13 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   total, bobot, konsentrasi sektor, risiko bila SL sekarang (2×ATR)
   tersentuh. Posisi tanpa harga tidak dihitung sebagai nol. Tes:
   `tests/test_portofolio.py` (15).
-- [ ] **P18 — `/sektor`** rotasi & kekuatan relatif per sektor BEI.
-  **Tertunda dengan sengaja:** satu-satunya sumber yang tersedia adalah
-  `GetIndexSummary` BEI, dan arti field `IndexChange` (poin vs persen)
-  belum terverifikasi dari payload hidup. Butuh satu sampel respons nyata
-  dulu — lebih baik belum ada fitur daripada angka sektor yang salah arah.
+- [x] **P18 — `/sektor`** — `core/sektor.py` membaca indeks sektor BEI dengan
+  parser defensif: pakai field persen bila ada, kalau tidak hitung dari
+  `IndexClose`/`IndexPrevious`, kalau tidak dari `IndexChange` (poin).
+  Baris tanpa angka dibuang; indeks luas (COMPOSITE/LQ45/…) tidak dianggap
+  sektor. Bila tidak ada yang bisa dihitung, bot berkata **tidak tersedia**
+  — bukan 0%. Cloudflare diblokir juga dilaporkan jujur. Tes:
+  `tests/test_sektor.py` (11).
 - [ ] **Selaraskan label `BELI`/`JUAL`** di `/sinyal` menjadi "Peringkat
   Atas/Bawah" atau tambahkan catatan `t_hac` di header (lihat angka 0,85).
 
@@ -205,15 +206,16 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   `last_macd_cross_note` pindah ke `core/reports.py` (fungsi murni: data
   masuk, string keluar, tanpa jaringan/store). `bot.py` mengimpor balik
   nama yang sama sehingga tes & pemanggil lama tidak berubah.
-- [x] **Pecah handler, 2 domain pertama** — `handlers/portfolio.py` (P17)
-  dan `handlers/cek.py` (P14) memakai pola **`deps`**: handler menerima
+- [x] **Pecah handler, 4 domain** — `handlers/portfolio.py` (P17),
+  `handlers/cek.py` (P14), `handlers/sinyal.py` (P15), dan
+  `handlers/sektor.py` (P18) memakai pola **`deps`**: handler menerima
   modul `bot` sebagai parameter dan mengakses `deps._quote_posisi`,
   `deps.fetch_and_analyze`, `deps.reply_long`, dst. Dengan begitu
   `monkeypatch.setattr(bot, ...)` di tes tetap mengenai sasaran yang sama,
   tanpa impor melingkar (handler tidak mengimpor `bot`). `bot.py` kini
   menyimpan wrapper tipis + alias nama lama.
 - [ ] **Pecah handler, sisa domain** — `handlers/analisis.py`,
-  `handlers/market.py` (`/scan`, `/sinyal`, `/paket`, `/rencana`),
+  `handlers/market.py` (`/scan`, `/paket`, `/rencana`),
   `handlers/info.py` (`/start`, `/help`, `/validasi`, `/status`), lalu
   `guards.py` (cooldown/PENDING) dan `jobs.py`. Seam tes yang perlu ikut
   pindah: `_scan_with_guard`, `_screener_running`, `run_menu_action`,
@@ -225,10 +227,16 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 ### 4.2 Kualitas kode, testing & CI
 - [x] **CI**: matriks 3.12/3.13, `ruff check .`, `pip check`, coverage gate
   75%, artefak `coverage.xml` (`.github/workflows/ci.yml`).
-- [ ] **Fixture data terrekam** (`tests/fixtures/`, `pytest-recording`) agar
-  perubahan skema yfinance/IDX terdeteksi.
-- [ ] **Scheduled research CI** — rolling OOS mingguan + peringatan bila IC
-  6 bulan < 0.
+- [x] **Fixture kontrak data** — `tests/fixtures/` memuat OHLCV
+  ter-normalisasi + ringkasan saham/indeks BEI, dengan tes replay
+  (`tests/test_fixtures_replay.py`) yang mengunci bentuk kolom yang
+  dikonsumsi. Fixture-nya **sintetis**; `tools/record_fixtures.py`
+  merekam respons asli (sekali, di mesin berjaringan) tanpa menyimpan
+  kredensial.
+- [x] **CI riset mingguan** — `.github/workflows/research.yml` (Senin 08:00
+  WIB) menjalankan `research/evaluate.py --period 3y --limit 12 --min-ic 0`;
+  exit 2 bila IC rata-rata < 0, dan laporan tetap diunggah sebagai artefak.
+  Ini alarm dini sampel kecil, bukan pengganti evaluasi 10 tahun.
 - [ ] **`universe_membership` + `delistings`** dari unduhan **manual** halaman
   IDX Stock List (bukan scraper baru) — prasyarat uji survivorship.
 
@@ -249,7 +257,9 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   baris (ts/level/logger/msg + `cmd`, `chat_id`, `duration_ms`, `ok`,
   `exc`); `timed()` menulis baris itu hanya saat `LOG_JSON=1`, jadi log
   teks tetap seperti dulu. Tes: `tests/test_logsetup.py` (7).
-- [ ] **`LICENSE`** di root repo (README menyebut MIT untuk model, bukan kode).
+- [x] **`LICENSE`** — MIT untuk kode repo (copyright 2026 Bagas Adi), dengan
+  catatan bahwa data pasar tetap terikat ketentuan Yahoo/BEI dan model
+  pihak ketiga mengikuti lisensi pembuatnya. Bisa diganti kapan saja.
 
 ---
 
@@ -257,11 +267,10 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **Pecah handler sisa domain** (`bot.py` 3.652 baris) | Pola `deps` sudah terbukti di 2 domain | `handlers/*` + `guards.py`/`jobs.py`, tes hijau tiap langkah |
-| 2 | **Fixture data terrekam** | Perubahan skema Yahoo/IDX tidak terdeteksi tes | `tests/fixtures/` + tes replay |
-| 3 | **Scheduled research CI** | IC bisa memburuk tanpa ada yang melihat | Workflow mingguan + peringatan bila IC 6 bulan < 0 |
-| 4 | **P18 `/sektor`** (butuh sampel payload) | Rotasi sektor melengkapi `/bandar` & `/sinyal` | Setelah payload BEI diverifikasi |
-| 5 | **`LICENSE`** | README menyebut MIT untuk model | Keputusan pemilik repo |
+| 1 | **Pecah handler sisa domain** (`bot.py` 3.415 baris) | Pola `deps` sudah terbukti di 4 domain | `handlers/*` + `guards.py`/`jobs.py`, tes hijau tiap langkah |
+| 2 | **Uji live setelah deploy** | Semua tes offline; perilaku nyata belum dilihat | `/cek`, `/portofolio`, `/sinyal beli bagus`, `/sektor` di chat asli |
+| 3 | **Rekam fixture asli** | Fixture sekarang sintetis | `python tools/record_fixtures.py` lalu commit hasilnya |
+| 4 | **Push & deploy** | Commit lokal belum di-push | `git push` + restart bot, cek `/status` |
 
 **Jangan dilakukan:** menaikkan bobot faktor karena `t` naif 2,68 (yang
 bertahan hanya `t_hac` 0,85); mengklaim survivorship bias tanpa tabel

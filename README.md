@@ -41,6 +41,10 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 - **/validasi** — menampilkan hasil uji statistik yang tersimpan: IC skor lama (antar-emiten & dalam satu emiten), excess return per rating, IC walk-forward per tahun, kalibrasi kuintil OOS, dan hasil uji Kronos. Angkanya hasil `research/evaluate.py`, bukan klaim. Untuk hasil **sinyal yang benar-benar keluar** (bukan simulasi riset), pakai `/jejak`.
 - **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, **±1–2 menit** — 4 emiten diproses paralel, progres bertahap tiap 10 emiten).
 - **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
+- **/sektor** — kekuatan relatif **sektor BEI** hari itu dari indeks resmi
+  `GetIndexSummary`: sektor terkuat & terlemah, berapa yang naik/turun. Kalau
+  idx.co.id diblokir Cloudflare atau payload-nya tidak memuat angka yang bisa
+  dihitung, bot berkata tidak tersedia — bukan menampilkan 0%.
 - **/banding BBCA BBRI BMRI** — tabel pembanding PER/PBV/ROE/dividend yield/return 1 thn/20 hari/PowerScore + fakta "paling murah/mahal menurut PBV" (deskriptif). Data pembanding yang gagal dilaporkan jujur.
 - **/agenda BBCA** — ex-date dividen (terakhir/berikutnya) + split & aksi korporasi dari Yahoo (bisa telat — cek juga situs emiten).
 - **/belajar RSI** — kamus istilah dalam bahasa sederhana (18 topik: RSI, MACD, MA20/50/200, Bollinger, ATR, OBV, StochRSI, PER, PBV, ROE, dividend yield, DER, volume, breakout, IHSG, PowerScore + alias).
@@ -235,7 +239,7 @@ Konsekuensinya di kode:
 ```bash
 pip install -r requirements-dev.txt
 ruff check .      # lint
-pytest            # 330+ tes offline (tanpa Yahoo/Google News/HuggingFace)
+pytest            # 500+ tes offline (tanpa Yahoo/Google News/HuggingFace)
 make coverage     # tes + gerbang coverage 75% (modul inti & bot.py)
 ```
 
@@ -251,6 +255,23 @@ python tools/build_universe.py --from-file x.json  # build dari respons tersimpa
 
 Screener menguji tiap kode lewat data harga Yahoo; kode delisted/suspensi
 dilewati dan dihitung, bukan diisi data karangan.
+
+**Fixture & replay.** `tests/fixtures/` menyimpan sampel bentuk kolom yang
+dipakai bot (OHLCV ter-normalisasi, ringkasan saham & indeks BEI) supaya
+perubahan bentuk data upstream cepat ketahuan. Sampel itu sintetis; untuk
+merekam respons asli jalankan sekali di mesin berjaringan:
+
+```bash
+python tools/record_fixtures.py --ticker BBCA
+```
+
+**CI riset.** `.github/workflows/research.yml` menjalankan evaluasi IC
+sampel (12 emiten, 3 tahun) setiap Senin dan **gagal** bila IC rata-rata
+< 0 — alarm dini tanpa menunggu ada yang membuka repo. Laporan tetap
+diunggah sebagai artefak.
+
+**Lisensi.** Kode repo ini MIT (lihat `LICENSE`); data pasar tetap terikat
+ketentuan Yahoo/BEI.
 
 CI GitHub Actions menjalankan lint + seluruh tes offline pada tiap push/PR.
 Build Docker bisa dicek lokal: `docker build --build-arg SKIP_MODEL=1 -t saham-bot:slim .`

@@ -1,0 +1,36 @@
+name: Riset mingguan
+
+# Alarm dini: jalankan evaluasi IC pada sampel kecil (12 emiten, 3 tahun)
+# setiap Senin. Tujuannya BUKAN menggantikan evaluasi 10 tahun penuh, tapi
+# menangkap sinyal memburuk (IC < 0) tanpa menunggu ada yang membuka repo.
+on:
+  schedule:
+    - cron: "0 1 * * 1"      # Senin 01:00 UTC = 08:00 WIB
+  workflow_dispatch:
+
+jobs:
+  rolling:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Evaluasi IC sampel (gagal bila IC < 0)
+        run: >
+          python research/evaluate.py
+          --period 3y --limit 12 --horizon 20 --min-ic 0
+          --out temp/research
+      - name: Simpan laporan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: riset-mingguan
+          path: |
+            temp/research/evaluation.md
+            temp/research/evaluation.json
+          if-no-files-found: warn

@@ -574,6 +574,9 @@ def main():
     ap.add_argument("--out", default=os.path.join("temp", "research"))
     ap.add_argument("--refresh", action="store_true",
                     help="abaikan cache dataset dan ambil ulang dari Yahoo")
+    ap.add_argument("--min-ic", type=float, default=None,
+                    help="keluar dengan kode 2 bila IC rata-rata < nilai ini "
+                         "(dipakai CI riset mingguan sebagai alarm)")
     args = ap.parse_args()
 
     tickers = list(dict.fromkeys(saran.LQ45))
@@ -639,6 +642,15 @@ def main():
     with open(os.path.join(args.out, "evaluation.md"), "w", encoding="utf-8") as f:
         f.write(md)
     print("\n" + md)
+
+    if args.min_ic is not None:
+        mean_ic = res["ic_score"].get("mean_ic")
+        if mean_ic is None or float(mean_ic) < args.min_ic:
+            print(f"\nGAGAL: IC rata-rata {mean_ic} < ambang {args.min_ic}. "
+                  "Ini alarm riset, bukan kegagalan kode — periksa apakah "
+                  "pasar berubah atau ada bug data.")
+            raise SystemExit(2)
+        print(f"\nOK: IC rata-rata {mean_ic} >= ambang {args.min_ic}.")
 
 
 if __name__ == "__main__":
