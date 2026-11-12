@@ -118,10 +118,14 @@ def _fund_flags(per, pbv, roe, der, sector):
     return vetoes, warnings
 
 
-def enrich(cand: dict, analyzed: dict | None) -> dict | None:
+def enrich(cand: dict, analyzed: dict | None,
+           require_rel: bool = True) -> dict | None:
     """Ringkas satu hasil `gather_candidate` jadi kandidat rencana.
 
     `analyzed` = {"res":..., "fund":..., "nsent":..., "fund_raw":...} dari bot.
+    `require_rel=False` dipakai `/rencana <KODE>` yang diminta eksplisit:
+    peringkat relatif boleh belum ada (belum `/scan`) dan hanya jadi catatan,
+    bukan veto. Untuk paket, vetonya tetap berlaku.
     Return None kalau data teknikal tidak cukup.
     """
     if not analyzed:
@@ -181,7 +185,12 @@ def enrich(cand: dict, analyzed: dict | None) -> dict | None:
     if value is not None and value < MIN_VALUE:
         vetoes.append("likuiditas < Rp2 miliar/hari")
     if rel_pct is None or rel_pct < MIN_REL:
-        vetoes.append("peringkat relatif lemah")
+        if require_rel:
+            vetoes.append("peringkat relatif lemah")
+        elif rel_pct is None:
+            warnings.append("peringkat relatif belum ada — jalankan /scan")
+        else:
+            warnings.append(f"peringkat relatif rendah ({rel_pct:.0f})")
     if fund_pct is not None and fund_pct < FUND_VETO:
         vetoes.append("skor fundamental sangat lemah")
     if news_pct is not None and news_pct < NEWS_VETO:
@@ -277,15 +286,22 @@ def grade(c: dict) -> str:
     return "B" if pts >= 3 else "C"
 
 
-def make_plan(c: dict, modal: float) -> dict:
-    """Hitung entry/SL/TP, lot, biaya, dan risiko untuk satu kandidat."""
+def price_levels(c: dict) -> dict:
+    """Entry/SL/TP/chase satu kandidat — satu aturan untuk semua perintah.
+
+    Dipakai `make_plan` (paket multi-emiten) dan `budget_plan` (satu emiten
+    dengan anggaran) supaya emiten yang sama tidak pernah menampilkan level
+    berbeda hanya karena perintahnya lain.
+    """
     raw_entry = _f(c.get("price")) or 0.0
     tick = tick_size(raw_entry)
     entry = _round_tick(raw_entry, tick)
     atr = _f(c.get("atr")) or entry * 0.03
+    if atr <= 0:
+        atr = entry * 0.03
     sl = _round_tick(max(entry - atr, tick), tick)
     if sl >= entry:
-        sl = entry - tick
+        sl = max(entry - tick, tick)
     tp = _round_tick(entry + 2.0 * atr, tick)
     if tp <= entry:
         tp = entry + 2.0 * tick
@@ -293,6 +309,21 @@ def make_plan(c: dict, modal: float) -> dict:
     if chase_above <= entry:
         chase_above = entry + tick
     risk_per_share = max(entry - sl, 0.0)
+    return {
+        "raw_entry": raw_entry, "tick": tick, "entry": entry, "atr": atr,
+        "sl": sl, "tp": tp, "chase_above": chase_above,
+        "risk_per_share": risk_per_share,
+        "rr": ((tp - entry) / risk_per_share) if risk_per_share > 0 else 0.0,
+    }
+
+
+def make_plan(c: dict, modal: float) -> dict:
+    """Hitung entry/SL/TP, lot, biaya, dan risiko untuk satu kandidat."""
+    lv = price_levels(c)
+    entry, sl, tp = lv["entry"], lv["sl"], lv["tp"]
+    atr = lv["atr"]
+    chase_above = lv["chase_above"]
+    risk_per_share = lv["risk_per_share"]
 
     ps = saran.position_size(modal, entry, sl)
     cap_lots = int((modal * MAX_POS_PCT) // (entry * 100)) if entry > 0 else 0
@@ -302,7 +333,7 @@ def make_plan(c: dict, modal: float) -> dict:
     real_risk = shares * risk_per_share
     min_modal = max(risk_per_share * 10_000, entry * 500)
     min_modal = int(math.ceil(min_modal / 100_000.0) * 100_000)
-    rr = ((tp - entry) / risk_per_share) if risk_per_share > 0 else 0.0
+    rr = lv["rr"]
 
     return {
         "ticker": c.get("ticker"),
@@ -347,6 +378,90 @@ def make_plan(c: dict, modal: float) -> dict:
         "skip_reason": (f"modal Rp{modal:,.0f} < minimum Rp{min_modal:,.0f}"
                         if lots == 0 else ""),
     }
+
+
+def budget_plan(c: dict, budget: float, modal: float | None = None) -> dict:
+    """Rencana SATU emiten dengan anggaran eksplisit (/rencana <KODE> <Rp>).
+
+    Bedanya dengan `make_plan`: jumlah lot di sini adalah yang benar-benar
+    TERJANGKAU anggaran (dibulatkan ke bawah per 100 lembar, fee beli ikut
+    dihitung), bukan yang dibatasi aturan risiko 1%. Aturan 1% tetap dihitung
+    (`lots_risk`) dan ditampilkan sebagai pembanding supaya kelihatan bila
+    ukuran ini lebih besar dari kebiasaan.
+
+    Kalau anggaran tidak cukup untuk 1 lot, kembalikan `ok=False` + harga 1 lot
+    — jangan mengarang jumlah lot.
+    """
+    lv = price_levels(c)
+    entry, sl, tp = lv["entry"], lv["sl"], lv["tp"]
+    budget = max(0.0, float(budget or 0.0))
+    modal = float(modal) if modal else 0.0
+    lot_value = entry * 100.0
+    min_budget = int(math.ceil(lot_value * (1 + saran.BUY_FEE)))
+
+    base = {
+        "ticker": (c.get("ticker") or "").upper(),
+        "name": c.get("name") or "",
+        "grade": c.get("grade") or grade(c),
+        "sector": c.get("sector"),
+        "board": c.get("board"),
+        "price": entry,
+        "entry": entry, "sl": sl, "tp": tp, "atr": round(lv["atr"], 2),
+        "chase_above": lv["chase_above"],
+        "rr": round(lv["rr"], 2),
+        "net_tp_pct": round(saran.pnl_pct(entry, tp), 2),
+        "budget": round(budget),
+        "modal": round(modal),
+        "lot_value": round(lot_value),
+        "min_budget": min_budget,
+        "risk_budget": round(modal * 0.01),
+        "warnings": list(c.get("warnings") or []),
+        "vetoes": list(c.get("vetoes") or []),
+        "reason": c.get("reason") or "",
+    }
+    if entry <= 0 or budget < min_budget:
+        return {**base, "ok": False, "lots": 0, "shares": 0, "value": 0,
+                "buy_cost": 0, "cash_left": round(budget),
+                "max_loss": 0, "max_loss_pct": None, "pct_modal": None,
+                "risk_pct": None, "lots_risk": 0, "profit_tp": None,
+                "skip_reason": ("anggaran kurang dari harga 1 lot"
+                                if entry > 0 else "harga tidak tersedia")}
+
+    lots = int(budget // lot_value)
+    while lots > 0 and lots * lot_value * (1 + saran.BUY_FEE) > budget:
+        lots -= 1
+    shares = lots * 100
+    value = shares * entry
+    buy_fee = value * saran.BUY_FEE
+    buy_cost = value + buy_fee
+    sell_fee_sl = shares * sl * saran.SELL_FEE
+    max_loss = value - shares * sl + buy_fee + sell_fee_sl
+    profit_tp = shares * tp * (1 - saran.SELL_FEE) - buy_cost
+    max_loss_pct = (max_loss / modal * 100) if modal else None
+    lots_risk = (saran.position_size(modal, entry, sl)["lots"]
+                 if modal else 0)
+
+    warnings = list(base["warnings"])
+    if modal and lots_risk and lots > lots_risk:
+        warnings.append(
+            f"{lots} lot = risiko {max_loss_pct:.1f}% modal, di atas aturan "
+            f"1%; ukuran sesuai aturan hanya {lots_risk} lot")
+    elif modal and not lots_risk:
+        warnings.append("risiko per lembar > 1% modal — aturan 1% tidak "
+                        "mengizinkan posisi ini sekalipun 1 lot")
+
+    return {**base, "ok": True, "lots": lots, "shares": shares,
+            "value": round(value), "buy_cost": round(buy_cost),
+            "cash_left": round(budget - buy_cost),
+            "pct_modal": (round(buy_cost / modal * 100, 2) if modal else None),
+            "max_loss": round(max_loss),
+            "max_loss_pct": (round(max_loss_pct, 2)
+                             if max_loss_pct is not None else None),
+            "risk_pct": (round(max_loss_pct, 2)
+                         if max_loss_pct is not None else None),
+            "lots_risk": lots_risk,
+            "profit_tp": round(profit_tp),
+            "warnings": warnings, "skip_reason": ""}
 
 
 def finalize(enriched: list[dict], modal: float,

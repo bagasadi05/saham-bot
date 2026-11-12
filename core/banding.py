@@ -4,6 +4,7 @@ Semua angka dari sumber yang sama dengan /fundamental & /analisis (Yahoo).
 Data yang gagal diambil dilaporkan jujur — tidak ada angka karangan."""
 from __future__ import annotations
 
+import threading as _threading
 import time as _time
 
 from core import data, fundamental, powerscore
@@ -13,6 +14,10 @@ MIN_YEAR_BARS = 180      # butuh minimal ~9 bulan data untuk disebut return "1 t
 TRADING_DAYS_1Y = 250    # jendela 1 tahun bursa BEI (~245-252 hari)
 _MKT_FAIL_TTL = 5 * 60   # gagal: coba lagi 5 menit lagi, jangan dikunci 6 jam
 _mkt_cache: dict = {"ts": 0.0, "val": None}
+# Handler async tidak berbagi thread, tetapi fetch IHSG bisa dipanggil dari
+# beberapa tugas sekaligus. Kunci ini menjaga blok baca cache tetap konsisten;
+# dua pengambilan yang lolos bersamaan sama-sama menulis hasil valid.
+_mkt_lock = _threading.Lock()
 
 # Kluster emiten likuid BEI untuk pembanding sektor cepat tanpa spam `.info`
 SECTOR_CLUSTERS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -44,11 +49,12 @@ def year_return(close) -> float | None:
 
 def market_context() -> dict | None:
     """Return IHSG {'ret20d', 'ret1y'} (%) atau None kalau Yahoo gagal."""
-    age = _time.time() - _mkt_cache["ts"]
-    if _mkt_cache["val"] is not None and age < _MKT_TTL:
-        return _mkt_cache["val"]
-    if _mkt_cache["val"] is None and age < _MKT_FAIL_TTL:
-        return None  # kegagalan baru: jangan spam Yahoo tiap request
+    with _mkt_lock:
+        age = _time.time() - _mkt_cache["ts"]
+        if _mkt_cache["val"] is not None and age < _MKT_TTL:
+            return _mkt_cache["val"]
+        if _mkt_cache["val"] is None and age < _MKT_FAIL_TTL:
+            return None  # kegagalan baru: jangan spam Yahoo tiap request
     df = None
     for _ in range(2):
         try:

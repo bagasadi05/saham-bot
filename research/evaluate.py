@@ -286,6 +286,73 @@ def rank_target(df: pd.DataFrame) -> pd.Series:
     return df.groupby("date")["fwd"].rank(pct=True) - 0.5
 
 
+LAM_REL_GRID = (0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0)
+
+
+def ridge_fit(X: np.ndarray, y: np.ndarray, lam_rel: float) -> np.ndarray:
+    """Ridge dengan penalti relatif terhadap jumlah baris latih.
+
+    `lam_rel=0,1` berarti penalti efektif 0,1 x N (bobot menyusut ~9%).
+    Intersep tidak dihukum. Penalti statis `lam=10` pada 10 ribu baris membuat
+    regularisasinya praktis nol, sehingga "ridge" hanya nama.
+    """
+    n, p = X.shape
+    pen = np.eye(p) * (max(0.0, lam_rel) * n)
+    pen[0, 0] = 0.0
+    return np.linalg.solve(X.T @ X + pen, X.T @ y)
+
+
+def choose_lam_cv(train: pd.DataFrame, feats: list[str], horizon: int,
+                  embargo_days: int = 0,
+                  grid: tuple[float, ...] = LAM_REL_GRID,
+                  n_folds: int = 4) -> dict:
+    """Pilih `lam_rel` lewat CV deret waktu DI DALAM train (bukan angka statis).
+
+    Fold memakai blok tanggal berurutan (expanding window); label latih yang
+    bisa menyentuh fold uji dipurge dengan konversi horizon bursa -> kalender
+    yang sama seperti `purged_split`. Metrik pemilihan: rata-rata IC
+    cross-sectional di fold uji. Seri -> lam terbesar (lebih konservatif).
+
+    Return dict: `lam_rel` terpilih, `cv_ic` per kandidat, `folds` valid.
+    """
+    dates = pd.to_datetime(train["date"])
+    uniq = np.sort(pd.unique(dates))
+    if len(uniq) < 60 or len(train) < 500:
+        return {"lam_rel": 0.1, "cv_ic": {}, "folds": 0,
+                "note": "train terlalu pendek untuk CV; lam default 0,10"}
+    horizon_days = int(math.ceil(horizon * 7 / 5)) + 2 + max(0, embargo_days)
+    chunks = np.array_split(uniq, n_folds + 1)
+    scores: dict[float, list[float]] = {g: [] for g in grid}
+    for val in chunks[1:]:
+        if len(val) < 5:
+            continue
+        start, end = pd.Timestamp(val[0]), pd.Timestamp(val[-1])
+        cutoff = start - pd.Timedelta(days=horizon_days)
+        tr = train[dates < cutoff]
+        te = train[(dates >= start) & (dates <= end)]
+        if len(tr) < 500 or len(te) < 50:
+            continue
+        Xtr = np.column_stack([np.ones(len(tr)),
+                              zscore_by_date(tr, feats).to_numpy()])
+        Xte = np.column_stack([np.ones(len(te)),
+                              zscore_by_date(te, feats).to_numpy()])
+        ytr = rank_target(tr).to_numpy()
+        for g in grid:
+            w = ridge_fit(Xtr, ytr, g)
+            ic = xs_ic(te.assign(_pred=Xte @ w), "_pred")
+            if len(ic):
+                scores[g].append(float(ic.mean()))
+    table = {g: (round(float(np.mean(v)), 4) if v else None)
+             for g, v in scores.items() if v}
+    if not table:
+        return {"lam_rel": 0.1, "cv_ic": {}, "folds": 0,
+                "note": "CV tidak menghasilkan fold valid; lam default 0,10"}
+    best = max(table, key=lambda g: (table[g], g))
+    return {"lam_rel": float(best),
+            "cv_ic": {f"{g:g}": v for g, v in table.items()},
+            "folds": len(scores[best]), "n_candidates": len(grid)}
+
+
 def purged_split(df: pd.DataFrame, year: int, horizon: int,
                  embargo_days: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Pisahkan train/test dan buang label latih yang overlap ke periode uji.
@@ -327,16 +394,19 @@ def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
         Xte = zscore_by_date(test, feats)
         ytr = train["target"].to_numpy()
 
+        cv = choose_lam_cv(train, feats, horizon, embargo_days)
+        lam = cv["lam_rel"]
         X = np.column_stack([np.ones(len(train)), Xtr.to_numpy()])
-        lam = 10.0
-        A = X.T @ X + lam * np.eye(X.shape[1])
-        w = np.linalg.solve(A, X.T @ ytr)
+        w = ridge_fit(X, ytr, lam)
 
         Xt = np.column_stack([np.ones(len(test)), Xte.to_numpy()])
         pred = Xt @ w
-        test = test.assign(pred=pred)
+        # Baseline anti-overfit: bobot sama untuk semua faktor (rata-rata z-score).
+        eq = Xte.to_numpy().mean(axis=1)
+        test = test.assign(pred=pred, eq=eq)
         ic_model = xs_ic(test, "pred")
         ic_score = xs_ic(test, "score")
+        ic_eq = xs_ic(test, "eq")
 
         # kombinasi sederhana: skor lama + model (rata-rata z-score)
         z = pd.Series(pred, index=test.index)
@@ -351,7 +421,10 @@ def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
             "train_last": str(pd.to_datetime(train["date"]).max().date()),
             "ic_model": round(float(ic_model.mean()), 4) if len(ic_model) else None,
             "ic_score": round(float(ic_score.mean()), 4) if len(ic_score) else None,
+            "ic_eq": round(float(ic_eq.mean()), 4) if len(ic_eq) else None,
             "ic_blend": round(float(ic_blend.mean()), 4) if len(ic_blend) else None,
+            "lam_rel": lam,
+            "lam_cv": cv,
             "weights": {f: round(float(v), 4) for f, v in zip(feats, w[1:], strict=True)},
             "intercept": round(float(w[0]), 4),
         })
@@ -438,13 +511,15 @@ def render_md(res: dict) -> str:
     L.append("")
 
     L.append("## 6. Walk-forward (latih di masa lalu, uji tahun berikutnya)\n")
-    L.append("| tahun uji | n train | n test | IC skor lama | IC model | IC gabungan |\n|---|---|---|---|---|---|")
+    L.append("| tahun uji | n train | n test | IC skor lama | IC bobot sama | IC model | lam | IC gabungan |\n"
+             "|---|---|---|---|---|---|---|---|")
     for r in res["walk_forward"]:
         if r.get("skipped"):
-            L.append(f"| {r['year']} | {r['n_train']} | {r['n_test']} | — (data kurang) | | |")
+            L.append(f"| {r['year']} | {r['n_train']} | {r['n_test']} | — (data kurang) | | | | |")
         else:
             L.append(f"| {r['year']} | {r['n_train']:,} | {r['n_test']:,} | "
-                     f"{r['ic_score']} | {r['ic_model']} | {r['ic_blend']} |")
+                     f"{r['ic_score']} | {r.get('ic_eq')} | {r['ic_model']} | "
+                     f"{r.get('lam_rel')} | {r['ic_blend']} |")
     L.append("")
 
     L.append("## 7. IC time-series per emiten (lensa 'beli sekarang?')\n")
@@ -465,6 +540,28 @@ def render_md(res: dict) -> str:
         L.append(f"| `{f}` | {v:+.5f} |")
     L.append("")
     return "\n".join(L)
+
+
+def _wf_summary(wf: list[dict]) -> dict:
+    """Bandingkan model ridge dengan baseline bobot-sama di tahun uji yang sama."""
+    ok = [r for r in wf if not r.get("skipped") and r.get("ic_model") is not None]
+    if not ok:
+        return {"n_years": 0}
+    mod = [r["ic_model"] for r in ok]
+    eq = [r["ic_eq"] for r in ok if r.get("ic_eq") is not None]
+    sc = [r["ic_score"] for r in ok if r.get("ic_score") is not None]
+    beats = sum(1 for r in ok
+                if r.get("ic_eq") is not None and r["ic_model"] > r["ic_eq"])
+    return {
+        "n_years": len(ok),
+        "ic_model_mean": round(float(np.mean(mod)), 4),
+        "ic_eq_mean": round(float(np.mean(eq)), 4) if eq else None,
+        "ic_score_mean": round(float(np.mean(sc)), 4) if sc else None,
+        "years_model_beats_eq": beats,
+        "lam_rel": [r.get("lam_rel") for r in ok],
+        "note": ("baseline bobot-sama adalah pembanding anti-overfit; "
+                 "kalau model tidak menang, bobot bebas tidak layak dipakai"),
+    }
 
 
 def main():
@@ -524,6 +621,7 @@ def main():
         "years": by_year(df),
         "features": signal_table(df, args.horizon),
         "walk_forward": wf,
+        "walk_forward_summary": _wf_summary(wf),
         "oos_quintiles": oos_deciles,
         "production_weights": weights,
         "feature_order": feats,

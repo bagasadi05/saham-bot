@@ -42,9 +42,11 @@ def main():
         ],
         "walk_forward": [
             {"year": r["year"], "ic_model": r.get("ic_model"),
-             "ic_score": r.get("ic_score"), "ic_blend": r.get("ic_blend")}
+             "ic_score": r.get("ic_score"), "ic_eq": r.get("ic_eq"),
+             "lam_rel": r.get("lam_rel"), "ic_blend": r.get("ic_blend")}
             for r in ev["walk_forward"]
         ],
+        "walk_forward_summary": ev.get("walk_forward_summary"),
         "quintiles": ev.get("oos_quintiles", []),
         "weights": ev.get("production_weights", {}),
     }
@@ -67,6 +69,9 @@ def main():
             "alpha_net_mean_pct": a.get("alpha_net_mean_pct"),
             "alpha_net_median_pct": a.get("alpha_net_median_pct"),
             "phases_net_positive": a.get("phases_net_positive"),
+            "ci95_alpha_net": p.get("ci95_alpha_net"),
+            "alpha_vs_ihsg_mean_pct": a.get("alpha_vs_ihsg_mean_pct"),
+            "phases_vs_ihsg_positive": a.get("phases_vs_ihsg_positive"),
         }
 
     if os.path.exists(KRONOS):

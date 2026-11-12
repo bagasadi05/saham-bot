@@ -653,10 +653,12 @@ def _plan_enriched():
 
 
 def test_rencana_tanpa_snapshot_mengarahkan_scan():
-    upd = _FakeUpdate("/rencana")
-    asyncio.run(bot.cmd_rencana(upd, _ctx()))
+    # perilaku paket pindah ke /paket; /rencana kini satu emiten
+    upd = _FakeUpdate("/paket")
+    asyncio.run(bot.cmd_paket(upd, _ctx()))
     text = upd.effective_message.replies[-1][0]
     assert "Belum ada snapshot" in text and "/scan" in text
+    assert "/rencana BBCA" in text
 
 
 def test_rencana_menyusun_lalu_memakai_cache(monkeypatch):
@@ -667,8 +669,8 @@ def test_rencana_menyusun_lalu_memakai_cache(monkeypatch):
                 "meta": meta, "pool": 1}
 
     monkeypatch.setattr(bot, "_build_plan_payload", fake_build)
-    upd = _FakeUpdate("/rencana")
-    asyncio.run(bot.cmd_rencana(upd, _ctx()))
+    upd = _FakeUpdate("/paket")
+    asyncio.run(bot.cmd_paket(upd, _ctx()))
     replies = [t for t, _ in upd.effective_message.replies]
     assert any("Menyusun rencana" in t for t in replies)
     final = replies[-1]
@@ -680,8 +682,8 @@ def test_rencana_menyusun_lalu_memakai_cache(monkeypatch):
     assert store.load_plan_cache(key)
 
     bot._last_used.clear()
-    upd2 = _FakeUpdate("/rencana")
-    asyncio.run(bot.cmd_rencana(upd2, _ctx()))
+    upd2 = _FakeUpdate("/paket")
+    asyncio.run(bot.cmd_paket(upd2, _ctx()))
     assert not any("Menyusun rencana" in t for t, _ in upd2
                    .effective_message.replies)
 

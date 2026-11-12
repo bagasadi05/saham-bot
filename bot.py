@@ -33,7 +33,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError, TimedOut
 
 import config
 from core import (alerts, analysis, bandar, banding, btcache, data,
@@ -136,19 +136,60 @@ def parse_tanya(text: str) -> tuple[str, str | None] | None:
     return focus, tickers[0] if tickers else None
 
 
+# --------------------------------------------------- kirim pesan yang tahan blip
+# Proxy/VPS bisa memutus satu permintaan Telegram tanpa memutus sesi. Tanpa
+# retry, laporan panjang hilang di tengah dan user hanya melihat "kesalahan
+# internal". Hanya gangguan jaringan yang diulang: `BadRequest` (mis. HTML
+# salah) TIDAK akan berubah kalau dikirim ulang — dan di python-telegram-bot
+# `BadRequest` adalah subclass `NetworkError`, jadi harus dikecualikan
+# eksplisit.
+_SEND_RETRY_ERRORS = (NetworkError, TimedOut)
+_SEND_FINAL_ERRORS = (BadRequest,)
+
+
+async def send_with_retry(call, *, tries: int = 3, base: float = 0.7,
+                          what: str = "kirim pesan"):
+    """Jalankan `call()` (callable → awaitable) dengan retry backoff ringan.
+
+    `call` harus MEMBUAT permintaan baru tiap percobaan (bukan coroutine yang
+    sama), supaya unggahan berkas ikut diulang dengan file yang masih terbuka.
+    """
+    last: Exception | None = None
+    for i in range(max(1, tries)):
+        try:
+            return await call()
+        except _SEND_RETRY_ERRORS as e:
+            if isinstance(e, _SEND_FINAL_ERRORS):
+                raise
+            last = e
+            if i + 1 >= tries:
+                break
+            delay = base * (2 ** i)
+            log.warning("%s gagal (%s) — ulang dalam %.1f dtk (%d/%d)",
+                        what, e, delay, i + 2, tries)
+            await asyncio.sleep(delay)
+    assert last is not None
+    raise last
+
+
 async def reply_long(message, text: str, **kwargs) -> None:
     """Kirim pesan panjang: Telegram menolak pesan >4096 karakter.
 
     Dibagi per baris; kalau satu bagian ditolak parser HTML, bagian itu dikirim
     ulang sebagai teks polos supaya laporan panjang (/saran lq45) tetap sampai.
+    Setiap bagian diulang saat NetworkError/TimedOut (P12).
     """
     kwargs.setdefault("parse_mode", ParseMode.HTML)
     for part in split_message(text):
         try:
-            await message.reply_text(part, **kwargs)
+            await send_with_retry(
+                lambda p=part: message.reply_text(p, **kwargs),
+                what="kirim laporan")
         except Exception:
             log.warning("bagian pesan ditolak parser HTML — dikirim sebagai teks polos")
-            await message.reply_text(re.sub(r"<[^>]+>", "", part))
+            await send_with_retry(
+                lambda p=part: message.reply_text(re.sub(r"<[^>]+>", "", p)),
+                what="kirim laporan (teks polos)")
 
 
 def timed(fn):
@@ -607,7 +648,7 @@ def main_menu_markup() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💡 Saran", callback_data="run:saran"),
          InlineKeyboardButton("📈 Backtest", callback_data="pick:backtest")],
         [InlineKeyboardButton("📡 Sinyal", callback_data="run:sinyal"),
-         InlineKeyboardButton("🎯 Rencana Beli", callback_data="run:rencana"),
+         InlineKeyboardButton("🎯 Paket Beli", callback_data="run:paket"),
          InlineKeyboardButton("🔄 Scan", callback_data="run:scan")],
         [InlineKeyboardButton("🛒 Beli", callback_data="pick:beli"),
          InlineKeyboardButton("💰 Jual", callback_data="pick:jual")],
@@ -738,12 +779,17 @@ async def _do_analisis(update: Update, tickers: list[str]):
         try:
             await asyncio.to_thread(
                 build_chart, sym.upper(), res["ind"], res["score"]["pct"], path)
-            with open(path, "rb") as f:
-                await msg.reply_photo(
-                    photo=f,
-                    caption=f"📈 Chart {sym} (6 bulan terakhir)",
-                    reply_markup=result_markup("analisis", sym),
-                )
+            def _send_chart(_path=path, _sym=sym):
+                # buka ulang tiap percobaan: handle yang sudah terpakai tidak
+                # bisa dikirim ulang oleh retry
+                with open(_path, "rb") as f:
+                    return msg.reply_photo(
+                        photo=f,
+                        caption=f"📈 Chart {_sym} (6 bulan terakhir)",
+                        reply_markup=result_markup("analisis", _sym),
+                    )
+
+            await send_with_retry(_send_chart, what="kirim chart")
         except Exception:
             log.exception("chart gagal utk %s", sym)
         finally:
@@ -1347,7 +1393,8 @@ async def run_menu_action(update: Update, action: str, tickers: list[str]):
 async def _safe_edit(msg, text, **kw):
     """Edit pesan menu; abaikan 'Message is not modified' (double-tap jinak)."""
     try:
-        await msg.edit_text(text, **kw)
+        await send_with_retry(lambda: msg.edit_text(text, **kw),
+                              what="edit pesan")
     except BadRequest as e:
         if "message is not modified" not in str(e).lower():
             raise
@@ -1455,8 +1502,8 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await run_menu_action(update, "bandar", [])
         elif action == "sinyal":
             await _do_sinyal(update, [])
-        elif action == "rencana":
-            await _do_rencana(update, [])
+        elif action == "paket":
+            await _do_paket(update, [])
         elif action == "scan":
             await _do_scan(update, [], ctx.job_queue)
         else:
@@ -1529,7 +1576,8 @@ async def _post_init(app: Application):
             BotCommand("fundamental", "PER/PBV/ROE/dividen/DER"),
             BotCommand("saran", "Kandidat BUY harian + paper trading"),
             BotCommand("sinyal", "Sinyal BELI/JUAL seluruh pasar IDX"),
-            BotCommand("rencana", "Paket beli siap Stockbit + lot/SL/TP"),
+            BotCommand("rencana", "Rencana beli 1 emiten + anggaran"),
+            BotCommand("paket", "Paket beli multi-emiten siap Stockbit"),
             BotCommand("scan", "Pindai seluruh pasar sekarang (±3–6 menit)"),
             BotCommand("beli", "Tanya: layak beli? mis. /beli BBCA"),
             BotCommand("jual", "Tanya: layak jual? mis. /jual BBCA"),
@@ -1803,8 +1851,18 @@ def format_validasi(v: dict) -> str:
     for r in v.get("walk_forward", []):
         if r.get("ic_model") is None:
             continue
+        eq = r.get("ic_eq")
+        eq_txt = f" | bobot sama {eq:+.3f}" if isinstance(eq, (int, float)) else ""
+        lam = r.get("lam_rel")
+        lam_txt = f" [lam {lam:g}]" if isinstance(lam, (int, float)) else ""
         L.append(f"  {r['year']}: skor lama {r['ic_score']:+.3f} | "
-                 f"model {r['ic_model']:+.3f} | gabungan {r['ic_blend']:+.3f}")
+                 f"model {r['ic_model']:+.3f}{eq_txt} | "
+                 f"gabungan {r['ic_blend']:+.3f}{lam_txt}")
+    wfs = v.get("walk_forward_summary") or {}
+    if wfs.get("ic_model_mean") is not None and wfs.get("ic_eq_mean") is not None:
+        L.append(f"  rata-rata: model {wfs['ic_model_mean']:+.3f} vs bobot sama "
+                 f"{wfs['ic_eq_mean']:+.3f} · model menang "
+                 f"{wfs.get('years_model_beats_eq')}/{wfs.get('n_years')} tahun")
     L.append("")
 
     q = v.get("quintiles", [])
@@ -1833,6 +1891,16 @@ def format_validasi(v: dict) -> str:
             L.append(f"  Deflated Sharpe {dsr['dsr']} "
                      f"(SR terbaik {dsr.get('best_sr')}, ambang {dsr.get('sr0')}, "
                      f"n_trials={dsr.get('n_trials')})")
+        ci = p.get("ci95_alpha_net") or {}
+        if ci.get("lo") is not None:
+            L.append(f"  CI 95% alpha neto {ci['lo']:+.2f}% s.d. {ci['hi']:+.2f}% "
+                     f"(blok {ci.get('block')} fase; fase saling tumpang tindih)")
+        ihsg = p.get("alpha_vs_ihsg_mean_pct")
+        if isinstance(ihsg, (int, float)):
+            L.append(f"  vs IHSG {ihsg:+.2f}%/periode "
+                     f"({p.get('phases_vs_ihsg_positive')}/{p.get('n_phases')} fase) — "
+                     "IHSG berbobot kapitalisasi, universe di sini sama-bobot, "
+                     "jadi angka ini bukan alpha murni")
         L.append("  → biaya hampir menghabiskan keunggulan; jangan baca "
                  "peringkat sebagai jaminan untung.")
         L.append("")
@@ -2103,8 +2171,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <b>/sinyal</b> — sinyal BELI/JUAL <b>seluruh pasar IDX</b> "
         "(±944 emiten): <b>/sinyal beli</b>, <b>/sinyal jual</b>, "
         "<b>/sinyal BBCA</b>, <b>/sinyal csv</b>; perbarui: <b>/scan</b>\n"
-        "• <b>/rencana</b> — paket beli <b>siap Stockbit</b>: kandidat paling "
-        "likuid &amp; berkualitas + lot sesuai modal, SL/TP, cara pasang\n"
+        "• <b>/rencana BBCA 5000000</b> — rencana beli <b>satu emiten</b>: "
+        "lot yang terjangkau, biaya, % modal, rugi maksimal, RR\n"
+        "• <b>/paket</b> — paket beli <b>multi-emiten siap Stockbit</b> dari "
+        "hasil <b>/scan</b>: kandidat paling likuid &amp; berkualitas\n"
         "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
         "• <b>/banding BBCA BBRI</b> — tabel PER/PBV/ROE/return + konteks IHSG\n"
         "• <b>/agenda BBCA</b> — ex-date dividen & aksi korporasi\n"
@@ -2911,14 +2981,17 @@ async def _build_plan_payload(rows: list[dict], meta: dict) -> dict:
             "built_at": _dt.datetime.now().isoformat(timespec="seconds")}
 
 
-async def _do_rencana(update: Update, args: list[str]):
+async def _do_paket(update: Update, args: list[str]):
+    """Paket beli MULTI-emiten dari snapshot /scan: /paket [1-5|refresh]."""
     rows = store.load_market_scan()
     meta = store.market_scan_meta()
     if not rows:
         await update.effective_message.reply_text(
             "🎯 Belum ada snapshot pasar.\n\n"
             "Jalankan <code>/scan</code> dulu (±2–3 menit). Setelah itu "
-            "<code>/rencana</code> menyusun paket beli siap Stockbit.",
+            "<code>/paket</code> menyusun paket beli siap Stockbit.\n\n"
+            "Untuk satu emiten tanpa menunggu scan: "
+            "<code>/rencana BBCA 5000000</code>.",
             parse_mode=ParseMode.HTML)
         return
 
@@ -2952,7 +3025,7 @@ async def _do_rencana(update: Update, args: list[str]):
         if not payload.get("enriched"):
             await update.effective_message.reply_text(
                 "❌ Gagal mengambil data fundamental/berita untuk kandidat. "
-                "Coba lagi nanti atau <code>/rencana refresh</code>.",
+                "Coba lagi nanti atau <code>/paket refresh</code>.",
                 parse_mode=ParseMode.HTML)
             return
         store.save_plan_cache(key, payload, meta.get("trade_date", ""))
@@ -2963,8 +3036,223 @@ async def _do_rencana(update: Update, args: list[str]):
                      _rencana_text(result, payload, meta))
 
 
+async def cmd_paket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Paket beli multi-emiten siap Stockbit: /paket [1-5|refresh]."""
+    await _do_paket(update, tokens(update))
+
+
+# ------------------------------------------- P13: rencana SATU emiten + anggaran
+_RENCANA_USAGE = (
+    "🎯 <b>Rencana beli satu emiten</b>\n\n"
+    "<code>/rencana BBCA 5000000</code> — kode + anggaran (rupiah)\n"
+    "<code>/rencana BBCA</code> — pakai modal tersimpan "
+    "(<code>/modal</code>)\n\n"
+    "Anggaran boleh ditulis <code>5000000</code>, <code>5.000.000</code>, "
+    "atau <code>5jt</code>.\n"
+    "Paket beberapa emiten sekaligus: <code>/paket</code> (perlu /scan dulu)."
+)
+
+
+def _parse_rupiah(tok: str) -> float | None:
+    """Terima '5000000', '5.000.000', '5jt', '1,5jt', '500rb' → rupiah.
+
+    Return None bila bukan angka yang masuk akal — pemanggil membalas contoh
+    perintah, bukan menebak nominal.
+    """
+    s = (tok or "").strip().lower().replace("rp", "").replace(" ", "")
+    if not s:
+        return None
+    mult = 1.0
+    for suf, m in (("juta", 1e6), ("jt", 1e6), ("ribu", 1e3), ("rb", 1e3),
+                   ("k", 1e3)):
+        if s.endswith(suf) and s[:-len(suf)]:
+            s, mult = s[:-len(suf)], m
+            break
+    if not re.fullmatch(r"[0-9.,]+", s):
+        return None
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")          # 5.000.000,50
+    elif s.count(".") >= 2 or re.search(r"\.\d{3}$", s):
+        s = s.replace(".", "")                            # 5.000.000
+    elif s.count(",") >= 2 or re.search(r",\d{3}$", s):
+        s = s.replace(",", "")                            # 5,000,000
+    else:
+        s = s.replace(",", ".")
+    try:
+        val = float(s)
+    except ValueError:
+        return None
+    return val * mult if val > 0 else None
+
+
+def _snapshot_row(ticker: str) -> dict:
+    """Baris snapshot /scan terakhir untuk satu ticker (kosong bila belum ada)."""
+    try:
+        for r in store.load_market_scan():
+            if (r.get("ticker") or "").upper() == ticker:
+                return r
+    except Exception:
+        log.exception("baca snapshot untuk %s gagal", ticker)
+    return {}
+
+
+def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool) -> str:
+    """Kartu rencana satu emiten: lot, biaya, % modal, rugi maks, RR."""
+    t = esc(plan["ticker"])
+    bits = [esc(x) for x in (c.get("name"), c.get("sector"), c.get("board"))
+            if x]
+    head = f"🎯 <b>RENCANA BELI — {t}</b>"
+    sub = " · ".join(bits + [f"grade {esc(plan.get('grade') or '—')}"])
+    out = [head, f"<i>{sub}</i>", ""]
+    out += [
+        f"Entry ≤ <b>{_money(plan['entry'])}</b> · SL "
+        f"<b>{_money(plan['sl'])}</b> · TP <b>{_money(plan['tp'])}</b> "
+        f"(net {_plan_pct(plan.get('net_tp_pct'))}) · RR 1:{plan['rr']:g}",
+        f"Jangan kejar di atas <b>{_money(plan['chase_above'])}</b>",
+        "",
+    ]
+    if plan.get("vetoes"):
+        out += [
+            "⛔ <b>Tidak lolos saringan rencana:</b> "
+            + esc(", ".join(plan["vetoes"])),
+            "<i>Angka di bawah hanya hitungan uang, bukan rekomendasi. "
+            "Pakai dengan sadar risikonya.</i>",
+            "",
+        ]
+    if not plan.get("ok"):
+        out += [
+            f"💵 Anggaran <b>{_money(plan['budget'])}</b> belum cukup untuk "
+            f"1 lot: harga 1 lot {_money(plan['lot_value'])} + fee ≈ "
+            f"<b>{_money(plan['min_budget'])}</b>.",
+            "Tambah anggaran atau pilih emiten lain — tidak ada jumlah lot "
+            "yang saya karang.",
+        ]
+    else:
+        src = "modal tersimpan" if budget_from_modal else "Anggaran"
+        shares = f"{plan['shares']:,}".replace(",", ".")
+        out += [
+            f"💵 {src} <b>{_money(plan['budget'])}</b> → "
+            f"<b>{plan['lots']} lot</b> ({shares} lembar)",
+            f"Nilai saham {_money(plan['value'])} + fee beli 0,15% = "
+            f"<b>{_money(plan['buy_cost'])}</b>"
+            + (f" · <b>{_plan_pct(plan['pct_modal'], sign=False)}</b> dari modal "
+               f"{_money(plan['modal'])}" if plan.get("pct_modal") else ""),
+            f"Sisa anggaran <b>{_money(plan['cash_left'])}</b>",
+            f"Kalau kena SL: rugi <b>{_money(plan['max_loss'])}</b>"
+            + (f" ({_plan_pct(plan['max_loss_pct'], sign=False)} modal, sudah "
+               "termasuk fee jual)"
+               if plan.get("max_loss_pct") is not None
+               else " (sudah termasuk fee jual)"),
+            f"Kalau kena TP: untung bersih <b>{_money(plan['profit_tp'])}</b>",
+        ]
+        if plan.get("modal") and plan.get("lots_risk") is not None:
+            out.append(
+                f"Aturan risiko 1% modal: maks <b>{plan['lots_risk']} lot</b> "
+                f"(risiko {_money(plan['risk_budget'])}).")
+    warns = list(plan.get("warnings") or [])[:3]
+    if warns:
+        out.append("")
+        out += ["⚠️ " + esc(w.replace(".", ",")) for w in warns]
+    out += [
+        "",
+        "📱 <b>Pasang di Stockbit</b>: cari kode → <b>Limit Order</b> (bukan "
+        "Market) → lot di atas, harga ≤ entry → pasang alert di SL & TP.",
+        f"Ubah anggaran: <code>/rencana {t} 10000000</code> · paket "
+        "multi-emiten: <code>/paket</code>",
+        "",
+        "<i>Entry = harga beli maksimum · SL = batas rugi (jual di sini) · "
+        "TP = target untung · RR = untung:rugi · lot = 100 lembar.</i>",
+        "",
+        _SINYAL_DISCLAIMER,
+    ]
+    return "\n".join(out)
+
+
+async def _do_rencana(update: Update, args: list[str]):
+    """Rencana beli SATU emiten: /rencana <KODE> [anggaran]."""
+    msg = update.effective_message
+    chat_id = update.effective_chat.id
+    if not args:
+        await reply_long(msg, _RENCANA_USAGE)
+        return
+    head = args[0].upper()
+    head = head[:-3] if head.endswith(".JK") else head
+    if head in ("PAKET", "REFRESH", "ULANG") or head.isdigit():
+        await msg.reply_text(
+            "ℹ️ <code>/rencana</code> sekarang untuk <b>satu emiten</b>: "
+            "<code>/rencana BBCA 5000000</code>.\n"
+            "Paket beberapa emiten sekaligus ada di <code>/paket</code> "
+            "(butuh <code>/scan</code> dulu).",
+            parse_mode=ParseMode.HTML)
+        return
+    if not re.fullmatch(r"[A-Z]{2,6}", head):
+        await reply_long(msg, "Kode emiten tidak valid.\n\n" + _RENCANA_USAGE)
+        return
+
+    budget: float | None = None
+    if len(args) > 1:
+        budget = _parse_rupiah(args[1])
+        if budget is None:
+            await reply_long(
+                msg,
+                f"Anggaran <code>{esc(args[1])}</code> tidak saya mengerti.\n\n"
+                + _RENCANA_USAGE)
+            return
+
+    modal = store.get_modal(chat_id)
+    from_modal = budget is None
+    if budget is None:
+        budget = float(modal or 0)
+    if budget <= 0:
+        await reply_long(
+            msg,
+            "Anggaran belum ada. Tulis nominalnya, mis. "
+            "<code>/rencana BBCA 5000000</code>, atau set modal: "
+            "<code>/modal 10000000</code>.\n\n" + _RENCANA_USAGE)
+        return
+
+    # Cooldown setelah validasi: salah ketik tidak boleh memakan jatah.
+    if not await cooldown_ok(update, "rencana"):
+        return
+
+    await msg.reply_text(f"⏳ Menghitung rencana {head} (±5–15 detik)…")
+    try:
+        analyzed = await gather_candidate(head)
+    except Exception:
+        log.exception("gagal ambil data %s untuk /rencana", head)
+        analyzed = None
+    if not analyzed:
+        await msg.reply_text(
+            f"❌ Data harga {esc(head)} tidak tersedia (delisted, suspensi, "
+            "atau sumber sedang down). Coba lagi nanti — tidak ada angka "
+            "yang saya karang.",
+            parse_mode=ParseMode.HTML)
+        return
+
+    row = _snapshot_row(head)
+    cand = {
+        "ticker": head,
+        "rel_pct": row.get("rel_pct"),
+        "tech_score": row.get("tech_score"),
+        "sector": row.get("sector"),
+        "board": row.get("board"),
+        "price": (analyzed.get("res") or {}).get("snap", {}).get("close"),
+    }
+    enriched = rencana.enrich(cand, analyzed,
+                              require_rel=row.get("rel_pct") is not None)
+    if not enriched:
+        await msg.reply_text(
+            f"❌ Data teknikal {esc(head)} tidak cukup untuk menyusun level "
+            "(riwayat harga terlalu pendek).",
+            parse_mode=ParseMode.HTML)
+        return
+    plan = rencana.budget_plan(enriched, budget, modal)
+    await reply_long(msg, _rencana_single_text(plan, enriched,
+                                               budget_from_modal=from_modal))
+
+
 async def cmd_rencana(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Paket beli siap Stockbit: /rencana [1-5|refresh]."""
+    """Rencana satu emiten dengan anggaran: /rencana BBCA 5000000."""
     await _do_rencana(update, tokens(update))
 
 
@@ -3017,9 +3305,11 @@ async def _run_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
                "Coba lagi nanti. Kalau berulang, cek log VPS.")
     for part in split_message(txt):
         try:
-            await ctx.bot.send_message(chat_id, part,
-                                       parse_mode=ParseMode.HTML,
-                                       disable_web_page_preview=True)
+            await send_with_retry(
+                lambda p=part: ctx.bot.send_message(
+                    chat_id, p, parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True),
+                what="kirim hasil scan")
         except Exception:
             log.exception("gagal mengirim hasil scan ke %s", chat_id)
 
@@ -3175,7 +3465,8 @@ def main():
     reg("watch", cmd_watch)
     reg(["saran", "recommendasi"], cmd_saran)
     reg(["sinyal", "signal"], cmd_sinyal)
-    reg(["rencana", "stockbit", "plan"], cmd_rencana)
+    reg("rencana", cmd_rencana)
+    reg(["paket", "stockbit", "plan"], cmd_paket)
     reg(["scan", "pindai"], cmd_scan)
     reg(["beli", "buy"], cmd_beli)
     reg(["jual", "sell"], cmd_jual)

@@ -14,7 +14,11 @@ Desain:
     Biaya dihitung per sisi dari perubahan bobot: sum|w_baru - w_lama|.
   - Opsional hysteresis: nama lama ditahan selama masih di band tahan
     (--hold), bukan langsung dilepas saat keluar dari top-N.
-  - Pembanding: rata-rata seluruh universe hari itu (equal weight), bruto.
+  - Pembanding: rata-rata seluruh universe hari itu (equal weight), bruto,
+    plus IHSG (`^JKSE`) pada jendela yang sama supaya klaim "mengalahkan pasar"
+    bisa diuji, bukan diasumsikan.
+  - Ketidakpastian alpha neto dilaporkan sebagai CI 95% moving-block bootstrap
+    atas fase-fase rebalance (blok 4 fase, karena fase berdekatan tumpang tindih).
 
 PENTING — kenapa ada 20 fase:
   Rebalance tiap 20 hari punya 20 kemungkinan titik mulai. Menjalankan satu
@@ -42,6 +46,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core import data
 from config import IDX_BUY_FEE, IDX_SELL_FEE
 
 BUY_COST = IDX_BUY_FEE
@@ -120,6 +125,60 @@ def deflated_sharpe(nets: list[np.ndarray], n_trials: int | None = None) -> dict
     }
 
 
+def moving_block_bootstrap_ci(values, iters: int = 2000,
+                             block: int = 4, alpha: float = 0.05,
+                             seed: int = 0) -> dict:
+    """CI rata-rata dengan moving-block bootstrap.
+
+    Nilai antar-fase tidak independen: fase offset 0..step-1 memakai jendela
+    yang saling tumpang tindih, jadi bootstrap iid terlalu sempit. Blok
+    bersambung (moving block, blok boleh tumpang tindih) menjaga autokorelasi
+    lokal itu. `block=1` setara bootstrap iid — dipakai sebagai pembanding.
+
+    Nilai dalam satuan yang dilaporkan (mis. persen per periode).
+    """
+    x = np.asarray(values, dtype=float)
+    n = len(x)
+    if n < 3:
+        return {"n": n, "lo": None, "hi": None, "p_positive": None,
+                "block": block, "iters": 0}
+    block = max(1, min(int(block), n))
+    n_blocks = int(np.ceil(n / block))
+    starts = np.arange(0, n - block + 1)
+    rng = np.random.default_rng(seed)
+    means = np.empty(iters, dtype=float)
+    for i in range(iters):
+        pick = rng.choice(starts, size=n_blocks, replace=True)
+        sample = np.concatenate([x[j:j + block] for j in pick])[:n]
+        means[i] = float(sample.mean())
+    lo, hi = np.percentile(means, [100.0 * alpha / 2.0,
+                                   100.0 * (1.0 - alpha / 2.0)])
+    return {
+        "n": n, "block": block, "iters": int(iters),
+        "lo": round(float(lo), 3), "hi": round(float(hi), 3),
+        "p_positive": round(float((means > 0).mean()), 3),
+    }
+
+
+def ihsg_period_returns(step: int, period: str = "10y") -> pd.Series:
+    """Return IHSG per `step` hari bursa, diindeks tanggal bar awal.
+
+    Kosong kalau data indeks tidak tersedia — pemanggil wajib melaporkan
+    "tidak ada pembanding", bukan mengarang angka.
+    """
+    try:
+        df = data.fetch_history("^JKSE", period=period, raw_symbol=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"  ! IHSG: {e}")
+        return pd.Series(dtype=float)
+    if df is None or "close" not in df or len(df) <= step:
+        return pd.Series(dtype=float)
+    close = df["close"].astype(float).to_numpy()
+    idx = pd.to_datetime(df.index).normalize()
+    ret = pd.Series(close[step:] / close[:-step] - 1.0, index=idx[:-step])
+    return ret[~ret.index.duplicated(keep="last")]
+
+
 def turnover_cost(prev: dict[str, float], cur: dict[str, float]) -> dict:
     """Biaya per sisi + turnover.
 
@@ -159,7 +218,8 @@ def _select(g: pd.DataFrame, prev_weights: dict[str, float],
 
 
 def one_phase(oos: pd.DataFrame, q: float, step: int, offset: int,
-              hold: float | None = None) -> pd.DataFrame:
+              hold: float | None = None,
+              ihsg: pd.Series | None = None) -> pd.DataFrame:
     """Satu fase rebalance. Return baris per periode (gross/net/bench/turnover)."""
     dates = np.array(sorted(oos["date"].unique()))
     periods = list(dates[offset::step])
@@ -183,11 +243,16 @@ def one_phase(oos: pd.DataFrame, q: float, step: int, offset: int,
         tc = turnover_cost(prev, cur)
         ranked = g.sort_values("pred", ascending=False)
         bottom = float(ranked.tail(max(1, len(names)))["fwd"].mean())
+        r_ihsg = np.nan
+        if ihsg is not None and len(ihsg):
+            key = pd.Timestamp(d).normalize()
+            if key in ihsg.index:
+                r_ihsg = float(ihsg.loc[key])
 
         rows.append({
             "date": str(pd.Timestamp(d).date()),
             "n": int(len(g)),
-            "gross": gross, "bench": bench,
+            "gross": gross, "bench": bench, "ihsg": r_ihsg,
             "net": gross - tc["cost"], "cost": tc["cost"],
             "buy": tc["buy"], "sell": tc["sell"],
             "turnover": tc["turnover"], "turnover_two_way": tc["two_way"],
@@ -198,16 +263,19 @@ def one_phase(oos: pd.DataFrame, q: float, step: int, offset: int,
 
 
 def run(oos: pd.DataFrame, q: float, step: int,
-        hold: float | None = None) -> dict:
+        hold: float | None = None,
+        ihsg: pd.Series | None = None) -> dict:
     phases = []
     nets: list[np.ndarray] = []
     for off in range(step):
-        df = one_phase(oos, q, step, off, hold)
+        df = one_phase(oos, q, step, off, hold, ihsg)
         if df.empty:
             continue
         nets.append(df["net"].to_numpy())
         alpha_gross = (df["gross"] - df["bench"]).to_numpy()
         alpha_net = (df["net"] - df["bench"]).to_numpy()
+        ih = df["ihsg"].to_numpy(dtype=float)
+        vs_ihsg = (df["net"].to_numpy(dtype=float) - ih)[~np.isnan(ih)]
         phases.append({
             "offset": off,
             "n_periods": int(len(df)),
@@ -219,6 +287,10 @@ def run(oos: pd.DataFrame, q: float, step: int,
             "net": summarize(df["net"].to_numpy()),
             "alpha_gross": summarize(alpha_gross),
             "alpha_net": summarize(alpha_net),
+            "alpha_vs_ihsg": (
+                summarize(vs_ihsg) if len(vs_ihsg) else
+                {"n": 0, "mean_pct": None, "median_pct": None, "t": None,
+                 "cum_pct": None, "win_rate": None}),
         })
 
     if not phases:
@@ -230,6 +302,10 @@ def run(oos: pd.DataFrame, q: float, step: int,
                   if p["alpha_net"]["mean_pct"] is not None])
     ts = np.array([p["alpha_net"]["t"] for p in phases
                    if p["alpha_net"]["t"] is not None])
+    ih = np.array([p["alpha_vs_ihsg"]["mean_pct"] for p in phases
+                   if p["alpha_vs_ihsg"]["mean_pct"] is not None])
+    boot = moving_block_bootstrap_ci(n, iters=2000, block=4)
+    boot_iid = moving_block_bootstrap_ci(n, iters=2000, block=1)
     # Cross-check: excess kuintil Q5 di SEMUA tanggal (bukan hanya fase terpilih)
     all_mean = oos.groupby("date")["fwd"].mean()
     q5_mean = oos[oos["decile"] == 4].groupby("date")["fwd"].mean()
@@ -254,7 +330,12 @@ def run(oos: pd.DataFrame, q: float, step: int,
             "alpha_net_max_pct": round(float(n.max()), 3),
             "phases_net_positive": int((n > 0).sum()),
             "phase_t_mean": round(float(ts.mean()), 2) if len(ts) else None,
+            "alpha_vs_ihsg_mean_pct": round(float(ih.mean()), 3) if len(ih) else None,
+            "phases_vs_ihsg_positive": int((ih > 0).sum()) if len(ih) else None,
+            "n_phases_vs_ihsg": int(len(ih)),
         },
+        "ci95_alpha_net": boot,
+        "ci95_alpha_net_iid": boot_iid,
         "all_dates_q5_excess": summarize(all_exc.to_numpy()),
         "deflated_sharpe": deflated_sharpe(nets),
         "avg_turnover_pct": round(
@@ -273,6 +354,8 @@ def main():
     ap.add_argument("--hold", type=float, default=None,
                     help="batas tahan (mis. 0.4 = tetap pegang selama masih "
                          "top 40%%); default sama dengan --quintile")
+    ap.add_argument("--no-ihsg", action="store_true",
+                    help="lewati pembanding IHSG (mis. saat offline)")
     ap.add_argument("--src", default=os.path.join("temp", "research",
                                                   "oos_predictions.pkl"))
     ap.add_argument("--out", default=os.path.join("temp", "research"))
@@ -283,7 +366,10 @@ def main():
             f"{args.src} belum ada — jalankan research/evaluate.py dulu "
             "(sekarang menyimpan prediksi OOS).")
     oos = pd.read_pickle(args.src)
-    res = run(oos, args.quintile, args.step, args.hold)
+    ihsg = None if args.no_ihsg else ihsg_period_returns(args.step)
+    if not args.no_ihsg and not len(ihsg):
+        print("  ! IHSG tidak tersedia — pembanding dilewati, bukan dikarang")
+    res = run(oos, args.quintile, args.step, args.hold, ihsg)
     if "error" in res:
         raise SystemExit(res["error"])
 
@@ -308,6 +394,19 @@ def main():
           f" · rentang [{a['alpha_net_min_pct']:+.2f}, {a['alpha_net_max_pct']:+.2f}]")
     print(f"fase dengan alpha neto > 0: {a['phases_net_positive']}/{res['n_phases']}"
           f" · rata-rata t = {a['phase_t_mean']}")
+    ci = res.get("ci95_alpha_net") or {}
+    if ci.get("lo") is not None:
+        print(f"CI 95% alpha neto (blok {ci['block']} fase): "
+              f"[{ci['lo']:+.3f}, {ci['hi']:+.3f}]%/periode"
+              f" · peluang > 0 = {ci['p_positive'] * 100:.0f}%")
+    civ = res.get("ci95_alpha_net_iid") or {}
+    if civ.get("lo") is not None:
+        print(f"CI 95% versi iid (terlalu sempit): "
+              f"[{civ['lo']:+.3f}, {civ['hi']:+.3f}]%")
+    if a.get("alpha_vs_ihsg_mean_pct") is not None:
+        print(f"vs IHSG (^JKSE)          : rata-rata "
+              f"{a['alpha_vs_ihsg_mean_pct']:+.3f}%/periode"
+              f" · {a['phases_vs_ihsg_positive']}/{a['n_phases_vs_ihsg']} fase positif")
     dsr = res.get("deflated_sharpe") or {}
     if dsr.get("dsr") is not None:
         print(f"Deflated Sharpe: terbaik {dsr['best_sr']} · ambang keberuntungan "
