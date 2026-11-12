@@ -119,10 +119,35 @@ def xs_ic(df: pd.DataFrame, col: str, ret: str = "fwd",
     return pd.Series(out, dtype=float)
 
 
-def ic_summary(ic: pd.Series) -> dict:
+def newey_west_t(values, nlags: int = 0) -> float | None:
+    """t-stat rata-rata dengan koreksi Newey-West (kernel Bartlett).
+
+    IC per tanggal tidak independen: label 20 hari saling overlap, jadi t naif
+    (mean/std*sqrt(n)) terlalu optimistis. HAC memperhitungkan autokovarians
+    sampai `nlags` sehingga error bar-nya lebih jujur.
+    """
+    x = np.asarray([v for v in values if v == v], dtype=float)
+    n = len(x)
+    if n < 3:
+        return None
+    mean = float(x.mean())
+    e = x - mean
+    gamma0 = float(e @ e) / n
+    var = gamma0
+    for lag in range(1, min(nlags, n - 1) + 1):
+        gamma = float(e[lag:] @ e[:-lag]) / n
+        var += 2.0 * (1.0 - lag / (nlags + 1.0)) * gamma
+    if var <= 0:
+        return None
+    se = math.sqrt(var / n)
+    return round(mean / se, 2) if se > 0 else None
+
+
+def ic_summary(ic: pd.Series, nlags: int = 0) -> dict:
     n = len(ic)
     if n == 0:
-        return {"n_dates": 0, "mean_ic": None, "ir": None, "t": None}
+        return {"n_dates": 0, "mean_ic": None, "ir": None, "t": None,
+                "t_hac": None}
     mean = float(ic.mean())
     std = float(ic.std(ddof=1)) if n > 1 else 0.0
     return {
@@ -130,6 +155,7 @@ def ic_summary(ic: pd.Series) -> dict:
         "mean_ic": round(mean, 4),
         "ir": round(mean / std, 3) if std else None,
         "t": round(mean / std * math.sqrt(n), 2) if std else None,
+        "t_hac": newey_west_t(ic.to_numpy(), nlags) if nlags > 0 else None,
     }
 
 
@@ -226,12 +252,12 @@ def by_year(df: pd.DataFrame) -> list[dict]:
     return out
 
 
-def signal_table(df: pd.DataFrame) -> list[dict]:
+def signal_table(df: pd.DataFrame, nlags: int = 0) -> list[dict]:
     feats = [c for c in df.columns if c.startswith("f_") and c != "fwd"]
     out = []
     for c in feats + ["score"]:
         ic = xs_ic(df, c)
-        s = ic_summary(ic)
+        s = ic_summary(ic, nlags)
         out.append({"feature": c, **s})
     return sorted(out, key=lambda x: -(abs(x["mean_ic"]) if x["mean_ic"] is not None else 0))
 
@@ -351,11 +377,15 @@ def render_md(res: dict) -> str:
     L.append("| metrik | nilai |\n|---|---|")
     L.append(f"| rata-rata IC | {s['mean_ic']} |")
     L.append(f"| IR (mean/std) | {s['ir']} |")
-    L.append(f"| t-stat | {s['t']} |")
+    L.append(f"| t-stat (naif) | {s['t']} |")
+    L.append(f"| t-stat HAC (Newey-West) | {s.get('t_hac')} |")
     L.append(f"| jumlah tanggal | {s['n_dates']} |")
     L.append("")
     L.append("> Aturan kasar: |IC| < 0,03 di saham = lemah; 0,03–0,05 layak; "
              ">0,05 bagus. t > 2 baru layak disebut beda dari nol.\n")
+    L.append("> t naif menganggap tiap tanggal independen; label 20 hari yang "
+             "overlap membuatnya terlalu optimistis. **t HAC** (lag = horizon) "
+             "adalah pembanding yang lebih jujur.\n")
 
     L.append("## 2. Monotonisitas desil (excess return vs rata-rata pasar hari itu)\n")
     L.append("| desil | n | excess return | win-rate |\n|---|---|---|---|")
@@ -464,12 +494,12 @@ def main():
             "period": args.period,
             "generated": time.strftime("%Y-%m-%d"),
         },
-        "ic_score": ic_summary(ic_score),
+        "ic_score": ic_summary(ic_score, args.horizon),
         "ic_timeseries": time_series_ic(df, "score"),
         "deciles": decile_table(df, "score"),
         "ratings": rating_table(df),
         "years": by_year(df),
-        "features": signal_table(df),
+        "features": signal_table(df, args.horizon),
         "walk_forward": wf,
         "oos_quintiles": oos_deciles,
         "production_weights": weights,

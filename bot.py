@@ -1783,7 +1783,8 @@ def format_validasi(v: dict) -> str:
         return "layak"
 
     L.append("<b>1. Skor teknikal lama</b>")
-    L.append(f"IC antar-emiten: {ic.get('mean_ic')} (t={ic.get('t')}) — "
+    hac = f", HAC t={ic['t_hac']}" if ic.get("t_hac") is not None else ""
+    L.append(f"IC antar-emiten: {ic.get('mean_ic')} (t={ic.get('t')}{hac}) — "
              f"{verdict(ic.get('mean_ic'))}")
     ts_note = ("sedikit berlawanan arah" if (ts.get("mean_ic") or 0) < 0
                else verdict(ts.get("mean_ic")))

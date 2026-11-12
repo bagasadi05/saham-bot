@@ -152,6 +152,24 @@ Deployment 24/7 (Docker/systemd/supervisor) → lihat **[deploy.md](deploy.md)**
 Saat Yahoo memblokir IP (429), bot otomatis pakai cache harga terakhir dan
 menandai laporan dengan ⚠️ + umur cache — jujur, tidak membual data segar.
 
+## Batasan data & lisensi
+
+- **Yahoo Finance** lewat `yfinance`: API-nya dinyatakan untuk penggunaan pribadi.
+  Bot ini alat bantu belajar; untuk layanan komersial atau banyak pengguna, pakai
+  penyedia data berlisensi.
+- **Daftar emiten** di `data/idx_universe.json` berasal dari data publik BEI.
+  Data BEI tidak boleh dipakai untuk tujuan komersial tanpa izin tertulis, dan
+  Syarat Penggunaan BEI melarang web scraping/crawling. `tools/build_universe.py`
+  mengakses endpoint publik IDX — pakai secukupnya; untuk produk komersial urus
+  izin datanya.
+- **Jangan menambah scraper** ke Stockbit atau halaman IDX yang melarang
+  robot/ekstraksi otomatis.
+- Kalau `idx.co.id` memblokir (Cloudflare), bot melaporkan gagal — tidak mengisi
+  angka karangan.
+- Alternatif non-komersial: repo
+  [Dataset-Saham-IDX](https://github.com/wildangunawan/Dataset-Saham-IDX)
+  (CC BY-NC 4.0, data milik BEI).
+
 ## Tips
 
 - Jaringan: bot mengambil data historis dari Yahoo Finance (ticker `.JK`).

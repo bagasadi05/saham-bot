@@ -1,5 +1,10 @@
 # Kendala SahamBuddy — rangkuman untuk diperbaiki
 
+> **Batasan data & lisensi (ditambahkan 2026-11-12):** yfinance/Yahoo untuk
+> penggunaan pribadi; data BEI tidak untuk komersial tanpa izin dan ToS BEI
+> melarang scraping/crawling; jangan menambah scraper Stockbit/IDX. Rincian
+> ada di README bagian "Batasan data & lisensi".
+
 > **STATUS PERBAIKAN — 2026-11-06 ~09:35 WIB (commit `fa71f24` "Hardening
 > produksi", sudah di-pull dan diverifikasi di mesin ini):**
 > - ✅ 1. Yahoo 429 — **sudah bisa lagi**: fetch BBCA live 240 baris, `stale: False`,
