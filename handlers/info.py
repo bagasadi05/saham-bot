@@ -10,12 +10,14 @@ import asyncio
 import html
 import logging
 import time
+from datetime import timedelta
 
 from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
 
-from core import data, fundamental, marketcal, news, store
+from core import (data, fundamental, learn, marketcal, news,
+                  scorecard, store)
 from core.reports import _trend_line, esc
 
 log = logging.getLogger("sahambuddy")
@@ -270,3 +272,111 @@ async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
             reply_markup=deps.ticker_pick_markup("fundamental", wl))
         return
     await do_fundamental(update, args[0], deps)
+
+
+async def cmd_agenda(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+    """[P4] Agenda emiten: ex-date dividen & aksi korporasi terbaru."""
+    args = deps.tokens(update)
+    if not args:
+        await update.effective_message.reply_text(
+            "Contoh: <code>/agenda BBCA</code>", parse_mode=ParseMode.HTML)
+        return
+    t = args[0].upper()
+    await update.effective_chat.send_action(ChatAction.TYPING)
+
+    def _job():
+        import yfinance as yf
+        sym = data.normalize_ticker(t)
+        tk = yf.Ticker(sym)
+        return sym, (tk.calendar or {}), tk.dividends, tk.splits
+
+    try:
+        sym, cal, divs, splits = await asyncio.to_thread(_job)
+    except ValueError as e:
+        await update.effective_message.reply_text(f"❌ {e}")
+        return
+    except Exception as e:
+        log.warning("agenda gagal %s: %s", t, e)
+        await update.effective_message.reply_text(
+            f"❌ Agenda {esc(t)} tidak tersedia (sumber bermasalah) — coba lagi nanti.",
+            parse_mode=ParseMode.HTML)
+        return
+
+    lines = [f"📅 <b>Agenda {esc(sym.replace('.JK', ''))}</b>"]
+    # kalender: ex-date dividen / jadwal earnings (Timestamp saja)
+    kal = []
+    if isinstance(cal, dict):
+        for k, v in cal.items():
+            if hasattr(v, "strftime"):
+                kal.append((str(k), v.strftime("%d %b %Y")))
+            elif isinstance(v, (list, tuple)):
+                for x in v:
+                    if hasattr(x, "strftime"):
+                        kal.append((str(k), x.strftime("%d %b %Y")))
+                if any(not hasattr(x, "strftime") for x in v):
+                    kal.append((str(k), esc(str(v))[:40]))
+    if cal is None or not cal:
+        # yfinance versi lama: calendar berupa list dict
+        if isinstance(cal, list):
+            for item in cal[:3]:
+                for k, v in (item or {}).items():
+                    if hasattr(v, "strftime"):
+                        kal.append((str(k), v.strftime("%d %b %Y")))
+    if kal:
+        lines.append("\n🗓️ Kalender (via Yahoo, bisa berubah):")
+        lines.extend(f"  • {esc(k)}: {esc(v)}" for k, v in kal[:6])
+
+    if divs is not None and len(divs):
+        last = divs.iloc[-1]
+        when = divs.index[-1].strftime("%d %b %Y")
+        lines.append(f"\n💵 Dividen terakhir: {float(last):,.1f} /lembar (ex≈{esc(when)})")
+        lines.append("  4 terakhir: " + ", ".join(
+            f"{float(v):.1f} ({d.strftime('%b %y')})"
+            for d, v in list(divs.tail(4).items())))
+    else:
+        lines.append("\n💵 Dividen: tidak ada agenda tercatat")
+
+    if splits is not None and len(splits):
+        lines.append("\n✂️ Split terakhir: " + ", ".join(
+            f"ratio {float(v):.0f} ({d.strftime('%d %b %y')})"
+            for d, v in list(splits.tail(2).items())))
+    else:
+        lines.append("✂️ Split: tidak ada agenda tercatat")
+
+    if not kal and (divs is None or len(divs) == 0) and (splits is None or len(splits) == 0):
+        lines.append("\nℹ️ Tidak ada agenda tercatat untuk emiten ini "
+                     "(atau Yahoo tidak menyimpannya).")
+    lines.append("\n🔒 Data Yahoo bisa telat/tidak lengkap — cek juga situs emiten. "
+                 "Bukan saran memburu dividen.")
+    await update.effective_message.reply_text(
+        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
+async def cmd_jejak(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+    """Jejak sinyal: hasil nyata BELI/JUAL setelah horizon hari bursa."""
+    since = (marketcal.now_wib().date() - timedelta(days=365)).isoformat()
+    rows = await asyncio.to_thread(store.closed_scan_history, since)
+    counts = await asyncio.to_thread(store.scan_history_counts)
+    await deps.reply_long(update.effective_message,
+                     scorecard.format_summary(scorecard.summarize(rows), counts))
+
+
+async def cmd_belajar(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+    """[P1] Kamus istilah: /belajar RSI, /belajar PBV, /belajar MACD, ..."""
+    args = deps.tokens(update)
+    if not args:
+        await update.effective_message.reply_text(
+            "🎓 <b>Belajar istilah IHSG</b>\n"
+            "Pilih topik: <code>/belajar &lt;topik&gt;</code>\n\n"
+            f"{learn.list_topics()}\n\n"
+            "Contoh: <code>/belajar RSI</code>, <code>/belajar PBV</code>",
+            parse_mode=ParseMode.HTML)
+        return
+    txt = learn.learn(args[0])
+    if txt is None:
+        await update.effective_message.reply_text(
+            "❓ Topik tidak dikenal. Kirim <code>/belajar</code> saja "
+            "buat lihat daftar topiknya.", parse_mode=ParseMode.HTML)
+        return
+    await update.effective_message.reply_text(
+        txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)

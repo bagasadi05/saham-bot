@@ -2,9 +2,9 @@
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
 > **Baseline terukur sesi ini:** `517 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 80%` · `bot.py` 2.307 baris +
+> coverage `TOTAL 80%` · `bot.py` 1.630 baris +
 > `handlers/` (analisis, cek, info, jobs, market, portfolio, sektor,
-> sinyal) + `core/reports.py` + `core/guards.py`.
+> sinyal, trading, watchlist) + `core/reports.py` + `core/guards.py`.
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim
@@ -230,9 +230,9 @@ tersedia (keputusan pemilik, 2026-11-12).
   `/fundamental`), `handlers/jobs.py`
   (alert 30 menit, autoscan, screener 16:15, backup, heartbeat), dan
   `core/guards.py` (cooldown + PENDING). Semua memakai pola `deps`;
-  `bot.py` tinggal 2.296 baris berisi menu/aksi, handler yang belum
-  dipindah (saran/backtest/beli-jual/watch-alert/modal/auto), dan
-  entrypoint. Seam tes (`run_menu_action`, `build_chart`, `TMP_DIR`,
+  `bot.py` tinggal 1.630 baris berisi **menu/aksi, markup, dan
+  entrypoint** — seluruh perintah ada di `handlers/*.py`. Seam tes
+  (`run_menu_action`, `build_chart`, `TMP_DIR`,
   `ALLOWED_IDS`, `MAX_WATCH`, `_screener_running`) tetap bekerja karena
   diakses lewat `deps` atau tetap di `bot`.
 - [x] **Non-blocking SQLite** — seluruh panggilan `store.*` di
@@ -288,7 +288,7 @@ tersedia (keputusan pemilik, 2026-11-12).
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
 | 1 | **Uji live setelah deploy** | Semua tes offline; perilaku nyata belum dilihat | `/cek`, `/portofolio`, `/sinyal beli bagus`, `/sektor` di chat asli |
-| 2 | **Pindahkan sisa handler kecil** (saran/berita/fundamental/backtest/beli-jual/watch-alert) | Masih di `bot.py`; bisa menyusul tanpa mengubah perilaku | Satu domain per commit, tes hijau |
+| 2 | **Menu & markup tetap di `bot.py`** | Bagian aplikasi (callback, tombol, entrypoint); bukan logika perintah | Tidak perlu dipindah |
 | 3 | **Rekam fixture asli** | Fixture sekarang sintetis | `python tools/record_fixtures.py` lalu commit hasilnya |
 | 4 | **Push & deploy** | Commit lokal belum di-push | `git push` + restart bot, cek `/status` |
 

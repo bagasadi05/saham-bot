@@ -13,9 +13,9 @@ import re
 
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 
-from core import marketcal, rencana, screener, store, universe
+from core import bandar, marketcal, rencana, screener, store, universe
 from core.reports import esc
 from core.textutil import split_message
 
@@ -536,3 +536,103 @@ async def do_scan(update: Update, args: list[str], job_queue, deps):
         # penjaga jangan tertinggal "true" kalau penjadwalan gagal
         deps._screener_running = False
         raise
+
+
+async def do_bandar(update: Update, deps,
+                    ticker: str | None = None):
+    if not await deps.cooldown_ok(update, "bandar"):
+        return
+    msg = update.effective_message
+    await update.effective_chat.send_action(ChatAction.TYPING)
+
+    def _job():
+        idx = bandar.get_index_summary()
+        limit = 1000 if ticker else 200
+        rows = bandar.get_stock_summary(
+            bandar.last_trading_date(), max_stocks=limit,
+            until=ticker.upper() if ticker else None)
+        return idx, rows
+
+    try:
+        idx, rows = await asyncio.to_thread(_job)
+    except bandar.IDXTidakTersedia as e:
+        await msg.reply_text(
+            "🔒 <b>Data BEI (idx.co.id) kini diblokir Cloudflare</b> "
+            "(IP server diperlakukan kurang manis). Coba lagi nanti atau dari server lain.\n"
+            "<i>Alternatif cepat: /analisis TICKER (pakai Yahoo Finance, delayed 15 menit).</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=deps.home_markup(),
+        )
+        log.warning("BEI blocked: %s", e)
+        return
+    except Exception:
+        log.exception("bandar gagal")
+        await msg.reply_text(
+            "❌ Data BEI tidak tersedia saat ini (sumber/paket bermasalah). "
+            "Alternatif: <code>/analisis TICKER</code>.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=deps.home_markup(),
+        )
+        return
+
+    comp = next((x for x in idx if x["IndexCode"] == "COMPOSITE"), None)
+    lines = []
+    if comp:
+        def _num(k):
+            v = comp.get(k)
+            return f"{v:,.2f}" if isinstance(v, (int, float)) else "—"
+
+        lines.append(f"🇮🇩 <b>IHSG</b> (BEI resmi, {esc(str(comp.get('Date', ''))[:10])})")
+        for key_lbl, key in [("Penutupan", "IndexClose"), ("Buka", "IndexOpen"),
+                             ("Tinggi", "IndexHigh"), ("Rendah", "IndexLow"),
+                             ("Perubahan", "IndexChange")]:
+            lines.append(f"  {key_lbl}: {_num(key)}")
+    if ticker:
+        row = bandar.find_row(rows, ticker)
+        if row:
+            pct = bandar.to_pct(row)
+            lines.append(
+                f"\n📊 <b>{esc(row['StockCode'])}</b> — {esc(row.get('StockName', ''))}"
+            )
+            for lbl, key in [("Buka", "OpenPrice"), ("Tertinggi", "HighestPrice"),
+                             ("Terendah", "LowestPrice"), ("Tutup", "ClosingPrice"),
+                             ("Volume", "Volume"), ("Nilai", "Value")]:
+                v = row.get(key)
+                lines.append(
+                    f"  {lbl}: {v:,.0f}" if isinstance(v, (int, float)) else f"  {lbl}: —"
+                )
+            lines.append(f"  Perubahan: {pct:+.2f}%")
+            fg = bandar.foreign_fields(row)
+            if fg:
+                lines.append(f"  Asing: {esc(fg)}")
+        else:
+            lines.append(
+                f"\n❓ {esc(ticker.upper())} tidak ditemukan di ringkasan "
+                "(mungkin tidak ada transaksi hari itu)"
+            )
+    else:
+        up = bandar.top_movers(rows, n=4)
+        dn = bandar.top_movers(rows, n=4, asc=True)
+
+        def _mv(rs):
+            return "\n".join(
+                f"  <b>{esc(r['StockCode'])}</b> {bandar.to_pct(r):+.1f}% "
+                f"vol {r.get('Volume', 0):,.0f}"
+                for r in rs
+            )
+
+        lines.append("\n🔥 Top gainer:\n" + _mv(up))
+        lines.append("\n💀 Top loser:\n" + _mv(dn))
+    lines.append("\n⚠️ Data BEI resmi (bukan saran investasi)")
+    await deps.reply_long(
+        msg,
+        "\n".join(lines),
+        disable_web_page_preview=True,
+        reply_markup=deps.home_markup(),
+    )
+
+
+async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+    """Data resmi BEI: IHSG & sektor, plus info emiten (aliran asing bila tersedia)."""
+    args = deps.tokens(update)
+    await do_bandar(update, deps, ticker=args[0] if args else None)
