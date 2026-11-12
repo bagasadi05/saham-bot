@@ -72,6 +72,10 @@ ALERT_SCAN_MINUTES = 30
 FULL_SCAN_AUTO = os.getenv("FULL_SCAN_AUTO", "on").strip().lower() not in (
     "0", "off", "false", "no", "")
 
+# Chat admin untuk notifikasi kegagalan job (opsional). Kosong = pakai id
+# pertama di ADMIN_IDS (env), dan kalau itu juga kosong tidak ada notifikasi.
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
+
 # Cadangan SQLite otomatis (job harian 23:30 WIB)
 BACKUP_DIR = os.getenv("BACKUP_DIR", "backups")
 BACKUP_KEEP = max(1, int(os.getenv("BACKUP_KEEP", "7") or 7))

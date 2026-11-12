@@ -443,4 +443,7 @@ quotes_forgotten = paper_summary
 
 
 def fmt(v: float) -> str:
-    return f"Rp{v:,.0f}".replace(",", ".")
+    """Rupiah tanpa desimal — satu implementasi di core/textutil.py."""
+    from core.textutil import rupiah
+
+    return rupiah(v)

@@ -59,7 +59,7 @@ def test_riwayat_transaksi_urut_terbaru(tmp_store):
     assert [t["side"] for t in trades] == ["JUAL", "BELI"]
 
 
-def test_skema_versi_3(tmp_store):
+def test_skema_terkini(tmp_store):
     store.counts()          # memicu _ensure_ready
     import sqlite3
     conn = sqlite3.connect(store.STORE_DB)
@@ -69,12 +69,12 @@ def test_skema_versi_3(tmp_store):
             "SELECT name FROM sqlite_master WHERE type='table'")}
     finally:
         conn.close()
-    assert ver == 3
+    assert ver == store.SCHEMA_VERSION
     assert {"real_positions", "real_trades"} <= tables
 
 
-def test_db_lama_v2_naik_ke_v3(tmp_store):
-    """DB produksi yang sudah v2 harus naik ke v3 tanpa kehilangan data."""
+def test_db_lama_v2_naik_ke_versi_terkini(tmp_store):
+    """DB produksi yang sudah v2 harus naik tanpa kehilangan data."""
     import sqlite3
     conn = sqlite3.connect(store.STORE_DB)
     conn.execute("PRAGMA user_version = 2")
@@ -88,7 +88,7 @@ def test_db_lama_v2_naik_ke_v3(tmp_store):
         ver = conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
         conn.close()
-    assert ver == 3
+    assert ver == store.SCHEMA_VERSION
     assert store.real_positions(100)[0]["lots"] == 1
 
 

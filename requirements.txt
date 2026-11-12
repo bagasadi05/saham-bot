@@ -12,7 +12,7 @@ pandas-ta-classic==0.9.0
 backtesting==0.6.6
 
 # Versi dipin persis (==) supaya build Docker/CI bisa direproduksi: rangkaian
-# ini diverifikasi `pytest` 472 lulus pada 2026-11-12. Naikkan versi secara
+# ini diverifikasi `pytest` 495 lulus pada 2026-11-12. Naikkan versi secara
 # sadar lewat PR, bukan otomatis saat build.
 
 # sentimen ML sengaja dipisah ke requirements-ml.txt (torch itu berat).

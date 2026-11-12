@@ -3,6 +3,27 @@ from __future__ import annotations
 
 TELEGRAM_LIMIT = 4096
 
+
+def rupiah(v) -> str:
+    """Rupiah tanpa desimal, pemisah ribuan titik: Rp9.000 / — bila kosong."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    return f"Rp{x:,.0f}".replace(",", ".")
+
+
+def rupiah_desimal(v) -> str:
+    """Rupiah dengan desimal hanya bila perlu: Rp1.080 / Rp1.944.000,50."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if abs(x - round(x)) < 1e-9:
+        return "Rp" + f"{x:,.0f}".replace(",", ".")
+    return ("Rp" + f"{x:,.2f}".replace(",", "X")
+            .replace(".", ",").replace("X", "."))
+
 _PRE_OPEN = "<pre>"
 _PRE_CLOSE = "</pre>"
 

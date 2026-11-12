@@ -136,13 +136,22 @@ CREATE TABLE IF NOT EXISTS real_trades (
 );
 CREATE INDEX IF NOT EXISTS idx_real_trades_chat
     ON real_trades(chat_id, id DESC);
+-- P16: zona beli terakhir per watchlist, supaya pesan hanya dikirim saat
+-- status berubah (di luar zona -> di dalam zona), bukan tiap 30 menit.
+CREATE TABLE IF NOT EXISTS zone_state (
+    chat_id    TEXT NOT NULL,
+    ticker     TEXT NOT NULL,
+    zone       TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, ticker)
+);
 """
 
 
 _init_lock = threading.Lock()
 _ready_for: str | None = None
 
-SCHEMA_VERSION = 3          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
+SCHEMA_VERSION = 4          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
 BACKUP_PREFIX = "store-"
 
 
@@ -186,7 +195,21 @@ def _migrate_v3(conn):
         """)
 
 
-_MIGRATIONS = {2: _migrate_v2, 3: _migrate_v3}
+def _migrate_v4(conn):
+    """v4: state zona beli watchlist (P16)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS zone_state (
+            chat_id    TEXT NOT NULL,
+            ticker     TEXT NOT NULL,
+            zone       TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (chat_id, ticker)
+        )
+        """)
+
+
+_MIGRATIONS = {2: _migrate_v2, 3: _migrate_v3, 4: _migrate_v4}
 
 
 def _run_migrations(conn, current: int) -> int:
@@ -861,3 +884,25 @@ def real_trades(chat_id: int | str, limit: int = 10) -> list[dict]:
             " FROM real_trades WHERE chat_id=? ORDER BY id DESC LIMIT ?",
             (str(chat_id), max(1, int(limit))))
         return [dict(r) for r in rows]
+
+
+# ------------------------------------------------- zona beli watchlist (P16)
+def get_zone_states(chat_id: int | str) -> dict[str, str]:
+    """Zona terakhir per emiten. Nilai "" berarti di luar zona."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT ticker, zone FROM zone_state WHERE chat_id=?",
+            (str(chat_id),))
+        return {str(r["ticker"]).upper(): str(r["zone"] or "") for r in rows}
+
+
+def set_zone_state(chat_id: int | str, ticker: str, zone: str):
+    """Simpan zona sekarang; "" menandai sudah keluar dari zona."""
+    with _db() as conn:
+        _ensure_chat(conn, chat_id)
+        conn.execute(
+            "INSERT INTO zone_state(chat_id, ticker, zone, updated_at)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(chat_id, ticker) DO UPDATE SET"
+            " zone=excluded.zone, updated_at=excluded.updated_at",
+            (str(chat_id), str(ticker).upper(), str(zone or ""), _stamp()))

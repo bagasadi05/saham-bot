@@ -38,11 +38,13 @@ from telegram.error import BadRequest, NetworkError, TimedOut
 
 import config
 from core import (alerts, analysis, bandar, banding, btcache, data,
-                  data_quality, fundamental, learn, marketcal, news,
+                  data_quality, fundamental, kualitas as kvalmod, learn,
+                  marketcal, news,
                   cek as cekmod, portofolio as portmod, powerscore,
                   rencana, scorecard, screener,
                   saran as saranmod, store, universe)
 from core.chart import build_chart
+from core import textutil
 from core.textutil import split_message
 
 import backtest as btmod
@@ -87,7 +89,8 @@ SCAN_PAUSE = 0.15
 
 
 def fmt_rp(v: float) -> str:
-    return f"Rp{v:,.0f}".replace(",", ".")
+    """Rupiah tanpa desimal — delegasi ke core/textutil.py."""
+    return textutil.rupiah(v)
 
 
 def esc(s) -> str:
@@ -2174,8 +2177,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "ukuran posisi (1% modal), dilacak otomatis; <b>/saran list</b>, "
         "<b>/saran lq45</b>, ubah modal: <b>/modal 10000000</b>\n"
         "• <b>/sinyal</b> — sinyal BELI/JUAL <b>seluruh pasar IDX</b> "
-        "(±944 emiten): <b>/sinyal beli</b>, <b>/sinyal jual</b>, "
-        "<b>/sinyal BBCA</b>, <b>/sinyal csv</b>; perbarui: <b>/scan</b>\n"
+        "(±944 emiten): <b>/sinyal beli</b>, <b>/sinyal beli bagus</b> "
+        "(lolos saringan kualitas), <b>/sinyal jual</b>, <b>/sinyal BBCA</b>, "
+        "<b>/sinyal csv</b>; perbarui: <b>/scan</b>\n"
         "• <b>/rencana BBCA 5000000</b> — rencana beli <b>satu emiten</b>: "
         "lot yang terjangkau, biaya, % modal, rugi maksimal, RR\n"
         "• <b>/paket</b> — paket beli <b>multi-emiten siap Stockbit</b> dari "
@@ -2514,6 +2518,56 @@ async def cmd_auto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML)
 
 
+async def check_zone_alerts(app: Application, bars) -> None:
+    """[P16] Kirim satu pesan saat emiten watchlist MASUK zona beli.
+
+    Status zona disimpan per (chat, emiten) di `store.zone_state`. Aturan:
+    pesan hanya dikirim saat status berubah dari "di luar" menjadi "di dalam";
+    selama masih di zona yang sama, scan berikutnya diam. Ikut saklar
+    `/auto on/off` karena sumbernya `store.get_auto_chats()`.
+    """
+    for chat_id in await asyncio.to_thread(store.get_auto_chats):
+        wl = await asyncio.to_thread(store.get_watchlist, chat_id)
+        if not wl:
+            continue
+        states = await asyncio.to_thread(store.get_zone_states, chat_id)
+        for symbol in wl:
+            try:
+                df = await asyncio.to_thread(bars, symbol)
+                if df is None:
+                    continue
+                ind = await asyncio.to_thread(analysis.compute_indicators, df)
+                zones = alerts.buy_zones(ind)
+                prev = states.get(symbol.upper(), "")
+                cur = ",".join(zones)
+                if cur == prev:
+                    continue
+                await asyncio.to_thread(store.set_zone_state, chat_id, symbol,
+                                        cur)
+                if not zones or prev:
+                    continue          # keluar zona, atau tetap di dalam: diam
+                snap = analysis.last_snapshot(ind)
+                atr = None
+                try:
+                    atr_val = ind["atr14"].iloc[-1]
+                    atr = float(atr_val) if pd.notna(atr_val) and atr_val > 0 \
+                        else None
+                except (KeyError, IndexError, TypeError, ValueError):
+                    atr = None
+                sl = saranmod.stop_price(snap["close"], atr) if atr else None
+                tp = saranmod.target_price(snap["close"], atr) if atr else None
+                await send_with_retry(
+                    lambda s=symbol, z=zones, sn=snap, a=sl, b=tp, c=chat_id:
+                    app.bot.send_message(
+                        int(c),
+                        alerts.build_zone_message(s, z, sn, a, b),
+                        parse_mode=ParseMode.HTML),
+                    what="kirim zona beli")
+                await asyncio.sleep(.3)
+            except Exception:
+                log.exception("zona beli %s (chat %s) gagal", symbol, chat_id)
+
+
 async def scan_alerts(app: Application):
     """Job berkala: alert + posisi latihan, hanya saat bursa buka."""
     if not marketcal.market_open():
@@ -2583,6 +2637,9 @@ async def scan_alerts(app: Application):
     # 3) [P10] perubahan band PowerScore untuk watchlist chat /auto on
     await check_band_alerts(app, bars)
 
+    # 4) [P16] zona beli watchlist — hanya saat MASUK zona, bukan tiap putaran
+    await check_zone_alerts(app, bars)
+
 
 # ---------------------------------------------------------------- main
 
@@ -2638,7 +2695,7 @@ def _scan_when(meta: dict) -> str:
     return txt
 
 
-def _sinyal_row(i: int, r: dict) -> str:
+def _sinyal_row(i: int, r: dict, kval: dict | None = None) -> str:
     parts = [f"{i}. <b>{esc(r['ticker'])}</b> {_rp(r.get('price'))}"]
     if r.get("rel_pct") is not None:
         parts.append(f"rel {r['rel_pct']:.0f}")
@@ -2647,13 +2704,18 @@ def _sinyal_row(i: int, r: dict) -> str:
     if r.get("ret20d") is not None:
         parts.append(f"20h {r['ret20d']:+.1f}%")
     line = " · ".join(parts)
+    if kval:
+        line += f" · {kvalmod.mark(kval)} {esc(kval.get('label') or '')}"
     if r.get("entry") and r.get("sl") and r.get("tp"):
         line += (f"\n   <i>entry {_rp(r['entry'])} · SL {_rp(r['sl'])} · "
                  f"TP {_rp(r['tp'])}</i>")
+    if kval and kval.get("bits"):
+        line += "\n   <i>fundamental: " + esc(" · ".join(kval["bits"])) + "</i>"
     return line
 
 
-def _sinyal_overview(rows: list[dict], meta: dict) -> str:
+def _sinyal_overview(rows: list[dict], meta: dict,
+                     kval: dict | None = None) -> str:
     buys = [r for r in rows if r["signal"] == "BELI"]
     sells = [r for r in rows if r["signal"] == "JUAL"]
     holds = len(rows) - len(buys) - len(sells)
@@ -2668,7 +2730,8 @@ def _sinyal_overview(rows: list[dict], meta: dict) -> str:
            "70 = jenuh beli · 20h = perubahan 20 hari terakhir</i>"]
     if buys:
         out += ["", "🟢 <b>Kandidat BELI</b> (peringkat relatif tertinggi)"]
-        out += [_sinyal_row(i + 1, r) for i, r in enumerate(buys[:3])]
+        out += [_sinyal_row(i + 1, r, (kval or {}).get(r["ticker"]))
+                for i, r in enumerate(buys[:3])]
     else:
         out += ["", "🟢 Tidak ada kandidat BELI yang lolos filter hari ini — "
                 "itu informasi, bukan kegagalan."]
@@ -2681,7 +2744,8 @@ def _sinyal_overview(rows: list[dict], meta: dict) -> str:
     return "\n".join(out)
 
 
-def _sinyal_section(rows: list[dict], sig: str, meta: dict) -> str:
+def _sinyal_section(rows: list[dict], sig: str, meta: dict,
+                    kval: dict | None = None) -> str:
     picked = [r for r in rows if r["signal"] == sig]
     if sig == "JUAL":
         # Sama seperti overview: yang terlemah dulu.
@@ -2694,14 +2758,20 @@ def _sinyal_section(rows: list[dict], sig: str, meta: dict) -> str:
         out += ["Tidak ada emiten yang lolos filter ini hari ini.",
                 "Itu bukan error — filter memang sengaja ketat.", ""]
     else:
-        out += [_sinyal_row(i + 1, r) for i, r in enumerate(picked[:25])]
+        shown = picked[:25]
+        out += [_sinyal_row(i + 1, r, (kval or {}).get(r["ticker"]))
+                for i, r in enumerate(shown)]
         out += ["", f"Menampilkan {min(25, len(picked))} dari "
                 f"{len(picked)} sinyal."]
+        if kval:
+            out += ["", "<i>✅ sehat · ⚠️ tidak lolos saringan · ❔ belum "
+                    "dinilai (data fundamental gagal diambil). Penanda hanya "
+                    "untuk 6 emiten teratas — bukan seluruh daftar.</i>"]
     out += ["", _SINYAL_DISCLAIMER]
     return "\n".join(out)
 
 
-def _sinyal_detail(r: dict, meta: dict) -> str:
+def _sinyal_detail(r: dict, meta: dict, kval: dict | None = None) -> str:
     def pct(v):
         return f"{v:+.1f}%" if v is not None else "—"
 
@@ -2722,6 +2792,13 @@ def _sinyal_detail(r: dict, meta: dict) -> str:
     if r.get("entry") and r.get("sl") and r.get("tp"):
         lines.append(f"Entry {_rp(r['entry'])} · SL {_rp(r['sl'])} "
                      f"(1×ATR) · TP {_rp(r['tp'])} (2×ATR)")
+    if kval:
+        lines.append(f"Kualitas fundamental: {kvalmod.mark(kval)} "
+                     f"<b>{esc(kval.get('label') or '—')}</b>"
+                     + (f" — {esc(', '.join(kval['bits']))}"
+                        if kval.get("bits") else ""))
+        if kval.get("reason"):
+            lines.append(f"<i>{esc(kval['reason'])}</i>")
     if r.get("reason"):
         lines += ["", f"<i>{esc(r['reason'])}</i>"]
     lines += ["", f"<i>{esc(_scan_when(meta))}</i>",
@@ -2745,6 +2822,83 @@ def _sinyal_csv(rows: list[dict]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+BELI_BAGUS_POOL = 20      # kandidat teratas yang layak dinilai (bukan 944)
+BELI_BAGUS_SHOW = 8
+
+
+async def _kualitas_map(tickers: list[str]) -> dict[str, dict]:
+    """Nilai kualitas fundamental kandidat BELI, cache harian di TMP_DIR.
+
+    Hanya emiten yang dipanggil (bukan seluruh pasar) dan hasilnya dipakai
+    ulang sepanjang hari — pola yang sama dengan cache backtest (P8).
+    """
+    if not tickers:
+        return {}
+    day = marketcal.now_wib().date().isoformat()
+    out: dict[str, dict] = {}
+    sem = asyncio.Semaphore(3)
+
+    async def one(t: str):
+        async with sem:
+            raw = await asyncio.to_thread(kvalmod.load_cached, TMP_DIR, t, day)
+            if raw is None:
+                try:
+                    raw = await asyncio.to_thread(
+                        fundamental.fetch_fundamentals, t)
+                except Exception:
+                    log.warning("fundamental %s untuk kualitas gagal", t,
+                                exc_info=True)
+                    raw = None
+                if raw:
+                    await asyncio.to_thread(kvalmod.save_cached, TMP_DIR, t,
+                                            day, raw)
+                await asyncio.sleep(0.3)   # sopan ke Yahoo
+            out[t] = kvalmod.judge(raw)
+
+    await asyncio.gather(*(one(t) for t in tickers))
+    return out
+
+
+def _beli_bagus_text(rows: list[dict], meta: dict, kval: dict) -> str:
+    """Daftar kandidat BELI yang lolos saringan kualitas."""
+    pool = rows[:BELI_BAGUS_POOL]
+    dinilai = [r for r in pool if (kval.get(r["ticker"]) or {}).get("ok")
+               is not None]
+    lolos = [r for r in dinilai if kvalmod.passes(kval.get(r["ticker"]))]
+    belum = [r for r in pool if (kval.get(r["ticker"]) or {}).get("ok") is None]
+    gugur = [r for r in dinilai if not kvalmod.passes(kval.get(r["ticker"]))]
+    out = ["🟢 <b>BELI BERKUALITAS</b>",
+           f"<i>{esc(_scan_when(meta))}</i>",
+           "",
+           f"Dinilai <b>{len(pool)}</b> kandidat BELI teratas (peringkat "
+           f"relatif) · <b>{len(lolos)}</b> lolos saringan",
+           "<i>Saringan: laba positif · ROE ≥ 8% · PER ≤ 25× · PBV ≤ 4×. "
+           "Ini syarat kualitas, <b>bukan jaminan naik</b>.</i>", ""]
+    if not lolos:
+        out += ["Tidak ada kandidat yang lolos hari ini.",
+                "Itu bukan error — lebih baik tidak memaksa beli daripada "
+                "membeli perusahaan yang tidak lolos syarat.", ""]
+        if gugur:
+            out.append("Alasan terbanyak: " + esc(
+                " · ".join(f"{r['ticker']} {kval[r['ticker']]['label']}"
+                           for r in gugur[:4])))
+    else:
+        for i, r in enumerate(lolos[:BELI_BAGUS_SHOW], 1):
+            out.append(_sinyal_row(i, r, kval.get(r["ticker"])))
+        if len(lolos) > BELI_BAGUS_SHOW:
+            out.append(f"… dan {len(lolos) - BELI_BAGUS_SHOW} lainnya.")
+    if gugur:
+        out += ["", "Tidak lolos: " + esc(
+            " · ".join(f"{r['ticker']} ({kval[r['ticker']]['label']})"
+                       for r in gugur[:6]))]
+    if belum:
+        out += [f"❔ {len(belum)} kandidat belum dinilai (data fundamental "
+                "gagal diambil) — tidak ditampilkan, bukan berarti buruk."]
+    out += ["", "Semua sinyal: <code>/sinyal beli</code> · perbarui data: "
+            "<code>/scan</code>", "", _SINYAL_DISCLAIMER]
+    return "\n".join(out)
+
+
 async def _do_sinyal(update: Update, args: list[str]):
     rows = store.load_market_scan()
     meta = store.market_scan_meta()
@@ -2759,7 +2913,8 @@ async def _do_sinyal(update: Update, args: list[str]):
     if not await cooldown_ok(update, "sinyal"):
         return
 
-    arg = (args[0].strip().lower() if args else "")
+    arg = (" ".join(a.strip().lower() for a in args).strip()
+           if args else "")
     msg = update.effective_message
     if arg in ("csv", "unduh", "download"):
         data = _sinyal_csv(rows)
@@ -2769,7 +2924,22 @@ async def _do_sinyal(update: Update, args: list[str]):
                     "Buka di Excel/Sheets. Bukan saran investasi.")
         return
     if arg in ("beli", "buy"):
-        await reply_long(msg, _sinyal_section(rows, "BELI", meta))
+        buys = [r for r in rows if r["signal"] == "BELI"]
+        buys.sort(key=lambda r: -(r.get("rel_pct") or -1))
+        kval = await _kualitas_map([r["ticker"] for r in buys[:6]])
+        await reply_long(msg, _sinyal_section(rows, "BELI", meta, kval))
+        return
+    if arg in ("beli bagus", "bagus", "bagus beli", "beli berkualitas"):
+        buys = [r for r in rows if r["signal"] == "BELI"]
+        buys.sort(key=lambda r: -(r.get("rel_pct") or -1))
+        if not buys:
+            await msg.reply_text(
+                "🟢 Tidak ada kandidat BELI di snapshot hari ini — jadi tidak "
+                "ada yang bisa disaring.", parse_mode=ParseMode.HTML)
+            return
+        pool = buys[:BELI_BAGUS_POOL]
+        kval = await _kualitas_map([r["ticker"] for r in pool])
+        await reply_long(msg, _beli_bagus_text(pool, meta, kval))
         return
     if arg in ("jual", "sell", "hindari"):
         await reply_long(msg, _sinyal_section(rows, "JUAL", meta))
@@ -2783,9 +2953,14 @@ async def _do_sinyal(update: Update, args: list[str]):
                 f"Coba <code>/analisis {esc(arg.upper())}</code> untuk cek "
                 "langsung.", parse_mode=ParseMode.HTML)
             return
-        await reply_long(msg, _sinyal_detail(found, meta))
+        kval = await _kualitas_map([found["ticker"]])
+        await reply_long(msg, _sinyal_detail(found, meta,
+                                             kval.get(found["ticker"])))
         return
-    await reply_long(msg, _sinyal_overview(rows, meta))
+    buys = [r for r in rows if r["signal"] == "BELI"]
+    buys.sort(key=lambda r: -(r.get("rel_pct") or -1))
+    kval = await _kualitas_map([r["ticker"] for r in buys[:3]])
+    await reply_long(msg, _sinyal_overview(rows, meta, kval))
 
 
 async def cmd_sinyal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2812,15 +2987,8 @@ def _rp_big(v) -> str:
 
 
 def _money(v) -> str:
-    """Rupiah gaya Indonesia: Rp1.080 / Rp1.944.000."""
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return "—"
-    if abs(x - round(x)) < 1e-9:
-        return "Rp" + f"{x:,.0f}".replace(",", ".")
-    return ("Rp" + f"{x:,.2f}".replace(",", "X")
-            .replace(".", ",").replace("X", "."))
+    """Rupiah gaya Indonesia: Rp1.080 / Rp1.944.000 (/desimal bila perlu)."""
+    return textutil.rupiah_desimal(v)
 
 
 def _money_delta(v) -> str:
@@ -3680,7 +3848,8 @@ async def cmd_cek(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_cek(update, tokens(update))
 
 
-def _scan_summary_text(res: dict, intro: str) -> str:
+def _scan_summary_text(res: dict, intro: str,
+                       kval: dict | None = None) -> str:
     m = res.get("meta") or {}
     counts = res.get("counts") or {}
     if res.get("cached"):
@@ -3706,7 +3875,8 @@ def _scan_summary_text(res: dict, intro: str) -> str:
                    "cukup (delisted/suspensi baru), bukan diisi data palsu.")
     if buys:
         out += ["", "🟢 <b>Top BELI</b>"]
-        out += [_sinyal_row(i + 1, r) for i, r in enumerate(buys)]
+        out += [_sinyal_row(i + 1, r, (kval or {}).get(r["ticker"]))
+                for i, r in enumerate(buys)]
     if sells:
         out += ["", "🔴 <b>Top JUAL/hindari</b>"]
         out += [_sinyal_row(i + 1, r) for i, r in enumerate(sells)]
@@ -3719,7 +3889,11 @@ async def _run_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = int(ctx.job.data["chat_id"])
     try:
         res = await _scan_with_guard(True, owns_flag=True)
-        txt = (_scan_summary_text(res, "✅ <b>Scan pasar selesai</b>")
+        kval = {}
+        if res is not None:
+            top = store.load_market_scan("BELI")[:5]
+            kval = await _kualitas_map([r["ticker"] for r in top])
+        txt = (_scan_summary_text(res, "✅ <b>Scan pasar selesai</b>", kval)
                if res is not None
                else "⏳ Scan lain sedang berjalan — permintaan ini dilewati. "
                     "Coba /scan lagi setelah yang sekarang selesai.")
@@ -3817,6 +3991,38 @@ async def backup_job(app: Application):
         log.exception("backup store gagal")
 
 
+def admin_chat_id() -> int | None:
+    """Chat tujuan notifikasi admin: ADMIN_CHAT_ID, lalu ADMIN_IDS pertama."""
+    raw = str(getattr(config, "ADMIN_CHAT_ID", "") or "").strip()
+    if not raw and ADMIN_IDS:
+        raw = str(sorted(ADMIN_IDS)[0])
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        log.warning("ADMIN_CHAT_ID/ADMIN_IDS bukan angka: %r", raw)
+        return None
+
+
+async def notify_admin(app: Application, text: str) -> bool:
+    """Kirim peringatan ke admin; tidak pernah melempar error ke job.
+
+    Dipakai job latar yang gagal tanpa ada user yang menunggu jawaban — tanpa
+    ini, screener harian bisa mati berhari-hari tanpa ada yang tahu.
+    """
+    cid = admin_chat_id()
+    if cid is None:
+        return False
+    try:
+        await send_with_retry(
+            lambda: app.bot.send_message(cid, text, parse_mode=ParseMode.HTML,
+                                         disable_web_page_preview=True),
+            what="notifikasi admin")
+        return True
+    except Exception:
+        log.exception("notifikasi admin gagal dikirim ke %s", cid)
+        return False
+
+
 async def full_market_scan_job(app: Application):
     """Job harian 16:15 WIB: snapshot sinyal untuk chat /auto on."""
     if not config.FULL_SCAN_AUTO:
@@ -3825,14 +4031,26 @@ async def full_market_scan_job(app: Application):
         return
     try:
         res = await _scan_with_guard(False)
-    except Exception:
+    except Exception as exc:
         log.exception("screener harian gagal")
+        await notify_admin(
+            app,
+            "❌ <b>Screener harian gagal</b>\n"
+            f"<code>{esc(str(exc)[:300])}</code>\n"
+            "Snapshot hari ini tidak diperbarui. Cek log VPS.")
         return
     if res is None:
         log.info("screener harian dilewati — scan lain sedang berjalan")
         return
     if res.get("cached"):
         return
+    if int(res.get("meta", {}).get("failed") or 0) > 100:
+        await notify_admin(
+            app,
+            "⚠️ <b>Screener harian selesai dengan banyak kegagalan</b>\n"
+            f"{res['meta'].get('failed')} kode gagal dari "
+            f"{res['meta'].get('universe', '?')}. Kemungkinan rate-limit "
+            "Yahoo — cek /status.")
     chats = store.get_auto_chats()
     if not chats:
         return

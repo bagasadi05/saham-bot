@@ -31,6 +31,83 @@ KIND_EXAMPLES = {
 
 ALL_KINDS = set(KIND_LABEL)
 
+# [P16] Zona beli untuk watchlist. Bukan sinyal pasti: hanya kondisi yang
+# biasanya dipakai sebagai titik perhatian sebelum memutuskan.
+ZONE_LABEL = {
+    "support": "🧲 Memantul dari support 20 hari",
+    "rsi": "🟣 RSI pulih dari oversold (<30 -> >=30)",
+    "breakout": "🚀 Breakout 20 hari + volume >= 1,5x rata-rata",
+}
+ZONE_VOL_MULT = 1.5
+
+
+def _f(v) -> float | None:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if pd.notna(x) else None
+
+
+def buy_zones(ind: pd.DataFrame) -> list[str]:
+    """Deteksi zona beli dari baris terakhir indikator.
+
+    - support : low hari ini menyentuh low20 sebelumnya (<= +0,5%) DAN close
+                naik dibanding kemarin - pantulan, bukan breakdown.
+    - rsi     : RSI14 kemarin < 30 dan hari ini >= 30 (pulih dari oversold).
+    - breakout: close > high20 sebelumnya x 1,001 DAN volume > 1,5x rata-rata
+                20 hari.
+
+    Level high20/low20 memakai baris SEBELUMNYA, sama seperti `check_triggers`
+    - high20 baris terakhir sudah memuat harga hari ini.
+    """
+    if len(ind) < 25:
+        return []
+    last, prev = ind.iloc[-1], ind.iloc[-2]
+    close = _f(last.get("close"))
+    prev_close = _f(prev.get("close"))
+    low_today = _f(last.get("low"))
+    low20 = _f(prev.get("low20"))
+    high20 = _f(prev.get("high20"))
+    rsi_now = _f(last.get("rsi14"))
+    rsi_prev = _f(prev.get("rsi14"))
+    vol = _f(last.get("volume"))
+    vavg = _f(last.get("vol_avg20"))
+
+    zones: list[str] = []
+    if (low20 and low_today and low_today <= low20 * 1.005
+            and close is not None and prev_close is not None
+            and close > prev_close):
+        zones.append("support")
+    if (rsi_prev is not None and rsi_now is not None
+            and rsi_prev < 30 <= rsi_now):
+        zones.append("rsi")
+    if (high20 and close is not None and close > high20 * 1.001
+            and vol is not None and vavg and vol > ZONE_VOL_MULT * vavg):
+        zones.append("breakout")
+    return zones
+
+
+def build_zone_message(symbol: str, zones: list[str], snap: dict,
+                       sl: float | None = None,
+                       tp: float | None = None) -> str:
+    """Pesan saat emiten MASUK zona beli (bukan tiap scan)."""
+    sym = html.escape(str(symbol))
+    close = float(snap["close"])
+    ret = snap.get("ret1d")
+    lines = [f"🎯 <b>MASUK ZONA BELI</b> — <b>{sym}</b>",
+             f"Harga: <b>Rp{close:,.0f}</b>".replace(",", ".")
+             + (f" ({ret:+.2f}% hari ini)" if ret is not None else ""),
+             "", "Zona yang terpicu:"]
+    for z in zones:
+        lines.append("  " + html.escape(ZONE_LABEL.get(z, z)))
+    if sl and tp:
+        lines += ["", f"Level rencana: SL Rp{sl:,.0f} (1xATR) · TP "
+                  f"Rp{tp:,.0f} (2xATR)".replace(",", ".")]
+    lines += ["", "<i>Ini titik perhatian, bukan instruksi beli. Cek dulu "
+              "/cek &lt;KODE&gt; sebelum menekan beli.</i>"]
+    return "\n".join(lines)
+
 
 def match_kinds(triggered: list[str], kinds) -> set[str]:
     """Irisan pemicu aktif dengan jenis yang didaftarkan user.
