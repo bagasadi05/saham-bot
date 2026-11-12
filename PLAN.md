@@ -2,8 +2,9 @@
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
 > **Baseline terukur sesi ini:** `502 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 80%` (gerbang CI 75%) · `bot.py` 4.003 baris +
-> `core/reports.py` 199 baris.
+> coverage `TOTAL 80%` (gerbang CI 75%) · `bot.py` 3.652 baris +
+> `core/reports.py` 199 · `handlers/portfolio.py` 222 ·
+> `handlers/cek.py` 216.
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim
@@ -204,12 +205,19 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   `last_macd_cross_note` pindah ke `core/reports.py` (fungsi murni: data
   masuk, string keluar, tanpa jaringan/store). `bot.py` mengimpor balik
   nama yang sama sehingga tes & pemanggil lama tidak berubah.
-- [ ] **Pecah `bot.py` per domain handler** (`handlers/analisis.py`,
-  `handlers/market.py`, `handlers/portfolio.py`, `handlers/info.py`) +
-  `guards.py` / `jobs.py`. **Catatan pelaksanaan:** tes memegang 30 titik
-  `setattr(bot, ...)` dan 261 akses langsung ke nama di `bot`; pemecahan
-  handler harus memindahkan seam tes itu sekaligus, jadi dikerjakan satu
-  domain per commit dengan `pytest` hijau di tiap langkah.
+- [x] **Pecah handler, 2 domain pertama** — `handlers/portfolio.py` (P17)
+  dan `handlers/cek.py` (P14) memakai pola **`deps`**: handler menerima
+  modul `bot` sebagai parameter dan mengakses `deps._quote_posisi`,
+  `deps.fetch_and_analyze`, `deps.reply_long`, dst. Dengan begitu
+  `monkeypatch.setattr(bot, ...)` di tes tetap mengenai sasaran yang sama,
+  tanpa impor melingkar (handler tidak mengimpor `bot`). `bot.py` kini
+  menyimpan wrapper tipis + alias nama lama.
+- [ ] **Pecah handler, sisa domain** — `handlers/analisis.py`,
+  `handlers/market.py` (`/scan`, `/sinyal`, `/paket`, `/rencana`),
+  `handlers/info.py` (`/start`, `/help`, `/validasi`, `/status`), lalu
+  `guards.py` (cooldown/PENDING) dan `jobs.py`. Seam tes yang perlu ikut
+  pindah: `_scan_with_guard`, `_screener_running`, `run_menu_action`,
+  `build_chart`, `TMP_DIR`, `ALLOWED_IDS`, `MAX_WATCH`.
 - [ ] **Non-blocking SQLite** — bungkus sisa panggilan `store.*` di handler
   async dengan `asyncio.to_thread` (sudah: `/validasi`, `/jejak`, dan
   `/cek`; menyusul di handler lain).
@@ -249,7 +257,7 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **Pecah handler `bot.py`** (4.003 baris) per domain | Sisa satu file besar setelah laporan diekstrak | `handlers/*` + entrypoint tipis; tes tetap lulus |
+| 1 | **Pecah handler sisa domain** (`bot.py` 3.652 baris) | Pola `deps` sudah terbukti di 2 domain | `handlers/*` + `guards.py`/`jobs.py`, tes hijau tiap langkah |
 | 2 | **Fixture data terrekam** | Perubahan skema Yahoo/IDX tidak terdeteksi tes | `tests/fixtures/` + tes replay |
 | 3 | **Scheduled research CI** | IC bisa memburuk tanpa ada yang melihat | Workflow mingguan + peringatan bila IC 6 bulan < 0 |
 | 4 | **P18 `/sektor`** (butuh sampel payload) | Rotasi sektor melengkapi `/bandar` & `/sinyal` | Setelah payload BEI diverifikasi |

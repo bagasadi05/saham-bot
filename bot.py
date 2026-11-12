@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
@@ -41,7 +42,7 @@ from core import (alerts, analysis, bandar, banding, btcache, data,
                   logsetup,
                   data_quality, fundamental, kualitas as kvalmod, learn,
                   marketcal, news,
-                  cek as cekmod, portofolio as portmod, powerscore,
+                  powerscore,
                   rencana, scorecard, screener,
                   saran as saranmod, store, universe)
 from core.chart import build_chart
@@ -50,6 +51,8 @@ from core.textutil import split_message
 from core.reports import _rp, _trend_line, build_report, esc, fmt_rp
 
 import backtest as btmod
+from handlers import cek as cek_handler
+from handlers import portfolio as portfolio_handler
 
 # [kendala 3, fix permanen] httpx bengkak saat NO_PROXY berisi IPv6 berkurung
 # seperti "[::1]" — (langsung) bersihkan sebelum client dibangun
@@ -3266,204 +3269,26 @@ async def cmd_rencana(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_rencana(update, tokens(update))
 
 
-# ------------------------------------- P17: portofolio ASLI (uang sungguhan)
-_PORTO_USAGE = (
-    "💼 <b>Portofolio asli</b> (uang sungguhan, terpisah dari paper trading)\n\n"
-    "<code>/portofolio</code> — lihat posisi &amp; untung/rugi\n"
-    "<code>/portofolio beli BBCA 5 9000</code> — catat beli 5 lot @ Rp9.000\n"
-    "<code>/portofolio jual BBCA 2 9500</code> — catat jual 2 lot @ Rp9.500\n"
-    "<code>/portofolio riwayat</code> — 10 transaksi terakhir\n\n"
-    "Bot tidak pernah menaruh order ke Stockbit; ini hanya buku catatan."
-)
-
-
-def _quote_posisi(t: str) -> dict:
-    """Harga & ATR terakhir untuk satu posisi (None kalau data gagal)."""
-    try:
-        df = data.fetch_history(t, "6mo")
-    except Exception as e:  # noqa: BLE001 - satu emiten gagal tidak membatalkan
-        log.warning("harga portofolio %s gagal: %s", t, e)
-        return {"close": None, "atr": None, "stale": True}
-    if df is None or len(df) < 2:
-        return {"close": None, "atr": None, "stale": True}
-    try:
-        close = float(df["close"].iloc[-1])
-    except (KeyError, TypeError, ValueError):
-        return {"close": None, "atr": None, "stale": True}
-    return {"close": close, "atr": portmod.atr14(df),
-            "stale": bool(df.attrs.get("stale_note"))}
+# ------------------------- P17: portofolio (kode di handlers/portfolio.py)
+# Dependensi bot (reply_long, cooldown_ok, formatter, _quote_posisi) dioper ke
+# handler lewat `deps` = modul ini, supaya monkeypatch.setattr(bot, ...) di tes
+# tetap mengenai sasaran yang sama.
+_PORTO_USAGE = portfolio_handler._PORTO_USAGE
+_quote_posisi = portfolio_handler._quote_posisi
 
 
 async def _porto_quotes(tickers: list[str]) -> dict[str, dict]:
-    """Ambil harga semua posisi paralel berbatas (4 sekaligus)."""
-    sem = asyncio.Semaphore(4)
-    out: dict[str, dict] = {}
-
-    async def one(t: str):
-        async with sem:
-            out[t] = await asyncio.to_thread(_quote_posisi, t)
-
-    await asyncio.gather(*(one(t) for t in tickers))
-    return out
+    return await portfolio_handler._porto_quotes(tickers,
+                                                 sys.modules[__name__])
 
 
 def _porto_text(summary: dict, modal: int) -> str:
-    """Rincian posisi + PnL + konsentrasi sektor + risiko SL."""
-    rows = summary.get("rows") or []
-    out = ["💼 <b>PORTOFOLIO ASLI</b> (uang sungguhan)",
-           f"<i>{summary['n_positions']} posisi · nilai "
-           f"{_money(summary['value'])} · modal {_money(summary['cost'])}</i>",
-           f"PnL berjalan: <b>{_money_delta(summary['pnl'])}</b>"
-           + (f" ({_plan_pct(summary['pnl_pct'])})"
-              if summary.get("pnl_pct") is not None else ""),
-           ""]
-    for r in rows:
-        line = (f"• <b>{esc(r['ticker'])}</b> — {r['lots']} lot @ "
-                f"{_money(r['avg_price'])}")
-        if r["priced"]:
-            line += f" → {_money(r['close'])}"
-        out.append(line)
-        if r["priced"]:
-            bits = [f"nilai {_money(r['value'])}",
-                    f"PnL {_money_delta(r['pnl'])}"]
-            if r["pnl_pct"] is not None:
-                bits[-1] += f" ({_plan_pct(r['pnl_pct'])})"
-            if r["weight_pct"] is not None:
-                bits.append(f"{_plan_pct(r['weight_pct'], sign=False)} "
-                            "portofolio")
-            out.append("   " + " · ".join(bits))
-            if r["sl"] and r["risk"]:
-                out.append(f"   SL hari ini {_money(r['sl'])} (2×ATR) · risiko "
-                           f"{_money(r['risk'])}")
-        else:
-            out.append("   ❔ harga tidak tersedia — tidak dihitung di total")
-    if summary.get("unpriced"):
-        out += ["", f"⚠️ {summary['unpriced']} posisi tanpa harga; total di "
-                    "atas hanya posisi yang harganya terbaca."]
-    if summary.get("sectors"):
-        out += ["", "🏭 Sektor: " + " · ".join(
-            f"{esc(s['sector'])} {_plan_pct(s['pct'], sign=False)}"
-            for s in summary["sectors"])]
-    if summary.get("risk") is not None:
-        out.append(f"🛑 Risiko total bila semua SL tersentuh: "
-                   f"<b>{_money(summary['risk'])}</b>"
-                   + (f" ({_plan_pct(summary['risk_pct'], sign=False)} nilai "
-                      "portofolio)" if summary.get("risk_pct") else ""))
-    if modal:
-        out.append(f"   Modal rencana (/modal): {_money(modal)} — tidak "
-                   "dipakai menghitung PnL")
-    for w in summary.get("warnings") or []:
-        out.append("⚠️ " + esc(w.replace(".", ",")))
-    out += [
-        "",
-        "Catat: <code>/portofolio beli BBCA 5 9000</code> · "
-        "<code>/portofolio jual BBCA 2 9500</code> · "
-        "<code>/portofolio riwayat</code>",
-        "",
-        "<i>Harga Yahoo delayed; SL dihitung di harga sekarang (2×ATR), bukan "
-        "SL awal saat membeli. Fee transaksi belum masuk harga rata-rata.</i>",
-        "",
-        _SINYAL_DISCLAIMER,
-    ]
-    return "\n".join(out)
+    return portfolio_handler._porto_text(summary, modal,
+                                         sys.modules[__name__])
 
 
 async def _do_portofolio(update: Update, args: list[str]):
-    """Portofolio asli: lihat, catat beli/jual, riwayat."""
-    msg = update.effective_message
-    chat_id = update.effective_chat.id
-    sub = (args[0].lower() if args else "")
-
-    if sub in ("beli", "buy", "jual", "sell"):
-        if len(args) < 4:
-            await msg.reply_text(_PORTO_USAGE, parse_mode=ParseMode.HTML)
-            return
-        t = args[1].upper()
-        t = t[:-3] if t.endswith(".JK") else t
-        if not re.fullmatch(r"[A-Z]{2,6}", t):
-            await msg.reply_text(
-                f"Kode <code>{esc(args[1])}</code> tidak valid.\n\n"
-                + _PORTO_USAGE, parse_mode=ParseMode.HTML)
-            return
-        try:
-            lots = int(args[2].replace(".", ""))
-        except ValueError:
-            await msg.reply_text("Jumlah lot harus angka, mis. "
-                                 "<code>/portofolio beli BBCA 5 9000</code>.",
-                                 parse_mode=ParseMode.HTML)
-            return
-        price = _parse_rupiah(args[3])
-        if price is None:
-            await msg.reply_text("Harga harus angka, mis. "
-                                 "<code>9000</code> atau <code>9.000</code>.",
-                                 parse_mode=ParseMode.HTML)
-            return
-        if lots <= 0:
-            await msg.reply_text("Lot harus lebih dari 0.")
-            return
-        today = marketcal.now_wib().date().isoformat()
-        try:
-            if sub in ("beli", "buy"):
-                sector = None
-                try:
-                    fr = await asyncio.to_thread(
-                        fundamental.fetch_fundamentals, t)
-                    sector = (fr or {}).get("sector")
-                except Exception:
-                    log.warning("sektor %s tidak terbaca", t, exc_info=True)
-                res = await asyncio.to_thread(
-                    store.add_real_position, chat_id, t, lots, price, today,
-                    sector)
-                await msg.reply_text(
-                    f"✅ Tercatat <b>BELI {esc(t)}</b> {lots} lot @ "
-                    f"{_money(price)} = {_money(lots * 100 * price)}\n"
-                    f"Posisi sekarang: <b>{res['lots']} lot</b> @ rata-rata "
-                    f"{_money(res['avg_price'])}\n"
-                    f"<i>Fee beli ±0,15% belum masuk harga rata-rata.</i>\n\n"
-                    "Lihat: /portofolio",
-                    parse_mode=ParseMode.HTML)
-            else:
-                res = await asyncio.to_thread(
-                    store.reduce_real_position, chat_id, t, lots, price, today)
-                await msg.reply_text(
-                    f"✅ Tercatat <b>JUAL {esc(t)}</b> {lots} lot @ "
-                    f"{_money(price)}\n"
-                    f"Realisasi (harga − rata-rata): "
-                    f"<b>{_money_delta(res['realized'])}</b>\n"
-                    + (f"Sisa {res['lots_left']} lot @ "
-                       f"{_money(res['avg_price'])}\n" if res["lots_left"]
-                       else "Posisi tertutup.\n")
-                    + "\nLihat: /portofolio",
-                    parse_mode=ParseMode.HTML)
-        except ValueError as e:
-            await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML)
-        return
-
-    if sub in ("riwayat", "log", "history"):
-        trades = await asyncio.to_thread(store.real_trades, chat_id, 10)
-        if not trades:
-            await msg.reply_text("Belum ada transaksi asli yang dicatat.\n\n"
-                                 + _PORTO_USAGE, parse_mode=ParseMode.HTML)
-            return
-        out = ["🧾 <b>Riwayat transaksi (uang sungguhan)</b>", ""]
-        for tr in trades:
-            icon = "🟢" if tr["side"] == "BELI" else "🔴"
-            out.append(f"{icon} {tr['trade_date']} · <b>{esc(tr['ticker'])}</b> "
-                       f"{tr['side']} {tr['lots']} lot @ {_money(tr['price'])}")
-        out += ["", "Catat lagi: <code>/portofolio beli BBCA 5 9000</code>"]
-        await reply_long(msg, "\n".join(out))
-        return
-
-    positions = await asyncio.to_thread(store.real_positions, chat_id)
-    if not positions:
-        await reply_long(msg, "Belum ada posisi asli.\n\n" + _PORTO_USAGE)
-        return
-    if not await cooldown_ok(update, "portofolio"):
-        return
-    await update.effective_chat.send_action(ChatAction.TYPING)
-    quotes = await _porto_quotes([p["ticker"] for p in positions])
-    summary = portmod.summarize(positions, quotes)
-    await reply_long(msg, _porto_text(summary, store.get_modal(chat_id)))
+    await portfolio_handler.do(update, args, sys.modules[__name__])
 
 
 async def cmd_portofolio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -3471,200 +3296,24 @@ async def cmd_portofolio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_portofolio(update, tokens(update))
 
 
-# ------------------------------------------ P14: ceklist sebelum beli /cek
-_CEK_ICON = {"ok": "✅", "warn": "⚠️", "bad": "⛔", "na": "❔"}
-_CEK_VERDICT = {"LAYAK": "🟢 <b>LAYAK</b>", "TUNGGU": "🟡 <b>TUNGGU</b>",
-                "HINDARI": "🔴 <b>HINDARI</b>",
-                "TIDAK CUKUP DATA": "⚪ <b>TIDAK CUKUP DATA</b>"}
-
-
-def _cek_bandar_row(ticker: str) -> dict | None:
-    """Baris ringkasan BEI untuk satu emiten; None kalau sumber diblokir."""
-    try:
-        rows = bandar.get_stock_summary(bandar.last_trading_date(),
-                                        max_stocks=1000, until=ticker)
-    except Exception as e:  # noqa: BLE001 - Cloudflare/paket rusak: bagian ini kosong
-        log.warning("aliran asing %s tidak tersedia: %s", ticker, e)
-        return None
-    return bandar.find_row(rows, ticker)
-
-
-def _cek_agenda(ticker: str) -> tuple[dict | None, int | None]:
-    """Ex-date dividen terdekat + sisa hari (None bila tidak ada)."""
-    ex = marketcal.upcoming_dividend_exdate(ticker)
-    if not ex:
-        return None, None
-    days = (ex["ex_date"] - marketcal.now_wib().date()).days
-    return {"ex_date": str(ex["ex_date"]), "amount": ex.get("amount")}, days
-
-
-def _cek_value_avg20(res: dict, row: dict | None) -> float | None:
-    """Rata-rata nilai transaksi 20 hari: snapshot /scan dulu, lalu hitung."""
-    v = (row or {}).get("value_avg20")
-    try:
-        if v:
-            return float(v)
-    except (TypeError, ValueError):
-        pass
-    try:
-        ind = res["ind"]
-        return float((ind["close"] * ind["volume"]).tail(20).mean())
-    except Exception:
-        return None
+# ------------------------------- P14: ceklist (kode di handlers/cek.py)
+_CEK_ICON = cek_handler._CEK_ICON
+_CEK_VERDICT = cek_handler._CEK_VERDICT
+_cek_bandar_row = cek_handler._cek_bandar_row
+_cek_agenda = cek_handler._cek_agenda
+_cek_value_avg20 = cek_handler._cek_value_avg20
 
 
 async def _cek_gather(t: str, chat_id: int) -> dict:
-    """Ambil semua bahan /cek secara paralel; tiap bagian boleh gagal sendiri."""
-    res = await fetch_and_analyze(t)
-    sym = res["ticker"]
-    fund_f = asyncio.to_thread(fundamental.fetch_fundamentals, t)
-    news_f = asyncio.to_thread(news.fetch_news, t)
-    weekly_f = asyncio.to_thread(data.fetch_weekly, t)
-    bandar_f = asyncio.to_thread(_cek_bandar_row, sym)
-    agenda_f = asyncio.to_thread(_cek_agenda, t)
-    fund_raw, items, weekly_df, brow, ag = await asyncio.gather(
-        fund_f, news_f, weekly_f, bandar_f, agenda_f, return_exceptions=True)
-
-    if isinstance(fund_raw, Exception):
-        fund_raw = None
-    if isinstance(items, Exception):
-        items = None
-    if isinstance(weekly_df, Exception):
-        weekly_df = None
-    if isinstance(brow, Exception):
-        brow = None
-    if isinstance(ag, Exception):
-        ag = (None, None)
-
-    fsc = None
-    if fund_raw:
-        try:
-            fsc = await asyncio.to_thread(
-                fundamental.score_fundamentals, fund_raw)
-        except Exception:
-            log.warning("skor fundamental %s gagal", sym, exc_info=True)
-    nsent = None
-    if items:
-        try:
-            nsent = await asyncio.to_thread(news.news_sentiment, items)
-        except Exception:
-            log.warning("sentimen %s gagal", sym, exc_info=True)
-    res["weekly"] = (analysis.weekly_trend(weekly_df, res["score"]["pct"])
-                     if weekly_df is not None else None)
-    try:
-        res["ret1y"] = banding.year_return(res["ind"]["close"])
-    except Exception:
-        res["ret1y"] = None
-
-    if nsent is not None:
-        top = [d.get("title") for d in (nsent.get("details") or [])
-               if d.get("title")]
-        nsent = {**nsent, "top": top[0][:90] if top else None}
-
-    wl = await asyncio.to_thread(store.get_watchlist, chat_id)
-    try:
-        peers = await asyncio.to_thread(
-            banding.sector_context, sym, (fund_raw or {}).get("sector"), wl)
-    except Exception:
-        peers = None
-
-    row = await asyncio.to_thread(_snapshot_row, sym)
-    agenda, days = ag
-    return {"t": t, "res": res, "fund": fsc, "fund_raw": fund_raw,
-            "nsent": nsent, "bandar_row": brow, "agenda": agenda,
-            "agenda_days": days, "peers": peers,
-            "value_avg20": _cek_value_avg20(res, row),
-            "board": row.get("board") or universe.board_of(sym)}
+    return await cek_handler._cek_gather(t, chat_id, sys.modules[__name__])
 
 
 def _cek_text(out: dict, res: dict) -> str:
-    """Satu layar: enam bagian + verdict + alasan."""
-    t = esc(out.get("ticker") or res.get("ticker") or "?")
-    price = out.get("price")
-    meta = " · ".join(esc(x) for x in (out.get("sector"), out.get("board")) if x)
-    head = f"🧾 <b>CEK SEBELUM BELI — {t}"
-    if price:
-        head += f" {_money(price)}"
-    head += "</b>"
-    out_lines = [head]
-    if meta:
-        out_lines.append(f"<i>{meta}</i>")
-    stale = res.get("stale_note") or ""
-    if stale:
-        out_lines.append(stale.strip())
-    out_lines.append("")
-
-    num = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣")
-    for i, it in enumerate(out.get("items") or []):
-        icon = _CEK_ICON.get(it["status"], "•")
-        label = esc(it["label"])
-        out_lines.append(f"{num[i] if i < len(num) else '•'} <b>{label}</b> — "
-                         f"{icon} {esc(it['headline'])}")
-        if it.get("detail"):
-            out_lines.append(f"   <i>{esc(it['detail'])}</i>")
-
-    out_lines += ["", "━━━━━━━━"]
-    out_lines.append("Kesimpulan: "
-                     + _CEK_VERDICT.get(out["verdict"], esc(out["verdict"])))
-    for r in out.get("reasons") or []:
-        out_lines.append(f"• {esc(r)}")
-    if out.get("missing"):
-        out_lines.append("❔ Tidak tersedia: " + esc(", ".join(out["missing"]))
-                         + " — bagian lain tetap ditampilkan apa adanya.")
-    out_lines += [
-        "",
-        f"Rencana uangnya: <code>/rencana {t} 5000000</code> · analisis penuh: "
-        f"<code>/analisis {t}</code>",
-        "",
-        "<i>Ambang bot: likuid ≥ Rp5 miliar/hari, kurang likuid &lt; Rp2 "
-        "miliar/hari · murah: PER ≤ 20 atau PBV ≤ 2 · mahal: PER &gt; 40 atau "
-        "PBV &gt; 6 · ROE bagus ≥ 15%.</i>",
-        "",
-        _SINYAL_DISCLAIMER,
-    ]
-    return "\n".join(out_lines)
+    return cek_handler._cek_text(out, res, sys.modules[__name__])
 
 
 async def _do_cek(update: Update, args: list[str]):
-    """Ceklist satu layar: /cek <KODE>."""
-    msg = update.effective_message
-    if not args:
-        await msg.reply_text(
-            "Contoh: <code>/cek BBCA</code>\n\n"
-            "Isinya enam bagian — tren, valuasi vs sektor, aliran asing, "
-            "berita, agenda 14 hari, likuiditas — plus kesimpulan "
-            "LAYAK / TUNGGU / HINDARI.",
-            parse_mode=ParseMode.HTML)
-        return
-    t = args[0].upper()
-    t = t[:-3] if t.endswith(".JK") else t
-    if not re.fullmatch(r"[A-Z]{2,6}", t):
-        await msg.reply_text(
-            f"Kode <code>{esc(args[0])}</code> tidak valid. Contoh: "
-            "<code>/cek BBCA</code>", parse_mode=ParseMode.HTML)
-        return
-    if not await cooldown_ok(update, "cek"):
-        return
-
-    await msg.reply_text(f"⏳ Memeriksa {t} (6 bagian, ±10–25 detik)…")
-    try:
-        bahan = await _cek_gather(t, update.effective_chat.id)
-    except ValueError as e:
-        await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML)
-        return
-    except Exception:
-        log.exception("cek %s gagal", t)
-        await msg.reply_text(
-            f"❌ Data {esc(t)} tidak tersedia saat ini. Coba lagi nanti — "
-            "tidak ada bagian yang saya karang.", parse_mode=ParseMode.HTML)
-        return
-
-    out = cekmod.build(res=bahan["res"], fund=bahan["fund"],
-                       fund_raw=bahan["fund_raw"], nsent=bahan["nsent"],
-                       bandar_row=bahan["bandar_row"], agenda=bahan["agenda"],
-                       agenda_days=bahan["agenda_days"], peers=bahan["peers"],
-                       value_avg20=bahan["value_avg20"], board=bahan["board"])
-    await reply_long(msg, _cek_text(out, bahan["res"]))
+    await cek_handler.do(update, args, sys.modules[__name__])
 
 
 async def cmd_cek(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
