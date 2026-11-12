@@ -2,8 +2,9 @@
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
 > **Baseline terukur sesi ini:** `517 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 80%` · `bot.py` 2.960 baris +
-> `handlers/` (portfolio, cek, sinyal, sektor, market) + `core/reports.py`.
+> coverage `TOTAL 80%` · `bot.py` 2.428 baris +
+> `handlers/` (analisis, cek, info, jobs, market, portfolio, sektor,
+> sinyal) + `core/reports.py` + `core/guards.py`.
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim
@@ -215,11 +216,16 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   `monkeypatch.setattr(bot, ...)` di tes tetap mengenai sasaran yang sama,
   tanpa impor melingkar (handler tidak mengimpor `bot`). `bot.py` kini
   menyimpan wrapper tipis + alias nama lama.
-- [ ] **Pecah handler, sisa domain** — `handlers/analisis.py`,
-  `handlers/info.py` (`/start`, `/help`, `/validasi`, `/status`), lalu
-  `guards.py` (cooldown/PENDING) dan `jobs.py`. Seam tes yang perlu ikut
-  pindah: `run_menu_action`, `build_chart`, `TMP_DIR`, `ALLOWED_IDS`,
-  `MAX_WATCH`.
+- [x] **Pecah handler, domain terakhir** — `handlers/analisis.py`
+  (`/analisis`, `/skor`, `/banding`), `handlers/info.py` (`/start`,
+  `/menu`, `/help`, `/id`, `/validasi`, `/status`), `handlers/jobs.py`
+  (alert 30 menit, autoscan, screener 16:15, backup, heartbeat), dan
+  `core/guards.py` (cooldown + PENDING). Semua memakai pola `deps`;
+  `bot.py` tinggal 2.428 baris berisi menu/aksi, handler yang belum
+  dipindah (saran/berita/fundamental/backtest/beli-jual/watch-alert),
+  dan entrypoint. Seam tes (`run_menu_action`, `build_chart`, `TMP_DIR`,
+  `ALLOWED_IDS`, `MAX_WATCH`, `_screener_running`) tetap bekerja karena
+  diakses lewat `deps` atau tetap di `bot`.
 - [ ] **Non-blocking SQLite** — bungkus sisa panggilan `store.*` di handler
   async dengan `asyncio.to_thread` (sudah: `/validasi`, `/jejak`, dan
   `/cek`; menyusul di handler lain).
@@ -267,8 +273,8 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **Pecah handler sisa domain** (`bot.py` 2.960 baris) | Pola `deps` sudah terbukti di 5 domain | `handlers/*` + `guards.py`/`jobs.py`, tes hijau tiap langkah |
-| 2 | **Uji live setelah deploy** | Semua tes offline; perilaku nyata belum dilihat | `/cek`, `/portofolio`, `/sinyal beli bagus`, `/sektor` di chat asli |
+| 1 | **Uji live setelah deploy** | Semua tes offline; perilaku nyata belum dilihat | `/cek`, `/portofolio`, `/sinyal beli bagus`, `/sektor` di chat asli |
+| 2 | **Pindahkan sisa handler kecil** (saran/berita/fundamental/backtest/beli-jual/watch-alert) | Masih di `bot.py`; bisa menyusul tanpa mengubah perilaku | Satu domain per commit, tes hijau |
 | 3 | **Rekam fixture asli** | Fixture sekarang sintetis | `python tools/record_fixtures.py` lalu commit hasilnya |
 | 4 | **Push & deploy** | Commit lokal belum di-push | `git push` + restart bot, cek `/status` |
 
