@@ -2,7 +2,7 @@
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
 > **Baseline terukur sesi ini:** `517 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 80%` · `bot.py` 2.310 baris +
+> coverage `TOTAL 80%` · `bot.py` 2.307 baris +
 > `handlers/` (analisis, cek, info, jobs, market, portfolio, sektor,
 > sinyal) + `core/reports.py` + `core/guards.py`.
 >
