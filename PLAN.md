@@ -1,8 +1,8 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
-> **Baseline terukur sesi ini:** `456 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 79%` (gerbang CI 75%) · `bot.py` 3.740 baris.
+> **Baseline terukur sesi ini:** `472 passed` · `ruff check .` bersih ·
+> coverage `TOTAL 79%` (gerbang CI 75%) · `bot.py` 3.960 baris.
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim
@@ -28,7 +28,7 @@ daripada dokumennya. Setelah diaudit baris per baris, inilah selisihnya:
 | Fase 2.3 `lam=10.0` statis | sudah CV deret waktu di dalam train | `research/evaluate.py:ridge_fit/choose_lam_cv` |
 | Fase 4.1 "5 formatter rupiah duplikat" | masih duplikat (belum disentuh) | `bot.py:87,875,2608`, `core/analysis.py:165`, `core/saran.py:445` |
 | Fase 3 P12/P13 | belum; **diselesaikan sesi ini** | `bot.py:send_with_retry`, `rencana.budget_plan` |
-| Fase 3 P14 & D2 | belum; **diselesaikan sesi ini** | `core/cek.py`, `bot.build_application` |
+| Fase 3 P14, P17, D2 | belum; **diselesaikan sesi ini** | `core/cek.py`, `core/portofolio.py`, `bot.build_application` |
 | Plan menyebut `build_verdict` | fungsi itu **tidak ada**; yang dipakai `saran.build_candidate` / `rencana.enrich` | `core/saran.py:66`, `core/rencana.py:124` |
 
 **Konsekuensi:** tiga hal di plan lama tidak lagi relevan (biaya 0,50%,
@@ -58,7 +58,7 @@ ada di Fase 3 (P14–P18) dan Fase 4 (arsitektur & operasional).
 |---|---|---|---|
 | **Fase 1** | Bug, regresi & ketahanan runtime | ✅ selesai | P0 |
 | **Fase 2** | Kalibrasi riset & catatan sinyal live | ✅ selesai | P1 |
-| **Fase 3** | Backlog UX (`P12`–`P18`) | 🟡 3 dari 7 selesai (P12–P14) | P1–P2 |
+| **Fase 3** | Backlog UX (`P12`–`P18`) | 🟡 4 dari 7 selesai (P12–P14, P17) | P1–P2 |
 | **Fase 4** | Arsitektur, CI & operasional | 🟡 sebagian (D2 selesai) | P2 |
 
 ---
@@ -167,8 +167,13 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   BELI, cache harian (`btcache`), scan tetap < 7 menit.
 - [ ] **P16 — Alert zona beli watchlist** (pantulan support, RSI pulih > 30,
   breakout + volume > 1,5×), kirim hanya saat status berubah, ikut `/auto`.
-- [ ] **P17 — `/portofolio` (posisi asli)** tabel terpisah dari paper trading;
-  PnL berjalan, konsentrasi sektor, total risiko bila semua SL kena.
+- [x] **P17 — `/portofolio` (posisi asli)** — tabel `real_positions` &
+  `real_trades` (skema v3, migrasi bernomor; **terpisah** dari paper).
+  `/portofolio beli BBCA 5 9000`, `/portofolio jual BBCA 2 9500`,
+  `/portofolio riwayat`. Ringkasan (`core/portofolio.py`): PnL per posisi &
+  total, bobot, konsentrasi sektor, risiko bila SL sekarang (2×ATR)
+  tersentuh. Posisi tanpa harga tidak dihitung sebagai nol. Tes:
+  `tests/test_portofolio.py` (15).
 - [ ] **P18 — `/sektor`** rotasi & kekuatan relatif per sektor BEI.
 - [ ] **Selaraskan label `BELI`/`JUAL`** di `/sinyal` menjadi "Peringkat
   Atas/Bawah" atau tambahkan catatan `t_hac` di header (lihat angka 0,85).
@@ -217,11 +222,11 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **P17 `/portofolio`** | Melacak uang sungguhan; tabel sendiri, jangan campur paper | PnL, konsentrasi sektor, total risiko SL; tes store + handler |
-| 2 | **P15 `/sinyal beli bagus`** | Menjawab "kandidat BELI tapi fundamentalnya bagaimana" | Penanda kualitas + filter; scan tetap < 7 menit |
-| 3 | **P16 alert zona beli** | Fitur proaktif yang diminta, saklarnya sudah ada (`/auto`) | 1 pesan saat masuk zona, tidak berulang |
-| 4 | **Formatter + pecah `bot.py`** | 3.740 baris mulai menyulitkan review | 1 PR per domain, `bot.py` tetap entrypoint |
-| 5 | **P18 `/sektor`** | Rotasi sektor melengkapi `/bandar` & `/sinyal` | Ranking kekuatan relatif per sektor |
+| 1 | **P15 `/sinyal beli bagus`** | Menjawab "kandidat BELI tapi fundamentalnya bagaimana" | Penanda kualitas + filter; scan tetap < 7 menit |
+| 2 | **P16 alert zona beli** | Fitur proaktif yang diminta, saklarnya sudah ada (`/auto`) | 1 pesan saat masuk zona, tidak berulang |
+| 3 | **Pecah `bot.py` + satukan formatter** | 3.960 baris; 5 formatter rupiah duplikat menyulitkan review | 1 PR per domain, `bot.py` tetap entrypoint |
+| 4 | **P18 `/sektor`** | Rotasi sektor melengkapi `/bandar` & `/sinyal` | Ranking kekuatan relatif per sektor |
+| 5 | **Alert admin & logging JSON** | Operasional: tahu lebih dulu saat scan gagal | Notifikasi admin + `LOG_JSON=1` |
 
 **Jangan dilakukan:** menaikkan bobot faktor karena `t` naif 2,68 (yang
 bertahan hanya `t_hac` 0,85); mengklaim survivorship bias tanpa tabel

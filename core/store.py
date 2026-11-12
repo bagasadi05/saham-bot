@@ -114,13 +114,35 @@ CREATE TABLE IF NOT EXISTS plan_cache (
     created_at TEXT,
     payload    TEXT NOT NULL
 );
+-- P17: portofolio ASLI (uang sungguhan), terpisah total dari paper trading.
+CREATE TABLE IF NOT EXISTS real_positions (
+    chat_id    TEXT NOT NULL,
+    ticker     TEXT NOT NULL,
+    lots       INTEGER NOT NULL,
+    avg_price  REAL NOT NULL,
+    sector     TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, ticker)
+);
+CREATE TABLE IF NOT EXISTS real_trades (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    TEXT NOT NULL,
+    ticker     TEXT NOT NULL,
+    side       TEXT NOT NULL,
+    lots       INTEGER NOT NULL,
+    price      REAL NOT NULL,
+    trade_date TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_real_trades_chat
+    ON real_trades(chat_id, id DESC);
 """
 
 
 _init_lock = threading.Lock()
 _ready_for: str | None = None
 
-SCHEMA_VERSION = 2          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
+SCHEMA_VERSION = 3          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
 BACKUP_PREFIX = "store-"
 
 
@@ -136,7 +158,35 @@ def _migrate_v2(conn):
         "ON scan_history(trade_date) WHERE closed_at IS NULL")
 
 
-_MIGRATIONS = {2: _migrate_v2}
+def _migrate_v3(conn):
+    """v3: tabel portofolio asli (P17). Idempoten — aman dijalankan sekali."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS real_positions (
+            chat_id    TEXT NOT NULL,
+            ticker     TEXT NOT NULL,
+            lots       INTEGER NOT NULL,
+            avg_price  REAL NOT NULL,
+            sector     TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (chat_id, ticker)
+        );
+        CREATE TABLE IF NOT EXISTS real_trades (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id    TEXT NOT NULL,
+            ticker     TEXT NOT NULL,
+            side       TEXT NOT NULL,
+            lots       INTEGER NOT NULL,
+            price      REAL NOT NULL,
+            trade_date TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_real_trades_chat
+            ON real_trades(chat_id, id DESC);
+        """)
+
+
+_MIGRATIONS = {2: _migrate_v2, 3: _migrate_v3}
 
 
 def _run_migrations(conn, current: int) -> int:
@@ -700,3 +750,114 @@ def load_plan_cache(cache_key: str) -> dict | None:
     except (TypeError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
+
+
+# ------------------------------------------- portofolio ASLI / uang sungguhan
+# P17: terpisah dari paper trading. Bot tidak pernah menaruh order — tabel ini
+# hanya mencatat apa yang sudah dibeli/dijual pemilik di Stockbit.
+def _stamp() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _check_lot_price(lots, price) -> tuple[int, float]:
+    try:
+        n = int(lots)
+        p = float(price)
+    except (TypeError, ValueError):
+        raise ValueError("lot dan harga harus berupa angka") from None
+    if n <= 0:
+        raise ValueError("lot harus lebih dari 0")
+    if p <= 0:
+        raise ValueError("harga harus lebih dari 0")
+    return n, p
+
+
+def add_real_position(chat_id: int | str, ticker: str, lots: int,
+                      price: float, trade_date: str,
+                      sector: str | None = None) -> dict:
+    """Catat pembelian asli; harga rata-rata ditimbang lot (fee terpisah)."""
+    n, p = _check_lot_price(lots, price)
+    t = str(ticker).upper()
+    now = _stamp()
+    with _db() as conn:
+        _ensure_chat(conn, chat_id)
+        row = conn.execute(
+            "SELECT lots, avg_price, sector FROM real_positions"
+            " WHERE chat_id=? AND ticker=?", (str(chat_id), t)).fetchone()
+        if row:
+            old_lots, old_avg = int(row["lots"]), float(row["avg_price"])
+            new_lots = old_lots + n
+            new_avg = (old_lots * old_avg + n * p) / new_lots
+            conn.execute(
+                "UPDATE real_positions SET lots=?, avg_price=?, "
+                "sector=COALESCE(?, sector), updated_at=?"
+                " WHERE chat_id=? AND ticker=?",
+                (new_lots, new_avg, sector, now, str(chat_id), t))
+        else:
+            new_lots, new_avg = n, p
+            conn.execute(
+                "INSERT INTO real_positions"
+                "(chat_id, ticker, lots, avg_price, sector, updated_at)"
+                " VALUES (?,?,?,?,?,?)",
+                (str(chat_id), t, n, p, sector, now))
+        conn.execute(
+            "INSERT INTO real_trades"
+            "(chat_id, ticker, side, lots, price, trade_date, created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (str(chat_id), t, "BELI", n, p, str(trade_date), now))
+    return {"ticker": t, "lots": new_lots, "avg_price": round(new_avg, 4)}
+
+
+def reduce_real_position(chat_id: int | str, ticker: str, lots: int,
+                         price: float, trade_date: str) -> dict:
+    """Catat penjualan asli. Realisasi = (harga jual - rata-rata) x lembar."""
+    n, p = _check_lot_price(lots, price)
+    t = str(ticker).upper()
+    now = _stamp()
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT lots, avg_price FROM real_positions"
+            " WHERE chat_id=? AND ticker=?", (str(chat_id), t)).fetchone()
+        if not row:
+            raise ValueError(f"tidak ada posisi {t} di portofolio asli")
+        held, avg = int(row["lots"]), float(row["avg_price"])
+        if n > held:
+            raise ValueError(f"kamu hanya punya {held} lot {t}")
+        left = held - n
+        if left:
+            conn.execute(
+                "UPDATE real_positions SET lots=?, updated_at=?"
+                " WHERE chat_id=? AND ticker=?",
+                (left, now, str(chat_id), t))
+        else:
+            conn.execute(
+                "DELETE FROM real_positions WHERE chat_id=? AND ticker=?",
+                (str(chat_id), t))
+        conn.execute(
+            "INSERT INTO real_trades"
+            "(chat_id, ticker, side, lots, price, trade_date, created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (str(chat_id), t, "JUAL", n, p, str(trade_date), now))
+    return {"ticker": t, "lots_left": left, "avg_price": round(avg, 4),
+            "sold_lots": n,
+            "realized": round((p - avg) * n * 100)}
+
+
+def real_positions(chat_id: int | str) -> list[dict]:
+    """Posisi asli yang masih terbuka, urut kode."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT ticker, lots, avg_price, sector, updated_at"
+            " FROM real_positions WHERE chat_id=? ORDER BY ticker",
+            (str(chat_id),))
+        return [dict(r) for r in rows]
+
+
+def real_trades(chat_id: int | str, limit: int = 10) -> list[dict]:
+    """Transaksi asli terakhir (BELI/JUAL)."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT ticker, side, lots, price, trade_date"
+            " FROM real_trades WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+            (str(chat_id), max(1, int(limit))))
+        return [dict(r) for r in rows]
