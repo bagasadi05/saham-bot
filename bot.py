@@ -2489,18 +2489,24 @@ def _sinyal_overview(rows: list[dict], meta: dict) -> str:
     buys = [r for r in rows if r["signal"] == "BELI"]
     sells = [r for r in rows if r["signal"] == "JUAL"]
     holds = len(rows) - len(buys) - len(sells)
+    # JUAL: yang terlemah dulu (rel terendah = paling layak dihindari),
+    # supaya 3 besar yang tampil memang peringatan terkuat.
+    sells.sort(key=lambda r: (r.get("rel_pct") if r.get("rel_pct") is not None
+                              else 101, r["ticker"]))
     out = ["📡 <b>SINYAL PASAR IDX</b>", f"<i>{esc(_scan_when(meta))}</i>", "",
            f"🟢 BELI: <b>{len(buys)}</b> · 🔴 JUAL/HINDARI: <b>{len(sells)}</b>"
-           f" · ⚪ TAHAN: <b>{holds}</b>"]
+           f" · ⚪ TAHAN: <b>{holds}</b>",
+           "<i>rel = peringkat 0–100, makin tinggi makin kuat · RSI di atas "
+           "70 = jenuh beli · 20h = perubahan 20 hari terakhir</i>"]
     if buys:
         out += ["", "🟢 <b>Kandidat BELI</b> (peringkat relatif tertinggi)"]
-        out += [_sinyal_row(i + 1, r) for i, r in enumerate(buys[:8])]
+        out += [_sinyal_row(i + 1, r) for i, r in enumerate(buys[:3])]
     else:
         out += ["", "🟢 Tidak ada kandidat BELI yang lolos filter hari ini — "
                 "itu informasi, bukan kegagalan."]
     if sells:
         out += ["", "🔴 <b>Hindari / JUAL bila punya</b> (tren &amp; peringkat lemah)"]
-        out += [_sinyal_row(i + 1, r) for i, r in enumerate(sells[:8])]
+        out += [_sinyal_row(i + 1, r) for i, r in enumerate(sells[:3])]
     out += ["", "Rincian: <code>/sinyal beli</code> · <code>/sinyal jual</code> · "
             "<code>/sinyal BBCA</code> · <code>/sinyal csv</code>",
             "Perbarui data: <code>/scan</code>", "", _SINYAL_DISCLAIMER]
@@ -2509,6 +2515,10 @@ def _sinyal_overview(rows: list[dict], meta: dict) -> str:
 
 def _sinyal_section(rows: list[dict], sig: str, meta: dict) -> str:
     picked = [r for r in rows if r["signal"] == sig]
+    if sig == "JUAL":
+        # Sama seperti overview: yang terlemah dulu.
+        picked.sort(key=lambda r: (r.get("rel_pct") if r.get("rel_pct") is not None
+                                   else 101, r["ticker"]))
     head = ("🟢 <b>KANDIDAT BELI</b>" if sig == "BELI"
             else "🔴 <b>HINDARI / JUAL BILA PUNYA</b>")
     out = [head, f"<i>{esc(_scan_when(meta))}</i>", ""]
