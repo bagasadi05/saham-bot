@@ -35,6 +35,8 @@ import math
 import os
 import sys
 
+from statistics import NormalDist
+
 import numpy as np
 import pandas as pd
 
@@ -66,6 +68,55 @@ def summarize(series: np.ndarray) -> dict:
         "t": round(mean / sd * math.sqrt(n), 2) if sd > 0 else None,
         "cum_pct": round(cum * 100, 2),
         "win_rate": round(float((series > 0).mean()) * 100, 1),
+    }
+
+
+def sharpe_ratio(x: np.ndarray) -> float | None:
+    """Sharpe per periode (bukan disetahunkan)."""
+    x = np.asarray(x, dtype=float)
+    if len(x) < 2:
+        return None
+    sd = float(x.std(ddof=1))
+    return float(x.mean()) / sd if sd > 0 else None
+
+
+def deflated_sharpe(nets: list[np.ndarray], n_trials: int | None = None) -> dict:
+    """Deflated Sharpe Ratio (Bailey & Lopez de Prado) untuk banyak fase.
+
+    Setiap fase dianggap satu percobaan. SR terbaik diuji terhadap SR maksimum
+    yang wajar muncul karena keberuntungan (`sr0`), memakai skew/kurtosis
+    sebaran return fase itu.
+    """
+    series = [np.asarray(x, dtype=float) for x in nets if len(x) > 2]
+    srs = [s for s in (sharpe_ratio(x) for x in series) if s is not None]
+    if len(srs) < 2:
+        return {"n_trials": len(srs), "best_sr": None, "sr0": None, "dsr": None}
+    trials = int(n_trials or len(srs))
+    if trials < 2:
+        trials = 2
+    var = float(np.var(srs, ddof=1))
+    gamma = 0.5772156649
+    nd = NormalDist()
+    z1 = nd.inv_cdf(1.0 - 1.0 / trials)
+    z2 = nd.inv_cdf(1.0 - 1.0 / (trials * math.e))
+    sr0 = math.sqrt(var) * ((1.0 - gamma) * z1 + gamma * z2)
+
+    idx = int(np.argmax(srs))
+    best = srs[idx]
+    x = series[idx]
+    m, sd = float(x.mean()), float(x.std(ddof=1))
+    if sd <= 0:
+        return {"n_trials": trials, "best_sr": round(best, 3),
+                "sr0": round(sr0, 3), "dsr": None}
+    skew = float(np.mean(((x - m) / sd) ** 3))
+    kurt = float(np.mean(((x - m) / sd) ** 4))     # raw kurtosis (normal = 3)
+    denom = math.sqrt(max(1e-12, 1.0 - skew * best + (kurt - 1.0) / 4.0 * best ** 2))
+    stat = (best - sr0) * math.sqrt(len(x) - 1) / denom
+    return {
+        "n_trials": trials,
+        "best_sr": round(best, 3),
+        "sr0": round(sr0, 3),
+        "dsr": round(float(nd.cdf(stat)), 3),
     }
 
 
@@ -149,10 +200,12 @@ def one_phase(oos: pd.DataFrame, q: float, step: int, offset: int,
 def run(oos: pd.DataFrame, q: float, step: int,
         hold: float | None = None) -> dict:
     phases = []
+    nets: list[np.ndarray] = []
     for off in range(step):
         df = one_phase(oos, q, step, off, hold)
         if df.empty:
             continue
+        nets.append(df["net"].to_numpy())
         alpha_gross = (df["gross"] - df["bench"]).to_numpy()
         alpha_net = (df["net"] - df["bench"]).to_numpy()
         phases.append({
@@ -203,6 +256,7 @@ def run(oos: pd.DataFrame, q: float, step: int,
             "phase_t_mean": round(float(ts.mean()), 2) if len(ts) else None,
         },
         "all_dates_q5_excess": summarize(all_exc.to_numpy()),
+        "deflated_sharpe": deflated_sharpe(nets),
         "avg_turnover_pct": round(
             float(np.mean([p["turnover_pct"] for p in phases])), 1),
         "avg_turnover_two_way_pct": round(
@@ -254,6 +308,10 @@ def main():
           f" · rentang [{a['alpha_net_min_pct']:+.2f}, {a['alpha_net_max_pct']:+.2f}]")
     print(f"fase dengan alpha neto > 0: {a['phases_net_positive']}/{res['n_phases']}"
           f" · rata-rata t = {a['phase_t_mean']}")
+    dsr = res.get("deflated_sharpe") or {}
+    if dsr.get("dsr") is not None:
+        print(f"Deflated Sharpe: terbaik {dsr['best_sr']} · ambang keberuntungan "
+              f"{dsr['sr0']} · DSR {dsr['dsr']} (n_trials={dsr['n_trials']})")
     print(f"cross-check (semua tanggal): excess Q5 "
           f"{res['all_dates_q5_excess']['mean_pct']:+.3f}%/periode"
           f" · median {res['all_dates_q5_excess']['median_pct']:+.3f}%")

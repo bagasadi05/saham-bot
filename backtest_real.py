@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from backtesting import Backtest, Strategy
 
-from core import analysis, data
+from core import analysis, data, pricing
 from core.saran import BUY_FEE, SELL_FEE
 
 WARMUP = 210          # tunggu MA200 terbentuk sebelum sinyal aktif
@@ -29,6 +29,30 @@ HOLD_MAX = 20         # hari bursa maksimal tahan
 COMMISSION = (BUY_FEE + SELL_FEE) / 2  # hanya untuk ringkasan
 MIN_RATING_PCT = 20.0  # ambil rating BUY ke atas
 RISK_PCT = 0.01       # 1% ekuitas per trade (sama dengan /saran)
+
+
+def atr_levels(price: float, atr: float) -> tuple[float, float]:
+    """SL 1xATR dan TP 2xATR yang sudah dibulatkan ke fraksi harga BEI."""
+    tick = pricing.tick_size(price)
+    sl = pricing.round_tick(price - atr, tick)
+    tp = pricing.round_tick(price + 2.0 * atr, tick)
+    if sl >= price:
+        sl = price - tick
+    if tp <= price:
+        tp = price + 2 * tick
+    return max(sl, tick), tp
+
+
+def ara_locked_series(ind) -> np.ndarray:
+    """Tandai bar yang ditutup di ARA (hanya di jendela aturan yang diketahui)."""
+    close = ind["close"].to_numpy(dtype=float)
+    prev = ind["close"].shift(1).to_numpy(dtype=float)
+    dates = pd.to_datetime(ind.index)
+    out = np.zeros(len(ind), dtype=bool)
+    for i in range(1, len(ind)):
+        day = dates[i].date() if hasattr(dates[i], "date") else dates[i]
+        out[i] = pricing.is_ara_locked(close[i], prev[i], day)
+    return out
 
 
 def commission(order_size: int, price: float) -> float:
@@ -60,6 +84,7 @@ def build_statistics(ticker: str, period: str = "5y"):
         & trap_ok
         & ~np.isnan(atr)
         & ~np.isnan(score_pct)
+        & ~ara_locked_series(ind)
     )
     out = pd.DataFrame({
         "Open": ind["open"], "High": ind["high"], "Low": ind["low"],
@@ -92,8 +117,7 @@ class PowerStrategy(Strategy):
             atr = self.atr[-1]
             if pd.isna(atr) or atr <= 0:
                 return
-            sl = price - self.atr_mult_sl * atr
-            tp = price + self.atr_mult_tp * atr
+            sl, tp = atr_levels(price, atr)
             if sl <= 0:
                 return
             # sizing identik dengan /saran: risiko RISK_PCT ekuitas per trade,
