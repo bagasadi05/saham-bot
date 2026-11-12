@@ -38,13 +38,13 @@ from telegram.ext import (AIORateLimiter, Application, CallbackQueryHandler,
 from telegram.error import BadRequest, NetworkError, TimedOut
 
 import config
-from core import (alerts, analysis, bandar, banding, btcache, data,
+from core import (alerts, analysis, bandar, btcache, data,
                   logsetup,
                   data_quality, fundamental, learn,
                   marketcal, news,
                   powerscore,
                   scorecard, screener, saran as saranmod, store)  # noqa: F401 (dipatch tes)
-from core.chart import build_chart
+from core import banding  # noqa: F401 - dipatch tes
 from core import textutil
 from core.textutil import split_message
 from core.guards import (_pending_clear,
@@ -57,9 +57,12 @@ PENDING_TTL = core_guards.PENDING_TTL
 _pending_prune = core_guards._pending_prune
 _pending_ts = core_guards._pending_ts
 _last_used = core_guards._last_used
-from core.reports import _trend_line, build_report, esc, fmt_rp
+from core.reports import _trend_line, esc, fmt_rp
 
+from core.chart import build_chart  # noqa: F401 - dipakai handler via deps
+from core.reports import build_report  # noqa: F401 - dipakai handler via deps
 import backtest as btmod
+from handlers import analisis as analisis_handler
 from handlers import cek as cek_handler
 from handlers import info as info_handler
 from handlers import jobs as jobs_handler
@@ -537,100 +540,6 @@ _MANUAL_PROMPT = {
 _MANUAL_PROMPT["alert_add"] = (
     "Ketik kode emiten untuk alarm (jenis default: "
     + ", ".join(sorted(alerts.ALL_KINDS)) + "):")
-
-
-async def _do_analisis(update: Update, tickers: list[str]):
-    if not await cooldown_ok(update, "analisis"):
-        return
-    msg = update.effective_message
-    chat_id = update.effective_chat.id if update.effective_chat else None
-    wl = store.get_watchlist(chat_id) if chat_id is not None else []
-    mkt = await asyncio.to_thread(banding.market_context)
-    for t in tickers[:5]:
-        try:
-            res = await fetch_and_analyze(t)
-        except ValueError as e:
-            await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=home_markup())
-            continue
-        sym = res["ticker"]
-        fund_f = asyncio.to_thread(fundamental.fetch_fundamentals, t)
-        news_f = asyncio.to_thread(news.fetch_news, t)
-        weekly_f = asyncio.to_thread(data.fetch_weekly, t)
-        try:
-            fund, items, weekly_df = await asyncio.gather(
-                fund_f, news_f, weekly_f, return_exceptions=True)
-        except Exception:
-            fund, items, weekly_df = None, None, None
-        if isinstance(fund, Exception) or fund is None:
-            fund, fsc = None, None
-        else:
-            fsc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
-        if isinstance(items, Exception) or not items:
-            nsent = None
-        else:
-            nsent = await asyncio.to_thread(news.news_sentiment, items)
-        if isinstance(weekly_df, Exception) or weekly_df is None:
-            res["weekly"] = None
-        else:
-            res["weekly"] = analysis.weekly_trend(weekly_df, res["score"]["pct"])
-        try:
-            res["ret1y"] = banding.year_return(res["ind"]["close"])
-        except Exception:
-            res["ret1y"] = None
-        try:
-            sector_ctx = await asyncio.to_thread(
-                banding.sector_context, sym, (fund or {}).get("sector"), wl)
-        except Exception:
-            sector_ctx = None
-        res["sector_ctx"] = sector_ctx
-        mkt_ctx = {**mkt, "peers": sector_ctx} if (mkt and sector_ctx) else mkt
-        res["mkt"] = mkt_ctx
-        await reply_long(
-            msg,
-            build_report(res, fsc, nsent, mkt_ctx),
-            reply_markup=result_markup("analisis", sym),
-        )
-        os.makedirs(TMP_DIR, exist_ok=True)
-        path = os.path.join(TMP_DIR, f"chart_{sym}_{time.time_ns()}.png")
-        try:
-            await asyncio.to_thread(
-                build_chart, sym.upper(), res["ind"], res["score"]["pct"], path)
-            def _send_chart(_path=path, _sym=sym):
-                # buka ulang tiap percobaan: handle yang sudah terpakai tidak
-                # bisa dikirim ulang oleh retry
-                with open(_path, "rb") as f:
-                    return msg.reply_photo(
-                        photo=f,
-                        caption=f"📈 Chart {_sym} (6 bulan terakhir)",
-                        reply_markup=result_markup("analisis", _sym),
-                    )
-
-            await send_with_retry(_send_chart, what="kirim chart")
-        except Exception:
-            log.exception("chart gagal utk %s", sym)
-        finally:
-            try:
-                if os.path.exists(path):
-                    os.remove(path)
-            except OSError:
-                pass
-
-
-async def _do_skor(update: Update, tickers: list[str], from_menu: bool = False):
-    msg = update.effective_message
-    args = tickers or store.get_watchlist(update.effective_chat.id) or ["BBCA"]
-    lines = []
-    for t in args[:8]:
-        try:
-            res = await fetch_and_analyze(t)
-            lines.append(build_quick(res))
-        except ValueError as e:
-            lines.append(f"❌ {esc(e)}")
-    await reply_long(
-        msg,
-        "\n".join(lines) or "Watchlist kosong.",
-        reply_markup=home_markup() if from_menu else None,
-    )
 
 
 async def _do_berita(update: Update, ticker: str):
@@ -1416,6 +1325,31 @@ async def cmd_belajar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+# --------------------------- analisis (kode di handlers/analisis.py)
+async def _do_analisis(update: Update, tickers: list[str]):
+    await analisis_handler.do_analisis(update, tickers,
+                                       sys.modules[__name__])
+
+
+async def _do_skor(update: Update, tickers: list[str],
+                   from_menu: bool = False):
+    await analisis_handler.do_skor(update, tickers,
+                                   sys.modules[__name__],
+                                   from_menu=from_menu)
+
+
+async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await analisis_handler.cmd_analisis(update, ctx, sys.modules[__name__])
+
+
+async def cmd_skor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await analisis_handler.cmd_skor(update, ctx, sys.modules[__name__])
+
+
+async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await analisis_handler.cmd_banding(update, ctx, sys.modules[__name__])
+
+
 async def cmd_berita(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Ringkasan berita terkini + skor sentimen lexicon Indonesia."""
     args = tokens(update)
@@ -1727,55 +1661,6 @@ async def cmd_jejak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                      scorecard.format_summary(scorecard.summarize(rows), counts))
 
 
-async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """[P2] Bandingkan 2–4 emiten: PER/PBV/ROE/DY + return + PowerScore."""
-    args = tokens(update)
-    if len(args) < 2:
-        await update.effective_message.reply_text(
-            "Contoh: <code>/banding BBCA BBRI BMRI</code> (2–4 emiten)",
-            parse_mode=ParseMode.HTML)
-        return
-    if not await cooldown_ok(update, "banding"):
-        return
-    emiten = list(dict.fromkeys(a.upper() for a in args[:4]))
-    await update.effective_message.reply_text(
-        f"⚖️ Membandingkan {len(emiten)} emiten… (data dari sumber yang sama "
-        "dengan /fundamental & /analisis)")
-
-    rows = []
-    for t in emiten:
-        try:
-            res = await fetch_and_analyze(t)
-        except ValueError:
-            res = None
-        try:
-            fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
-        except Exception:
-            fund = None
-        rows.append(banding.compare_row(t, res, fund))
-        await asyncio.sleep(.2)
-
-    if all(row["power"] is None for row in rows):
-        await update.effective_message.reply_text(
-            "❌ Data pembanding tidak tersedia (semua sumber gagal) — coba lagi nanti.")
-        return
-
-    hdr = banding.format_table_header()
-    body = "\n".join(banding.format_table_row(r) for r in rows)
-    lines = [f"⚖️ <b>PERBANDINGAN {', '.join(esc(t) for t in emiten)}</b>",
-             "<pre>" + esc(hdr) + "\n" + esc(body) + "</pre>"]
-    verdict = banding.pbv_verdict(rows)
-    if verdict:
-        lines.append(f"\nℹ️ {esc(verdict)}")
-    missing = [r['ticker'] for r in rows if r["power"] is None]
-    if missing:
-        lines.append(f"⚠️ Data tidak tersedia untuk: {esc(', '.join(missing))} "
-                     "(dilaporkan apa adanya, bukan dikarang).")
-    lines.append("\n🔒 Angka deskriptif, bukan rekomendasi. DYOR!")
-    await update.effective_message.reply_text(
-        "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
-
-
 async def cmd_agenda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """[P4] Agenda emiten: ex-date dividen & aksi korporasi terbaru."""
     args = tokens(update)
@@ -1913,28 +1798,6 @@ async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------- handlers
-
-async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    args = tokens(update)
-    if not args:
-        await update.effective_message.reply_text(
-            "📊 Analisis — pilih emiten:",
-            reply_markup=ticker_pick_markup(
-                "analisis", store.get_watchlist(update.effective_chat.id)))
-        return
-    await _do_analisis(update, args)
-
-
-async def cmd_skor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    args = tokens(update)
-    if not args:
-        await update.effective_message.reply_text(
-            "⚡ Skor — pilih emiten:",
-            reply_markup=ticker_pick_markup(
-                "skor", store.get_watchlist(update.effective_chat.id)))
-        return
-    await _do_skor(update, args)
-
 
 async def cmd_watch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = tokens(update)
