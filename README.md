@@ -1,5 +1,7 @@
 # SahamBuddy 🇮🇩📈
 
+[![CI](https://github.com/bagasadi05/saham-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/bagasadi05/saham-bot/actions/workflows/ci.yml)
+
 Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 
 | Pin | Sumber | Bobot di PowerScore |
@@ -188,6 +190,17 @@ Konsekuensinya di kode:
 - [sentimeter](https://github.com/snowfluke/sentimeter) — format /saran dengan entry/SL/TP
 - [pandas-ta-classic](https://github.com/xgboosted/pandas-ta-classic) & [backtesting.py](https://kernc.github.io/backtesting.py/) — indikator & mesin backtest
 - model sentimen: [will702/indo-roBERTa-financial-sentiment-v2](https://huggingface.co/will702/indo-roBERTa-financial-sentiment-v2) (F1 92,8%, MIT)
+
+## 🧪 Pengembangan & tes
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .      # lint
+pytest            # 200+ tes offline (tanpa Yahoo/Google News/HuggingFace)
+```
+
+CI GitHub Actions menjalankan lint + seluruh tes offline pada tiap push/PR.
+Build Docker bisa dicek lokal: `docker build --build-arg SKIP_MODEL=1 -t saham-bot:slim .`
 
 ## ⚠️ Disclaimer
 
