@@ -388,3 +388,79 @@ def test_watch_no_args_and_bandar_error_handling(monkeypatch):
     upd_b = _FakeUpdate("/bandar", cid=100)
     asyncio.run(bot.cmd_bandar(upd_b, _ctx()))
     assert "tidak tersedia" in upd_b.effective_message.replies[-1][0].lower()
+
+
+def test_modal_tampil_ubah_dan_validasi():
+    tampil = _FakeUpdate("/modal", cid=101)
+    asyncio.run(bot.cmd_modal(tampil, _ctx()))
+    assert "10.000.000" in tampil.effective_message.replies[-1][0]
+
+    ok = _FakeUpdate("/modal 5.000.000", cid=101)
+    asyncio.run(bot.cmd_modal(ok, _ctx()))
+    assert store.get_modal(101) == 5_000_000
+    assert "5.000.000" in ok.effective_message.replies[-1][0]
+
+    salah = _FakeUpdate("/modal abc", cid=101)
+    asyncio.run(bot.cmd_modal(salah, _ctx()))
+    assert "tidak valid" in salah.effective_message.replies[-1][0]
+    assert store.get_modal(101) == 5_000_000  # tidak berubah
+
+    kecil = _FakeUpdate("/modal 1000", cid=101)
+    asyncio.run(bot.cmd_modal(kecil, _ctx()))
+    assert "100 ribu" in kecil.effective_message.replies[-1][0]
+    assert store.get_modal(101) == 5_000_000
+
+
+def test_auto_on_off_dan_status():
+    on = _FakeUpdate("/auto on", cid=102)
+    asyncio.run(bot.cmd_auto(on, _ctx()))
+    assert store.get_auto(102) is True
+    assert "AKTIF" in on.effective_message.replies[-1][0]
+
+    off = _FakeUpdate("/auto off", cid=102)
+    asyncio.run(bot.cmd_auto(off, _ctx()))
+    assert store.get_auto(102) is False
+    assert "mati" in off.effective_message.replies[-1][0].lower()
+
+    status = _FakeUpdate("/auto", cid=102)
+    asyncio.run(bot.cmd_auto(status, _ctx()))
+    assert "mati (default)" in status.effective_message.replies[-1][0]
+
+
+def test_banding_butuh_minimal_dua_emiten():
+    upd = _FakeUpdate("/banding BBCA", cid=103)
+    asyncio.run(bot.cmd_banding(upd, _ctx()))
+    assert "2–4 emiten" in upd.effective_message.replies[-1][0]
+
+
+def test_belajar_topik_dikenal_tidak_dikenal_dan_daftar():
+    rsi = _FakeUpdate("/belajar RSI", cid=104)
+    asyncio.run(bot.cmd_belajar(rsi, _ctx()))
+    txt = rsi.effective_message.replies[-1][0]
+    assert "RSI" in txt and len(txt) > 100
+
+    asing = _FakeUpdate("/belajar istilah-ngawur", cid=104)
+    asyncio.run(bot.cmd_belajar(asing, _ctx()))
+    assert "Topik tidak dikenal" in asing.effective_message.replies[-1][0]
+
+    daftar = _FakeUpdate("/belajar", cid=104)
+    asyncio.run(bot.cmd_belajar(daftar, _ctx()))
+    assert "Pilih topik" in daftar.effective_message.replies[-1][0]
+
+
+def test_id_menampilkan_id_telegram():
+    upd = _FakeUpdate("/id", uid=777, cid=777)
+    asyncio.run(bot.cmd_id(upd, _ctx()))
+    assert "<code>777</code>" in upd.effective_message.replies[-1][0]
+
+
+def test_alert_add_valid_dan_jenis_tidak_dikenal():
+    ok = _FakeUpdate("/alert add bbca.jk jump drop", cid=105)
+    asyncio.run(bot.cmd_alert(ok, _ctx()))
+    assert "Alert untuk" in ok.effective_message.replies[-1][0]
+    assert store.get_alerts(105)["BBCA"] == ["drop", "jump"]
+
+    asing = _FakeUpdate("/alert add BBCA jenis-ngawur", cid=105)
+    asyncio.run(bot.cmd_alert(asing, _ctx()))
+    assert "Jenis tidak dikenal" in asing.effective_message.replies[-1][0]
+    assert "BBCA" in store.get_alerts(105)  # alert lama tidak rusak
