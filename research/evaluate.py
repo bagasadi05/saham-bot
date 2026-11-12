@@ -40,6 +40,7 @@ from core import analysis, data, saran  # noqa: E402
 
 WARMUP = 210
 MIN_TICKERS_PER_DATE = 8
+UNIVERSE_NAME = "LQ45_2026"   # komposisi saat evaluasi dijalankan
 
 
 # ---------------------------------------------------------------- data
@@ -285,8 +286,26 @@ def rank_target(df: pd.DataFrame) -> pd.Series:
     return df.groupby("date")["fwd"].rank(pct=True) - 0.5
 
 
+def purged_split(df: pd.DataFrame, year: int, horizon: int,
+                 embargo_days: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pisahkan train/test dan buang label latih yang overlap ke periode uji.
+
+    Label pada tanggal t memakai harga t+horizon hari bursa. Sampel latih
+    dibuang bila jendela labelnya belum selesai sebelum 1 Januari tahun uji.
+    Horizon bursa dikonversi ke kalender (7/5 + 2 hari); `embargo_days`
+    menambah jeda eksplisit di luar itu.
+    """
+    test_start = pd.Timestamp(f"{year}-01-01")
+    horizon_days = int(math.ceil(horizon * 7 / 5)) + 2
+    cutoff = test_start - pd.Timedelta(days=horizon_days + max(0, embargo_days))
+    dates = pd.to_datetime(df["date"])
+    train = df[dates < cutoff]
+    test = df[dates.dt.year == year]
+    return train, test
+
+
 def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
-                 test_years: list[int]):
+                 test_years: list[int], embargo_days: int = 0):
     """Latih di masa lalu, uji tahun berikutnya.
 
     Return (per-tahun, desil OOS, prediksi OOS). Desil OOS = prediksi model yang
@@ -299,10 +318,7 @@ def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
     d["target"] = rank_target(d)
     results, oos = [], []
     for y in test_years:
-        embargo = pd.Timedelta(days=int(horizon * 1.6))
-        test_start = pd.Timestamp(f"{y}-01-01")
-        train = d[d["date"] < test_start - embargo]
-        test = d[d["year"] == y]
+        train, test = purged_split(d, y, horizon, embargo_days)
         if len(train) < 2000 or len(test) < 200:
             results.append({"year": y, "skipped": True, "n_train": len(train), "n_test": len(test)})
             continue
@@ -331,6 +347,8 @@ def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
         results.append({
             "year": y, "skipped": False,
             "n_train": int(len(train)), "n_test": int(len(test)),
+            "embargo_days": int(embargo_days),
+            "train_last": str(pd.to_datetime(train["date"]).max().date()),
             "ic_model": round(float(ic_model.mean()), 4) if len(ic_model) else None,
             "ic_score": round(float(ic_score.mean()), 4) if len(ic_score) else None,
             "ic_blend": round(float(ic_blend.mean()), 4) if len(ic_blend) else None,
@@ -454,6 +472,8 @@ def main():
     ap.add_argument("--period", default="10y")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--horizon", type=int, default=20)
+    ap.add_argument("--embargo", type=int, default=0,
+                    help="hari kalender tambahan sebelum tahun uji (purge label)")
     ap.add_argument("--out", default=os.path.join("temp", "research"))
     ap.add_argument("--refresh", action="store_true",
                     help="abaikan cache dataset dan ambil ulang dari Yahoo")
@@ -479,7 +499,8 @@ def main():
     feats = [c for c in df.columns if c.startswith("f_")]
     ic_score = xs_ic(df, "score")
     wf, oos_deciles, oos_pred = walk_forward(
-        df, feats, args.horizon, [2022, 2023, 2024, 2025, 2026])
+        df, feats, args.horizon, [2022, 2023, 2024, 2025, 2026],
+        args.embargo)
     # bobot produksi = rata-rata bobot walk-forward (bukan hasil fit ulang
     # memakai seluruh data, supaya angkanya tetap out-of-sample)
     wdf = pd.DataFrame({r["year"]: r["weights"] for r in wf if not r.get("skipped")})
@@ -491,6 +512,8 @@ def main():
             "start": str(pd.to_datetime(df["date"]).min().date()),
             "end": str(pd.to_datetime(df["date"]).max().date()),
             "horizon": args.horizon,
+            "universe": UNIVERSE_NAME,
+            "embargo_days": args.embargo,
             "period": args.period,
             "generated": time.strftime("%Y-%m-%d"),
         },
