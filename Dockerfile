@@ -32,6 +32,8 @@ RUN if [ "$SKIP_MODEL" = "1" ]; then \
 COPY config.py bot.py backtest.py backtest_real.py ./
 COPY core/ ./core/
 COPY data/validation.json ./data/validation.json
+COPY data/idx_universe.json ./data/idx_universe.json
+COPY tools/ ./tools/
 
 # user non-root & folder data untuk volume
 RUN useradd -m -u 1000 appuser \

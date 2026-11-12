@@ -5,6 +5,7 @@ __pycache__/
 store.json
 data/*
 !data/validation.json
+!data/idx_universe.json
 models/
 .git/
 *.md

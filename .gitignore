@@ -8,6 +8,7 @@ store.json.migrated
 heartbeat.txt
 data/*
 !data/validation.json
+!data/idx_universe.json
 temp/
 
 # model ML besar (diunduh saat build, bukan di-commit)
