@@ -1824,6 +1824,15 @@ def format_validasi(v: dict) -> str:
                  f"turnover {p['avg_turnover_pct']:.0f}%)")
         L.append(f"  {p['phases_net_positive']}/{p['n_phases']} fase positif · "
                  f"median neto {p['alpha_net_median_pct']:+.2f}%")
+        if p.get("hysteresis"):
+            L.append(f"  hysteresis: masuk top {p.get('quintile', 0) * 100:.0f}%, "
+                     f"tahan sampai top {p.get('hold_quintile', 0) * 100:.0f}% "
+                     f"(turnover dua arah {p.get('avg_turnover_two_way_pct')}%)")
+        dsr = p.get("deflated_sharpe") or {}
+        if dsr.get("dsr") is not None:
+            L.append(f"  Deflated Sharpe {dsr['dsr']} "
+                     f"(SR terbaik {dsr.get('best_sr')}, ambang {dsr.get('sr0')}, "
+                     f"n_trials={dsr.get('n_trials')})")
         L.append("  → biaya hampir menghabiskan keunggulan; jangan baca "
                  "peringkat sebagai jaminan untung.")
         L.append("")
