@@ -21,24 +21,26 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
    **tren 4 kuartal terakhir** pendapatan & laba bersih + tanggal data
    ("data per Q3 2026", jujur soal delay laporan keuangan)
 - **/backtest BBCA** — dua-duanya: backtest statistik 5 tahun + **simulasi
-   transaksi nyata** (`backtesting.py`): biaya **beli 0,15% / jual 0,25% — sama
-   dengan `/saran`**, fill bar berikutnya, entry sinyal BUY (skip jebakan
+   transaksi nyata** (`backtesting.py`): biaya **beli 0,15% / jual 0,25% all-in — sama
+   dengan `/saran`** (pajak jual 0,10% sudah termasuk di 0,25%; riset portofolio
+   memakai asumsi yang sama, bukan 0,50%), fill bar berikutnya, entry sinyal BUY (skip jebakan
    momentum >15%/bulanan), SL 1×ATR, TP 2×ATR, maksimal tahan 20 hari. Imbal
    hasil backtest statistik kini **net setelah biaya**.
    Hasil simulasi 5 tahun disimpan di cache `temp/` (24 jam) sehingga `/beli`/`/jual`
    bisa mengutip rekam jejak historis secara instan.
    CLI: `python backtest.py BBCA` & `python backtest_real.py BBCA`.
 - **Watchlist & alert** — `/watch`, `/alert add BBCA jump breakout`: dicek tiap 30 menit saat bursa buka (hari bursa XIDX, 09:00–16:00 WIB). Alert **hanya dikirim saat kondisi berubah** (False → True), tidak lagi diulang tiap 30 menit selama kondisi bertahan.
-- **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**. Urutan kandidat memakai **skor relatif 12 faktor** (`core/relatif.py`) yang lolos uji walk-forward (fallback ke PowerScore bila universe < 8 emiten) — lihat `/validasi`. Posisi dicatat **realistis**: masuk antrean `pending` dan baru dibeli di **harga open sesi berikutnya**, PnL dihitung setelah biaya beli 0,15% & jual 0,25%, ditutup otomatis setelah ±20 hari bursa, maksimal 5 posisi terbuka & 2 per sektor. `/saran list` = rekap posisi + rata-rata hasil net; riwayat menyimpan **20 posisi selesai terakhir** per chat agar rekap tidak membengkak.
+- **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**, dibulatkan ke **fraksi harga BEI** (tick 1/2/5/10/25) supaya levelnya bisa langsung dipasang. Urutan kandidat memakai **skor relatif 12 faktor** (`core/relatif.py`) yang lolos uji walk-forward (fallback ke PowerScore bila universe < 8 emiten) — lihat `/validasi`. Posisi dicatat **realistis**: masuk antrean `pending` dan baru dibeli di **harga open sesi berikutnya**, PnL dihitung setelah biaya beli 0,15% & jual 0,25%, ditutup otomatis setelah ±20 hari bursa, maksimal 5 posisi terbuka & 2 per sektor. `/saran list` = rekap posisi + rata-rata hasil net; riwayat menyimpan **20 posisi selesai terakhir** per chat agar rekap tidak membengkak.
 - **/scan** — pindai **seluruh pasar BEI** (±944 kode aktif, daftar API resmi IDX) secara borongan (batch Yahoo, ±2–3 menit). Hasil disimpan sebagai snapshot SQLite. Berjalan otomatis **16:15 WIB** setiap hari bursa untuk chat `/auto on` (matikan dengan `FULL_SCAN_AUTO=off`). Emiten tanpa data harga cukup (delisted/suspensi baru) dilewati dan jumlahnya dilaporkan — tidak diisi data palsu.
 - **/sinyal** — baca snapshot seluruh pasar: ringkasan **BELI / JUAL / TAHAN**, `/sinyal beli`, `/sinyal jual`, detail `/sinyal BBCA`, unduh `/sinyal csv`. Sinyal = filter tren (MA20/MA50/MACD/RSI) + peringkat relatif 12 faktor yang sama dengan `/saran`. Ini peringkat statistik tipis (IC OOS ±0,03), **bukan jaminan**; JUAL berarti hindari/kurangi bila punya — bukan instruksi short. Daftar universe + provenance ada di `data/idx_universe.json`; perbarui dengan `python tools/build_universe.py`.
 - **/rencana** (alias **/stockbit**) — paket beli siap eksekusi: ambil kandidat BELI terbaik dari snapshot seluruh pasar, saring **likuiditas ≥ Rp2 miliar/hari**, harga ≥ Rp50, bukan papan Pemantauan Khusus, dan veto fundamental/berita yang jelas bermasalah. Hasilnya: **grade A/B/C** (kelengkapan syarat, bukan probabilitas), entry **limit**, SL 1×ATR, TP 2×ATR, **lot & rupiah sesuai modal `/modal`** (risiko maks 1%/posisi, nilai posisi maks 20% per emiten, total alokasi maks 90% modal), plus cara pasang di Stockbit. `/rencana 5` untuk 5 kandidat, `/rencana refresh` untuk membangun ulang cache. Kalau tidak ada yang lolos, bot mengatakan tidak ada — bukan memaksa beli.
-- **/validasi** — menampilkan hasil uji statistik yang tersimpan: IC skor lama (antar-emiten & dalam satu emiten), excess return per rating, IC walk-forward per tahun, kalibrasi kuintil OOS, dan hasil uji Kronos. Angkanya hasil `research/evaluate.py`, bukan klaim.
+- **/validasi** — menampilkan hasil uji statistik yang tersimpan: IC skor lama (antar-emiten & dalam satu emiten), excess return per rating, IC walk-forward per tahun, kalibrasi kuintil OOS, dan hasil uji Kronos. Angkanya hasil `research/evaluate.py`, bukan klaim. Untuk hasil **sinyal yang benar-benar keluar** (bukan simulasi riset), pakai `/jejak`.
 - **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, **±1–2 menit** — 4 emiten diproses paralel, progres bertahap tiap 10 emiten).
 - **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
 - **/banding BBCA BBRI BMRI** — tabel pembanding PER/PBV/ROE/dividend yield/return 1 thn/20 hari/PowerScore + fakta "paling murah/mahal menurut PBV" (deskriptif). Data pembanding yang gagal dilaporkan jujur.
 - **/agenda BBCA** — ex-date dividen (terakhir/berikutnya) + split & aksi korporasi dari Yahoo (bisa telat — cek juga situs emiten).
 - **/belajar RSI** — kamus istilah dalam bahasa sederhana (18 topik: RSI, MACD, MA20/50/200, Bollinger, ATR, OBV, StochRSI, PER, PBV, ROE, dividend yield, DER, volume, breakout, IHSG, PowerScore + alias).
+- **/jejak** (alias **/track**) — rekam jejak nyata: setiap snapshot harian kini disimpan di tabel `scan_history`, lalu setelah **20 hari bursa** (ubah dengan `SCORECARD_HORIZON`) bot menghitung hasilnya — return rata-rata, win-rate, dan **R-multiple** untuk BELI (berapa kali TP 2R, SL −1R, atau keluar waktu), dengan TAHAN sebagai pembanding pasar, plus **IC live** (korelasi peringkat vs hasil nyata) yang bisa dibandingkan dengan IC riset. Baris yang harga historisnya berubah karena split ditandai `ADJ` dan tidak dihitung. Angka ini pengukuran, bukan janji; sampel kecil mudah didominasi kebetulan.
 - **/beli BBCA** / **/jual BBCA** (atau ketik bebas `"BBCA beli gak?"`) — verdict + level SL/TP + rekam jejak backtest 5 thn (dari cache `/backtest`).
 - **/auto on** — aktifkan pemindaian otomatis: ringkasan `/saran` + rekap watchlist ±08:30 WIB, **pengingat ex-date dividen (H-3 & H-1)**, serta **alert perubahan band PowerScore** watchlist (default off).
 - **/status** — kesehatan bot: uptime, jumlah perintah/error, rata-rata waktu proses, isi store, cache harga, status bursa (khusus `ADMIN_IDS` bila diisi).
@@ -46,7 +48,7 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 - **Kalender bursa sungguhan** — job alert & autoscan mengikuti kalender XIDX (`exchange_calendars`) plus libur tambahan via `MARKET_HOLIDAYS`, jadi tidak berisik di hari libur nasional/cuti bersama.
 - **Cache harga ber-TTL** (default 5 menit, `SAHAMBOT_TTL`) — `/skor`, `/analisis`, dan `/saran` pada emiten yang sama tidak menembak Yahoo berulang, dan tiap laporan menyebut **“data per <tanggal>”**.
 - Setiap sinyal di `/analisis` kini diberi **penjelasan 1 baris** ("MA20 < MA50 → tren jangka pendek di bawah tren menengah — harga sedang downtrend") + laporan menyertakan **konteks IHSG** (20 hari & 1 tahun, berapa poin unggul/tertinggal).
-- **/bandar [TICKER]** — data **resmi BEI (idx.co.id)**: IHSG & indeks sektor, top gainer/loser; per emiten: OHLC + nilai transaksi + field asing (bila tersedia). Catatan: idx.co.id dilindungi Cloudflare — dari IP datacenter/VPS kadang diblok; bot memberitahu dengan jujur dan menyuruh pakai `/analisis` sebagai cadangan. Hasil di-cache 10 menit (`BANDAR_TTL`) supaya beberapa permintaan berdekatan tidak memicu blokir.
+- **/bandar [TICKER]** — data **resmi BEI (idx.co.id)**: IHSG & indeks sektor, top gainer/loser; per emiten: OHLC + nilai transaksi + field asing (bila tersedia). Daftar emiten diambil bertahap; `/bandar KODE` berhenti mencari begitu kodenya ketemu. Catatan: idx.co.id dilindungi Cloudflare — dari IP datacenter/VPS kadang diblok; bot memberitahu dengan jujur dan menyuruh pakai `/analisis` sebagai cadangan. Hasil di-cache 10 menit (`BANDAR_TTL`) supaya beberapa permintaan berdekatan tidak memicu blokir.
   | Jenis alert | Pemicu |
   |---|---|
   | `jump` | harga naik ≥5% sehari |
@@ -133,6 +135,7 @@ Deployment 24/7 (Docker/systemd/supervisor) → lihat **[deploy.md](deploy.md)**
 | `FULL_SCAN_PERIOD` | periode data batch screener | `1y` |
 | `FULL_SCAN_CHUNK` | jumlah ticker per batch Yahoo | `80` |
 | `FULL_SCAN_PAUSE` | jeda antar batch (detik) | `1.0` |
+| `SCORECARD_HORIZON` | jumlah hari bursa sebelum hasil sinyal `/jejak` dihitung | `20` |
 | `PLAN_MIN_VALUE` | minimum nilai transaksi harian (Rp) untuk `/rencana` | `2000000000` |
 | `PLAN_MIN_PRICE` | harga minimum kandidat `/rencana` | `50` |
 | `PLAN_MAX_POS_PCT` | nilai maksimum satu posisi terhadap modal | `0.20` |
@@ -208,7 +211,8 @@ Konsekuensinya di kode:
 ```bash
 pip install -r requirements-dev.txt
 ruff check .      # lint
-pytest            # 200+ tes offline (tanpa Yahoo/Google News/HuggingFace)
+pytest            # 330+ tes offline (tanpa Yahoo/Google News/HuggingFace)
+make coverage     # tes + gerbang coverage 75% (modul inti & bot.py)
 ```
 
 Atau lewat Makefile: `make install`, `make lint`, `make test`, `make docker`.

@@ -37,10 +37,15 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-BUY_COST = 0.0015
-SELL_COST = 0.0025
-SELL_TAX = 0.0010
-ROUND_TRIP = BUY_COST + SELL_COST + SELL_TAX   # 0,50%
+from config import IDX_BUY_FEE, IDX_SELL_FEE
+
+BUY_COST = IDX_BUY_FEE
+SELL_COST = IDX_SELL_FEE
+# Pajak jual 0,10% SUDAH termasuk di SELL_COST (all-in 0,25%). Versi lama
+# menambahkan SELL_TAX lagi -> 0,50%, dobel hitung yang membuat alpha net
+# terlihat lebih buruk daripada kenyataan.
+SELL_TAX = 0.0
+ROUND_TRIP = BUY_COST + SELL_COST   # 0,40%
 
 
 def summarize(series: np.ndarray) -> dict:

@@ -1,14 +1,18 @@
-python-telegram-bot[job-queue]~=21.0
-yfinance>=0.2.40
-pandas>=2.0
-numpy>=1.26
-matplotlib>=3.8
-cloudscraper>=1.2.71     # /bandar: idx.co.id di balik Cloudflare (PyPI terbaru 1.2.x)
-exchange_calendars>=4.11 # kalender bursa XIDX (libur BEI)
+python-telegram-bot[job-queue]==21.11.1
+yfinance==1.8.0
+pandas==3.1.1
+numpy==2.5.4
+matplotlib==3.11.2
+cloudscraper==1.2.71     # /bandar: idx.co.id di balik Cloudflare
+exchange_calendars==4.13.2  # kalender bursa XIDX (libur BEI)
 
 # analisis teknikal & backtest
-pandas-ta-classic>=0.9.0
-backtesting>=0.6.0
+pandas-ta-classic==0.9.0
+backtesting==0.6.6
+
+# Versi dipin persis (==) supaya build Docker/CI bisa direproduksi: rangkaian
+# ini diverifikasi `pytest` 277 lulus pada 2026-11-12. Naikkan versi secara
+# sadar lewat PR, bukan otomatis saat build.
 
 # sentimen ML sengaja dipisah ke requirements-ml.txt (torch itu berat).
 # Tanpa ML, bot tetap jalan memakai mesin lexicon.

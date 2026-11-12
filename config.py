@@ -71,3 +71,11 @@ ALERT_SCAN_MINUTES = 30
 # Matikan dengan FULL_SCAN_AUTO=off kalau VPS terlalu kecil / kuota Yahoo ketat.
 FULL_SCAN_AUTO = os.getenv("FULL_SCAN_AUTO", "on").strip().lower() not in (
     "0", "off", "false", "no", "")
+
+# ------------------------------------------------------- biaya transaksi BEI
+# Asumsi ritel all-in yang dipakai konsisten oleh /saran, /rencana, backtest,
+# dan riset portofolio. Beli 0,15% (broker). Jual 0,25% SUDAH termasuk pajak
+# penjualan 0,10% — jangan menambahkan pajak lagi di lapisan lain.
+IDX_BUY_FEE = 0.0015
+IDX_SELL_FEE = 0.0025
+IDX_ROUND_TRIP = IDX_BUY_FEE + IDX_SELL_FEE   # 0,40%

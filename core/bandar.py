@@ -79,28 +79,39 @@ def _scraper():
 
 def get_stock_summary(trade_date: str | None = None, max_stocks: int = 1000,
                       page_len: int = 100, cooldown: float = 2.0,
-                      ttl: float | None = None) -> list[dict]:
+                      ttl: float | None = None,
+                      until: str | None = None) -> list[dict]:
     """Ringkasan perdagangan harian seluruh emiten (OHLC, volume, nilai, asing).
 
-    Hasil di-cache per (tanggal bursa, jumlah emiten) — lihat `_TTL_SECONDS`.
+    `until` menghentikan pengambilan halaman lebih awal begitu kode emiten
+    ditemukan — dipakai `/bandar <KODE>` agar tidak perlu mengunduh 1.000 baris
+    hanya untuk satu emiten.
+
+    Hasil di-cache per (tanggal bursa, jumlah emiten, until) — lihat `_TTL_SECONDS`.
     """
-    return _cached(("stock", trade_date, max_stocks, page_len),
-                   lambda: _fetch_stock_summary(trade_date, max_stocks, page_len, cooldown),
+    return _cached(("stock", trade_date, max_stocks, page_len, until),
+                   lambda: _fetch_stock_summary(trade_date, max_stocks, page_len,
+                                                cooldown, until),
                    ttl)
 
 
 def _fetch_stock_summary(trade_date: str | None, max_stocks: int,
-                         page_len: int, cooldown: float) -> list[dict]:
+                         page_len: int, cooldown: float,
+                         until: str | None = None) -> list[dict]:
     s = _scraper()
     params = {"start": 0, "length": page_len, "language": "en-us"}
     if trade_date:
         params["date"] = trade_date
     rows, start = [], 0
     while start < max_stocks:
+        # `start` harus menang atas default di `params`, kalau tidak setiap
+        # halaman mengulang halaman pertama (baris duplikat, data terpotong).
         data = _get(f"{BASE}/TradingSummary/GetStockSummary", s,
-                    params={"start": start, **params})
+                    params={**params, "start": start})
         d = data.get("data", [])
         rows.extend(d)
+        if until and find_row(rows, until):
+            break          # emiten yang dicari sudah ketemu, jangan lanjut
         if len(d) < page_len:
             break
         start += page_len

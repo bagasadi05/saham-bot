@@ -81,7 +81,7 @@ def is_trading_day(day: dt.date) -> bool:
 
 def last_trading_day(day: dt.date | None = None) -> dt.date:
     """Hari bursa terakhir (hari ini kalau bursa buka, kalau tidak mundur)."""
-    d = day or dt.date.today()
+    d = day or now_wib().date()
     for _ in range(15):
         if is_trading_day(d):
             return d

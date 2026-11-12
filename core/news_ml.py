@@ -12,8 +12,11 @@ Glosarium label model: {0: positive, 1: neutral, 2: negative}
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
+
+log = logging.getLogger("sahambuddy.news_ml")
 
 MODEL_ID = "will702/indo-roBERTa-financial-sentiment-v2"
 LABEL_MAP = {0: "positive", 1: "neutral", 2: "negative"}
@@ -97,6 +100,11 @@ def classify_batch(texts: list[str]) -> list[dict | None]:
         return out
     try:
         import torch
+    except ImportError:
+        # Lingkungan memang tanpa torch (mis. image slim): jangan ulangi tiap batch.
+        _state["failed"] = True
+        return out
+    try:
         id2lbl = _id_to_label(model)
         batch = [texts[i] for i in todo]
         inputs = tok(batch, return_tensors="pt", truncation=True,
@@ -114,8 +122,10 @@ def classify_batch(texts: list[str]) -> list[dict | None]:
             out[i] = res
             _remember(texts[i], res)
     except Exception:
-        _state["failed"] = True
-        _state["model"] = None
+        # Kegagalan inferensi (OOM sesaat, input aneh) tidak boleh mematikan
+        # model untuk sisa umur proses — batch ini jatuh ke lexicon, batch
+        # berikutnya mencoba lagi.
+        log.exception("inferensi sentimen gagal — fallback lexicon untuk batch ini")
         return out
     return out
 

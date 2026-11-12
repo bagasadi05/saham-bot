@@ -83,6 +83,27 @@ CREATE TABLE IF NOT EXISTS market_scan (
     sl         REAL,
     tp         REAL
 );
+CREATE TABLE IF NOT EXISTS scan_history (
+    trade_date  TEXT NOT NULL,
+    ticker      TEXT NOT NULL,
+    signal      TEXT NOT NULL,
+    price       REAL,
+    entry       REAL,
+    sl          REAL,
+    tp          REAL,
+    atr         REAL,
+    rel_pct     REAL,
+    reason      TEXT,
+    recorded_at TEXT NOT NULL,
+    closed_at   TEXT,
+    bars        INTEGER,
+    fwd_ret     REAL,
+    r_multiple  REAL,
+    outcome     TEXT,
+    PRIMARY KEY (trade_date, ticker)
+);
+CREATE INDEX IF NOT EXISTS idx_scan_history_open
+    ON scan_history(trade_date) WHERE closed_at IS NULL;
 CREATE TABLE IF NOT EXISTS scan_meta (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -482,6 +503,101 @@ def market_scan_counts() -> dict:
     with _db() as conn:
         return {r["signal"]: int(r["n"]) for r in conn.execute(
             "SELECT signal, COUNT(*) AS n FROM market_scan GROUP BY signal")}
+
+
+# ------------------------------------------------------- histori sinyal -----
+# `market_scan` ditimpa setiap scan (satu snapshot). Tabel ini menyimpan satu
+# baris per emiten per hari bursa supaya hasil sinyal bisa diukur belakangan:
+# return setelah N hari, R-multiple, dan apakah SL/TP kena lebih dulu.
+_HISTORY_COLS = ("trade_date", "ticker", "signal", "price", "entry", "sl",
+                 "tp", "atr", "rel_pct", "reason")
+HISTORY_KEEP_DAYS = 400
+
+
+def append_scan_history(rows: list[dict], trade_date: str,
+                        keep_days: int = HISTORY_KEEP_DAYS) -> int:
+    """Simpan sinyal harian tanpa menghapus hari sebelumnya.
+
+    Baris yang sudah ada pada tanggal+ticker sama diperbarui (scan ulang di hari
+    yang sama), tetapi kolom hasil (`closed_at`, `fwd_ret`, ...) tidak disentuh.
+    """
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload = [
+        (trade_date, str(r.get("ticker") or "").upper(), str(r.get("signal") or ""),
+         r.get("price"), r.get("entry"), r.get("sl"), r.get("tp"), r.get("atr"),
+         r.get("rel_pct"), r.get("reason"), now)
+        for r in rows
+        if r.get("ticker") and r.get("signal")
+    ]
+    if not payload:
+        return 0
+    updates = ", ".join(f"{c}=excluded.{c}" for c in
+                        ("signal", "price", "entry", "sl", "tp", "atr",
+                         "rel_pct", "reason"))
+    sql = (f"INSERT INTO scan_history ({','.join(_HISTORY_COLS)}, recorded_at) "
+           f"VALUES ({','.join('?' * (len(_HISTORY_COLS) + 1))}) "
+           f"ON CONFLICT(trade_date, ticker) DO UPDATE SET {updates}")
+    with _db() as conn:
+        conn.executemany(sql, payload)
+        try:
+            cutoff = (dt.date.fromisoformat(trade_date)
+                      - dt.timedelta(days=keep_days)).isoformat()
+            conn.execute("DELETE FROM scan_history WHERE trade_date < ?", (cutoff,))
+        except ValueError:
+            pass  # tanggal aneh: jangan sampai hasil scan hilang karena prune
+    return len(payload)
+
+
+def pending_scan_history(until: str) -> list[dict]:
+    """Baris yang belum punya hasil akhir dan tanggalnya <= `until`."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT trade_date, ticker, signal, price, entry, sl, tp "
+            "FROM scan_history WHERE closed_at IS NULL AND trade_date <= ? "
+            "ORDER BY trade_date, ticker", (until,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def close_scan_history(results: list[dict]) -> int:
+    """Tandai hasil akhir baris histori (return %, R-multiple, outcome)."""
+    if not results:
+        return 0
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload = [(now, r.get("bars"), r.get("fwd_ret"), r.get("r_multiple"),
+                r.get("outcome"), r["trade_date"], r["ticker"])
+               for r in results]
+    with _db() as conn:
+        conn.executemany(
+            "UPDATE scan_history SET closed_at=?, bars=?, fwd_ret=?, "
+            "r_multiple=?, outcome=? WHERE trade_date=? AND ticker=?", payload)
+    return len(payload)
+
+
+def closed_scan_history(since: str, signal: str | None = None) -> list[dict]:
+    """Baris histori yang sudah punya hasil, sejak tanggal `since`."""
+    sql = ("SELECT * FROM scan_history WHERE closed_at IS NOT NULL "
+           "AND trade_date >= ?")
+    params: list = [since]
+    if signal:
+        sql += " AND signal=?"
+        params.append(signal)
+    sql += " ORDER BY trade_date, ticker"
+    with _db() as conn:
+        return [dict(r) for r in conn.execute(sql, params)]
+
+
+def scan_history_counts() -> dict:
+    """Ringkasan histori untuk /jejak dan /status."""
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(closed_at IS NULL), 0) AS pending, "
+            "MIN(trade_date) AS first, MAX(trade_date) AS last "
+            "FROM scan_history").fetchone()
+        return {"total": int(row["total"] or 0),
+                "pending": int(row["pending"] or 0),
+                "first": row["first"] or "",
+                "last": row["last"] or ""}
 
 
 def save_plan_cache(cache_key: str, payload: dict, trade_date: str = ""):

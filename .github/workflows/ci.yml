@@ -16,7 +16,11 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+      - name: Dependency check
+        run: pip check
       - name: Lint
         run: ruff check .
-      - name: Test
-        run: pytest
+      - name: Test + coverage
+        run: >
+          pytest --cov=core --cov=bot --cov=config
+          --cov-report=term-missing --cov-fail-under=75

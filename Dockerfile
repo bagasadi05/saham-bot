@@ -5,6 +5,7 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    TZ=Asia/Jakarta \
     SAHAMBOT_LOCAL_MODEL=/app/models/indo-fin-roberta
 
 # argumen build: SKIP_MODEL=1 → tanpa torch/transformers (sentimen pakai lexicon)

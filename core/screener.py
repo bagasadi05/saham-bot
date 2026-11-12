@@ -16,7 +16,6 @@ Batas kejujuran:
 """
 from __future__ import annotations
 
-import datetime as dt
 import logging
 import math
 import os
@@ -24,7 +23,7 @@ import time
 
 import pandas as pd
 
-from core import analysis, marketcal, relatif, store, universe
+from core import analysis, marketcal, relatif, scorecard, store, universe
 
 log = logging.getLogger("sahambuddy.screener")
 
@@ -76,7 +75,7 @@ def _download_chunk(symbols: list[str], period: str) -> pd.DataFrame | None:
 
     full = [f"{s}.JK" for s in symbols]
     return yf.download(full, period=period, interval="1d", group_by="ticker",
-                       threads=True, progress=False, auto_adjust=False,
+                       threads=True, progress=False, auto_adjust=True,
                        timeout=30)
 
 
@@ -239,7 +238,7 @@ def evaluate(frames: dict[str, pd.DataFrame],
         try:
             trade_date = pd.Timestamp(ind.index[-1]).date().isoformat()
         except Exception:
-            trade_date = dt.date.today().isoformat()
+            trade_date = marketcal.now_wib().date().isoformat()
 
         rows.append({
             "ticker": sym,
@@ -267,6 +266,25 @@ def evaluate(frames: dict[str, pd.DataFrame],
             "tp": tp,
         })
     return rows, skipped
+
+
+# ------------------------------------------------------------- histori ---
+def _close_pending_history(frames: dict[str, pd.DataFrame], trade_date: str):
+    """Tutup histori sinyal yang horizon-nya sudah terlewati.
+
+    Memakai frame yang sudah diunduh untuk scan ini — nol permintaan jaringan
+    tambahan. Baris yang belum cukup umur dicoba lagi pada scan berikutnya.
+    """
+    try:
+        pending = store.pending_scan_history(trade_date)
+        if not pending:
+            return
+        resolved = scorecard.resolve_rows(pending, frames)
+        if resolved:
+            n = store.close_scan_history(resolved)
+            log.info("histori sinyal: %d baris ditutup", n)
+    except Exception:
+        log.exception("gagal menutup histori sinyal")
 
 
 # ------------------------------------------------------------------- scan
@@ -301,6 +319,7 @@ def scan(force: bool = False, downloader=None,
 
     trade_dates = [r["trade_date"] for r in rows if r.get("trade_date")]
     trade_date = max(trade_dates) if trade_dates else _today_wib()
+    _close_pending_history(frames, trade_date)
     counts = {}
     for r in rows:
         counts[r["signal"]] = counts.get(r["signal"], 0) + 1
@@ -321,5 +340,10 @@ def scan(force: bool = False, downloader=None,
         "hold": counts.get("TAHAN", 0),
     }
     store.save_market_scan(rows, meta)
+    # Snapshot ditimpa tiap scan; histori inilah yang bisa diukur belakangan.
+    try:
+        store.append_scan_history(rows, trade_date)
+    except Exception:
+        log.exception("gagal menyimpan histori sinyal")
     return {"cached": False, "counts": counts, "meta": meta,
             "skipped": skipped}

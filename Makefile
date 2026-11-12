@@ -1,11 +1,14 @@
 # Perintah pengembangan SahamBuddy (jalankan: make <target>)
-.PHONY: install test lint compile run docker
+.PHONY: install test coverage lint compile run docker
 
 install:
 	pip install -r requirements-dev.txt
 
 test:
 	pytest
+
+coverage:
+	pytest --cov=core --cov=bot --cov=config --cov-report=term-missing --cov-fail-under=75
 
 lint:
 	ruff check .

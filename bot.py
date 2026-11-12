@@ -25,7 +25,7 @@ import logging
 import os
 import re
 import time
-from datetime import date
+from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -38,7 +38,8 @@ from telegram.error import BadRequest
 import config
 from core import (alerts, analysis, bandar, banding, btcache, data,
                   fundamental, learn, marketcal, news, powerscore,
-                  rencana, screener, saran as saranmod, store, universe)
+                  rencana, scorecard, screener, saran as saranmod,
+                  store, universe)
 from core.chart import build_chart
 from core.textutil import split_message
 
@@ -190,6 +191,10 @@ async def cooldown_ok(update: Update, name: str) -> bool:
             f"{int(remaining) + 1} detik.")
         return False
     _last_used[key] = now
+    if len(_last_used) > 256:   # pengguna x perintah; buang yang sudah basi
+        for k, ts in list(_last_used.items()):
+            if now - ts > 3600:
+                _last_used.pop(k, None)
     return True
 
 
@@ -210,7 +215,8 @@ async def fetch_and_analyze(ticker: str) -> dict:
     as_of = df.attrs.get("as_of") or ""
     if as_of:
         try:
-            gap = marketcal.trading_days_between(date.fromisoformat(as_of), date.today())
+            gap = marketcal.trading_days_between(
+                date.fromisoformat(as_of), marketcal.now_wib().date())
         except ValueError:
             gap = 0
         if gap > 5:
@@ -549,6 +555,39 @@ NEED_TICKER = {
 
 # chat_id -> aksi yang sedang menunggu input emiten
 PENDING: dict[int, str] = {}
+PENDING_TTL = 3600.0          # 1 jam: pilihan menu yang ditinggal jangan menumpuk
+_pending_ts: dict[int, float] = {}
+
+
+def _pending_set(chat_id: int, action: str) -> None:
+    _pending_prune()
+    PENDING[chat_id] = action
+    _pending_ts[chat_id] = time.monotonic()
+
+
+def _pending_get(chat_id: int) -> str | None:
+    action = PENDING.get(chat_id)
+    if action is None:
+        return None
+    ts = _pending_ts.get(chat_id, 0.0)
+    if ts and time.monotonic() - ts > PENDING_TTL:
+        _pending_clear(chat_id)
+        return None
+    return action
+
+
+def _pending_clear(chat_id: int) -> None:
+    PENDING.pop(chat_id, None)
+    _pending_ts.pop(chat_id, None)
+
+
+def _pending_prune() -> None:
+    now = time.monotonic()
+    for cid, ts in list(_pending_ts.items()):
+        if now - ts > PENDING_TTL:
+            _pending_clear(cid)
+
+
 # diisi dari ALLOWED_USER_IDS di main(); kosong = siapa pun boleh
 ALLOWED_IDS: set[int] = set()
 
@@ -628,8 +667,13 @@ _MANUAL_PROMPT = {
     "jual": "Mau jual emiten apa? Ketik kodenya (contoh: <code>TLKM</code>):",
     "watch_add": "Ketik kode emiten yang mau ditambah ke watchlist (contoh: <code>ANTM</code>):",
     "watch_del": "Ketik kode emiten yang mau dihapus dari watchlist:",
-    "alert_add": "Ketik kode emiten untuk alarm (jenis default: jump, drop, breakout, oversold, overbought, ma_golden, ma_death):",
+    "alert_add": "Ketik kode emiten untuk alarm:",
 }
+
+# Daftar jenis alert di prompt selalu mengikuti core/alerts.py.
+_MANUAL_PROMPT["alert_add"] = (
+    "Ketik kode emiten untuk alarm (jenis default: "
+    + ", ".join(sorted(alerts.ALL_KINDS)) + "):")
 
 
 async def _do_analisis(update: Update, tickers: list[str]):
@@ -1132,8 +1176,8 @@ async def _do_alert_add(update: Update, ticker: str, kinds: set[str] | None = No
         )
         return
     if kinds is None:
-        kinds = {"jump", "drop", "breakout", "oversold", "overbought",
-                 "ma_golden", "ma_death"}
+        # Sumber kebenaran tunggal: jangan hardcode daftar yang bisa tertinggal.
+        kinds = set(alerts.ALL_KINDS)
     invalid = kinds - alerts.ALL_KINDS
     if invalid:
         await msg.reply_text(
@@ -1164,7 +1208,10 @@ async def _do_bandar(update: Update, ticker: str | None = None):
 
     def _job():
         idx = bandar.get_index_summary()
-        rows = bandar.get_stock_summary(bandar.last_trading_date(), max_stocks=200)
+        limit = 1000 if ticker else 200
+        rows = bandar.get_stock_summary(
+            bandar.last_trading_date(), max_stocks=limit,
+            until=ticker.upper() if ticker else None)
         return idx, rows
 
     try:
@@ -1312,14 +1359,14 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     chat_id = update.effective_chat.id
     if cb_data == "menu":
-        PENDING.pop(chat_id, None)
+        _pending_clear(chat_id)
         await _safe_edit(
             msg, _menu_text(), parse_mode=ParseMode.HTML, reply_markup=main_menu_markup())
         return
     if cb_data.startswith("pick:"):
         action = cb_data.split(":", 1)[1]
         label = NEED_TICKER.get(action, action)
-        PENDING.pop(chat_id, None)
+        _pending_clear(chat_id)
         await _safe_edit(
             msg,
             f"{esc(label)} — pilih emiten:",
@@ -1329,7 +1376,7 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     if cb_data.startswith("manual:"):
         action = cb_data.split(":", 1)[1]
-        PENDING[chat_id] = action
+        _pending_set(chat_id, action)
         await _safe_edit(
             msg,
             _MANUAL_PROMPT.get(action, "Ketik kode emiten:"),
@@ -1346,7 +1393,7 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 msg, "❌ Tombol tidak valid — buka ulang menu.", reply_markup=home_markup())
             return
         _, action, ticker = parts
-        PENDING.pop(chat_id, None)
+        _pending_clear(chat_id)
         await _safe_edit(
             msg,
             f"⏳ Memproses <b>{esc(ticker)}</b>...",
@@ -1362,7 +1409,7 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 msg, "❌ Tombol tidak valid — buka ulang menu.", reply_markup=home_markup())
             return
         _, action, ticker = parts
-        PENDING.pop(chat_id, None)
+        _pending_clear(chat_id)
         await _safe_edit(
             msg,
             f"⏳ Memperbarui <b>{esc(ticker)}</b>...",
@@ -1415,7 +1462,7 @@ async def menu_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Teks biasa: hanya diproses kalau chat sedang menunggu input emiten,
     atau kalau teksnya pertanyaan beli/jual ('BBCA beli gak?')."""
     chat_id = update.effective_chat.id
-    action = PENDING.get(chat_id)
+    action = _pending_get(chat_id)
     if not action:
         if ALLOWED_IDS and update.effective_user.id not in ALLOWED_IDS:
             return
@@ -1433,7 +1480,7 @@ async def menu_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         pick_action, store.get_watchlist(chat_id)))
         return
     if ALLOWED_IDS and update.effective_user.id not in ALLOWED_IDS:
-        PENDING.pop(chat_id, None)
+        _pending_clear(chat_id)
         return
     text = (update.effective_message.text or "").strip().upper()
     raw_tokens = [t for t in text.replace(",", " ").split() if t]
@@ -1450,7 +1497,7 @@ async def menu_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "❌ Kode emiten tidak valid. Contoh: <code>BBCA</code> (atau <code>BBCA TLKM</code>).",
             parse_mode=ParseMode.HTML)
         return
-    PENDING.pop(chat_id, None)
+    _pending_clear(chat_id)
     await run_menu_action(update, action, tickers[:5])
 
 
@@ -1797,6 +1844,15 @@ async def cmd_validasi(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                               parse_mode=ParseMode.HTML)
 
 
+async def cmd_jejak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Jejak sinyal: hasil nyata BELI/JUAL setelah horizon hari bursa."""
+    since = (marketcal.now_wib().date() - timedelta(days=365)).isoformat()
+    rows = await asyncio.to_thread(store.closed_scan_history, since)
+    counts = await asyncio.to_thread(store.scan_history_counts)
+    await reply_long(update.effective_message,
+                     scorecard.format_summary(scorecard.summarize(rows), counts))
+
+
 async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """[P2] Bandingkan 2–4 emiten: PER/PBV/ROE/DY + return + PowerScore."""
     args = tokens(update)
@@ -1967,9 +2023,10 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     jam, menit = divmod(up_min, 60)
     try:
         c = store.counts()
+        h = store.scan_history_counts()
     except Exception:
         log.exception("status: store gagal dibaca")
-        c = {}
+        c, h = {}, {}
     cache = data.cache_stats()
     avg = STATS["ms"] / STATS["commands"] if STATS["commands"] else 0.0
     await update.effective_message.reply_text(
@@ -1982,6 +2039,8 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Store: {c.get('chats', 0)} chat | {c.get('watchlist', 0)} watchlist | "
         f"{c.get('alerts', 0)} alert | {c.get('paper_open', 0)} posisi terbuka "
         f"dari {c.get('paper_total', 0)}\n"
+        f"Histori sinyal: {h.get('total', 0)} baris "
+        f"({h.get('pending', 0)} menunggu hasil)\n"
         f"Bursa: {'BUKA' if marketcal.market_open() else 'tutup'} | "
         f"hari ini {'hari bursa' if marketcal.is_trading_day(marketcal.now_wib().date()) else 'libur'}",
         parse_mode=ParseMode.HTML)
@@ -2031,6 +2090,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n"
         "• <b>/belajar RSI</b> — kamus istilah: cara baca + jebakan umumnya\n"
         "• <b>/validasi</b> — hasil uji statistik skor (IC, walk-forward, Kronos)\n"
+        "• <b>/jejak</b> — track record nyata: hasil sinyal BELI/JUAL setelah "
+        "N hari bursa\n"
         "• <b>/beli BBCA</b> / <b>/jual BBCA</b> — tanya layak beli/jual (+ konteks backtest)\n"
         "• <b>/auto on</b> — ringkasan harian ±08:30 WIB + pengingat band/dividen\n"
         "• <b>/id</b> — lihat ID Telegram kamu (untuk <code>ALLOWED_USER_IDS</code>)\n\n"
@@ -2594,6 +2655,9 @@ async def _do_sinyal(update: Update, args: list[str]):
             parse_mode=ParseMode.HTML)
         return
 
+    if not await cooldown_ok(update, "sinyal"):
+        return
+
     arg = (args[0].strip().lower() if args else "")
     msg = update.effective_message
     if arg in ("csv", "unduh", "download"):
@@ -2625,8 +2689,6 @@ async def _do_sinyal(update: Update, args: list[str]):
 
 async def cmd_sinyal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Baca snapshot sinyal seluruh pasar: /sinyal [beli|jual|KODE|csv]."""
-    if not await cooldown_ok(update, "sinyal"):
-        return
     await _do_sinyal(update, tokens(update))
 
 
@@ -2838,6 +2900,9 @@ async def _do_rencana(update: Update, args: list[str]):
             parse_mode=ParseMode.HTML)
         return
 
+    if not await cooldown_ok(update, "rencana"):
+        return
+
     top = rencana.MAX_PLANS
     force = False
     for a in args:
@@ -2878,8 +2943,6 @@ async def _do_rencana(update: Update, args: list[str]):
 
 async def cmd_rencana(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Paket beli siap Stockbit: /rencana [1-5|refresh]."""
-    if not await cooldown_ok(update, "rencana"):
-        return
     await _do_rencana(update, tokens(update))
 
 
@@ -2919,17 +2982,17 @@ def _scan_summary_text(res: dict, intro: str) -> str:
 
 
 async def _run_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
-    global _screener_running
     chat_id = int(ctx.job.data["chat_id"])
     try:
-        res = await asyncio.to_thread(screener.scan, True)
-        txt = _scan_summary_text(res, "✅ <b>Scan pasar selesai</b>")
+        res = await _scan_with_guard(True, owns_flag=True)
+        txt = (_scan_summary_text(res, "✅ <b>Scan pasar selesai</b>")
+               if res is not None
+               else "⏳ Scan lain sedang berjalan — permintaan ini dilewati. "
+                    "Coba /scan lagi setelah yang sekarang selesai.")
     except Exception as exc:
         log.exception("scan pasar gagal")
         txt = (f"❌ Scan gagal: <code>{esc(str(exc)[:300])}</code>\n"
                "Coba lagi nanti. Kalau berulang, cek log VPS.")
-    finally:
-        _screener_running = False
     for part in split_message(txt):
         try:
             await ctx.bot.send_message(chat_id, part,
@@ -2937,6 +3000,32 @@ async def _run_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
                                        disable_web_page_preview=True)
         except Exception:
             log.exception("gagal mengirim hasil scan ke %s", chat_id)
+
+
+async def _scan_with_guard(force: bool, *, owns_flag: bool = False) -> dict | None:
+    """Jalankan screener seluruh pasar dengan penjaga tunggal.
+
+    Penjaga `_screener_running` dipakai bersama oleh `/scan` manual dan job
+    harian 16:15 supaya keduanya tidak pernah mengunduh ±944 emiten sekaligus.
+    `owns_flag=True` dipakai pemanggil yang sudah menyetel penjaga lebih dulu
+    (mis. `_do_scan` yang menyetelnya sebelum menjadwalkan job).
+
+    Return None bila scan lain sedang berjalan — pemanggil melaporkannya,
+    bukan menumpuk pekerjaan.
+    """
+    global _screener_running
+    if not owns_flag:
+        if _screener_running:
+            return None
+        _screener_running = True
+    elif not _screener_running:
+        # pemanggil mengaku sudah memegang penjaga, tetapi penjaganya lepas:
+        # lebih aman melewati scan daripada berjalan bersamaan tanpa sadar.
+        return None
+    try:
+        return await asyncio.to_thread(screener.scan, force)
+    finally:
+        _screener_running = False
 
 
 async def _do_scan(update: Update, args: list[str], job_queue):
@@ -2956,21 +3045,29 @@ async def _do_scan(update: Update, args: list[str], job_queue):
         await update.effective_message.reply_text(
             "⏳ Scan pasar masih berjalan. Tunggu sampai selesai, ya.")
         return
+    # Cooldown baru setelah snapshot/status dicek: meminta data yang sudah ada
+    # atau kena "sedang berjalan" tidak boleh memakan jatah cooldown.
+    if not await cooldown_ok(update, "scan"):
+        return
     _screener_running = True
-    n = len(universe.codes())
-    await update.effective_message.reply_text(
-        f"⏳ Memindai <b>{n} emiten</b> BEI secara borongan (3–6 menit).\n"
-        "Hasil dikirim otomatis ke chat ini. Kamu bisa lanjut pakai perintah lain.",
-        parse_mode=ParseMode.HTML)
-    job_queue.run_once(_run_scan_job, when=0.5,
-                       data={"chat_id": update.effective_chat.id},
-                       name=f"scan-{update.effective_chat.id}")
+    try:
+        n = len(universe.codes())
+        await update.effective_message.reply_text(
+            f"⏳ Memindai <b>{n} emiten</b> BEI secara borongan (3–6 menit).\n"
+            "Hasil dikirim otomatis ke chat ini. Kamu bisa lanjut pakai perintah lain.",
+            parse_mode=ParseMode.HTML)
+        job_queue.run_once(_run_scan_job, when=0.5,
+                           data={"chat_id": update.effective_chat.id},
+                           name=f"scan-{update.effective_chat.id}")
+    except Exception:
+        # penjaga jangan tertinggal "true" kalau penjadwalan gagal
+        _screener_running = False
+        raise
 
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Pindai seluruh pasar sekarang: /scan [paksa]."""
-    if not await cooldown_ok(update, "scan"):
-        return
+    # cooldown diputuskan di _do_scan setelah snapshot & status dicek
     await _do_scan(update, tokens(update), ctx.job_queue)
 
 
@@ -2981,9 +3078,12 @@ async def full_market_scan_job(app: Application):
     if not marketcal.is_trading_day(marketcal.now_wib().date()):
         return
     try:
-        res = await asyncio.to_thread(screener.scan, False)
+        res = await _scan_with_guard(False)
     except Exception:
         log.exception("screener harian gagal")
+        return
+    if res is None:
+        log.info("screener harian dilewati — scan lain sedang berjalan")
         return
     if res.get("cached"):
         return
@@ -3052,6 +3152,7 @@ def main():
     reg("alert", cmd_alert)
     reg(["agenda", "korporasi"], cmd_agenda)
     reg(["validasi", "validity"], cmd_validasi)
+    reg(["jejak", "track"], cmd_jejak)
     reg("modal", cmd_modal)
     reg("auto", cmd_auto)
     reg("status", cmd_status)

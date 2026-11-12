@@ -17,7 +17,7 @@ import math
 import os
 from collections import Counter
 
-from core import fundamental, saran, universe
+from core import fundamental, pricing, saran, universe
 
 def _env_num(name: str, default: float, cast=float):
     try:
@@ -43,26 +43,10 @@ _AUTO_NEWS = ("estimates – idx:", "stock price", "stock quote", "chart",
               "profile", "history")
 
 
-def tick_size(price: float) -> float:
-    """Fraksi harga IDX berdasarkan band harga (dibulatkan ke tick terdekat)."""
-    p = float(price)
-    if p < 200:
-        return 1.0
-    if p < 500:
-        return 2.0
-    if p < 2000:
-        return 5.0
-    if p < 5000:
-        return 10.0
-    return 25.0
-
-
-def _round_tick(price: float, tick: float) -> float:
-    return math.floor(price / tick + 0.5) * tick
-
-
-def _ceil_tick(price: float, tick: float) -> float:
-    return math.ceil(price / tick - 1e-9) * tick
+# Fraksi harga & pembulatan dipakai bersama dengan /saran (satu aturan).
+tick_size = pricing.tick_size
+_round_tick = pricing.round_tick
+_ceil_tick = pricing.ceil_tick
 
 
 def _f(v, default=None):

@@ -12,7 +12,8 @@ from datetime import date
 
 import pandas as pd
 
-from core import marketcal, powerscore, relatif, store
+from config import IDX_BUY_FEE, IDX_SELL_FEE
+from core import marketcal, powerscore, pricing, relatif, store
 
 DEFAULT_UNIVERSE = [
     "BBCA", "BBRI", "BMRI", "BBNI", "TLKM", "ASII",
@@ -38,8 +39,25 @@ MAX_QUEUE_AGE_DAYS = 10  # sinyal basi: batalkan kalau open berikutnya tak kunju
 TRAP_RET20D = 15.0      # skip jebakan momentum (temuan backtest)
 CLOSED_SHOWN = 10       # posisi selesai yang ditampilkan di /saran list
 
-BUY_FEE = 0.0015        # broker beli
-SELL_FEE = 0.0025       # broker + pajak jual
+# Biaya transaksi: satu sumber di config.py (dipakai /rencana & riset juga).
+BUY_FEE = IDX_BUY_FEE
+SELL_FEE = IDX_SELL_FEE
+
+
+def stop_price(entry: float, atr: float) -> float:
+    """SL 1xATR, dibulatkan ke fraksi harga BEI dan dijamin di bawah entry."""
+    tick = pricing.tick_size(entry)
+    sl = pricing.round_tick(entry - atr, tick)
+    if sl >= entry:
+        sl = entry - tick
+    return max(sl, tick)
+
+
+def target_price(entry: float, atr: float) -> float:
+    """TP 2xATR, dibulatkan ke fraksi harga BEI dan dijamin di atas entry."""
+    tick = pricing.tick_size(entry)
+    tp = pricing.round_tick(entry + 2.0 * atr, tick)
+    return tp if tp > entry else entry + 2 * tick
 
 
 def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
@@ -51,7 +69,7 @@ def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
     pw = powerscore.combine(tech, fund_pct, news_pct)
     snap = res["snap"]
     atr = res["ind"]["atr14"].iloc[-1] if "atr14" in res["ind"] else None
-    entry = snap["close"]
+    entry = pricing.round_tick(snap["close"])
     atr_v = (
         float(atr)
         if atr is not None and not pd.isna(atr) and float(atr) > 0
@@ -70,8 +88,8 @@ def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
         "sector": (fund_raw or {}).get("sector"),
         "atr": round(atr_v, 1),
         "entry": entry,
-        "sl": round(entry - 1.0 * atr_v, 0),
-        "tp": round(entry + 2.0 * atr_v, 0),
+        "sl": stop_price(entry, atr_v),
+        "tp": target_price(entry, atr_v),
         "date": None,  # diisi saat entry terisi
     }
     # [P5] ukuran posisi: risiko 1% modal per trade
@@ -233,8 +251,8 @@ def fill_pending(chat_id: int | str, bars: dict[str, pd.DataFrame],
             if raw_atr is not None and not pd.isna(raw_atr) and float(raw_atr) > 0
             else entry * 0.03
         )
-        sl = round(entry - atr, 0)
-        tp = round(entry + 2 * atr, 0)
+        sl = stop_price(entry, atr)
+        tp = target_price(entry, atr)
         rec.update(status="open", entry=entry, sl=sl, tp=tp,
                    filled_at=bar.date().isoformat(), date=f"{bar.date():%d %b}",
                    hit="(belum)")
@@ -319,7 +337,7 @@ def update_paper(chat_id: int | str, quotes: dict,
     Kalau high/low tersedia, TP/SL yang kena di intraday ikut terdeteksi —
     dulu hanya close yang dicek, jadi level yang tersentuh lalu berbalik lolos.
     """
-    today = today or date.today()
+    today = today or marketcal.now_wib().date()
     msgs: list[str] = []
     for symbol, rec in store.get_paper(chat_id).items():
         if rec.get("status") != "open" or symbol not in quotes:
