@@ -16,9 +16,14 @@ from core.reports import esc
 log = logging.getLogger("sahambuddy")
 
 
+def _pct_txt(v: float) -> str:
+    """Persen gaya Indonesia tanpa merusak nomor urut."""
+    return f"{v:+.2f}".replace(".", ",")
+
+
 def _bar(rank: int, s: dict) -> str:
     return (f"{rank}. <b>{esc(s['name'])}</b> "
-            f"<i>({esc(s['code'])})</i> {s['pct']:+.2f}%").replace(".", ",")
+            f"<i>({esc(s['code'])})</i> {_pct_txt(s['pct'])}%")
 
 
 def _sektor_text(summary: dict, deps) -> str:
@@ -47,10 +52,10 @@ def _sektor_text(summary: dict, deps) -> str:
     best, worst = summary["best"], summary["worst"]
     if best["pct"] > 0:
         head += ["", f"💪 Terkuat: <b>{esc(best['name'])}</b> "
-                     f"{best['pct']:+.2f}%".replace(".", ",")]
+                     f"{_pct_txt(best['pct'])}%"]
     if worst["pct"] < 0:
         head += [f"🩸 Terlemah: <b>{esc(worst['name'])}</b> "
-                 f"{worst['pct']:+.2f}%".replace(".", ",")]
+                 f"{_pct_txt(worst['pct'])}%"]
     head += [
         "",
         "<i>Ini perubahan indeks sektor resmi BEI hari itu, bukan rekomendasi. "

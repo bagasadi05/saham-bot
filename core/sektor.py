@@ -98,6 +98,7 @@ def sector_rows(rows: list[dict] | None) -> list[dict]:
     """
     out: list[dict] = []
     seen: set[str] = set()
+    unknown: list[str] = []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
@@ -108,9 +109,14 @@ def sector_rows(rows: list[dict] | None) -> list[dict]:
         if pct is None:
             continue
         seen.add(code)
+        # Hanya kode sektor yang dikenal. Payload BEI juga memuat indeks lain
+        # (mis. IDXLQ45LCL); menyebutnya "sektor" akan menyesatkan.
+        if code not in SECTOR_NAMES:
+            unknown.append(code)
+            continue
         out.append({
             "code": code,
-            "name": SECTOR_NAMES.get(code, code),
+            "name": SECTOR_NAMES[code],
             "pct": round(pct, 2),
             "close": _first(row, _CLOSE_KEYS),
             "date": str(row.get("Date") or "")[:10],
@@ -124,8 +130,8 @@ def summarize(rows: list[dict] | None) -> dict:
     secs = sector_rows(rows)
     if not secs:
         return {"ok": False, "sectors": [],
-                "reason": "payload BEI tidak memuat indeks sektor yang bisa "
-                          "dihitung (field persen/close tidak dikenal)"}
+                "reason": "payload BEI tidak memuat indeks sektor yang dikenal "
+                          "(kode lain diabaikan, bukan dianggap sektor)"}
     pos = sum(1 for s in secs if s["pct"] > 0)
     neg = sum(1 for s in secs if s["pct"] < 0)
     return {

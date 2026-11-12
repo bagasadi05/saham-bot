@@ -136,3 +136,11 @@ def test_papan_pemantauan_jadi_veto():
     out = _build(board="Pemantauan Khusus")
     assert out["verdict"] == "HINDARI"
     assert any("Pemantauan" in r for r in out["reasons"])
+
+def test_roe_nyaris_nol_tidak_disebut_murah():
+    fund, fund_raw = _fund(per=11.0, pbv=2.3, roe=0.2)
+    out = _build(fund=fund, fund_raw=fund_raw)
+    valuasi = next(it for it in out["items"] if it["key"] == "valuasi")
+    assert valuasi["status"] == "warn"
+    assert "nyaris nol" in valuasi["headline"]
+    assert out["verdict"] != "LAYAK"

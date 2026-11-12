@@ -137,3 +137,16 @@ def test_handler_jujur_saat_error_lain(monkeypatch):
 
     teks = _run(monkeypatch, boom)
     assert "tidak tersedia" in teks
+
+def test_kode_indeks_lain_tidak_dianggap_sektor():
+    """Payload BEI memuat indeks non-sektor (mis. IDXLQ45LCL) - jangan dilabeli."""
+    out = sektor.summarize([
+        {"IndexCode": "IDXLQ45LCL", "IndexPercent": 2.47},
+        {"IndexCode": "IDXENERGY", "IndexPercent": 1.0},
+    ])
+    assert [x["code"] for x in out["sectors"]] == ["IDXENERGY"]
+
+
+def test_hanya_kode_asing_tidak_menghasilkan_sektor_palsu():
+    out = sektor.summarize([{"IndexCode": "IDXLQ45LCL", "IndexPercent": 2.47}])
+    assert out["ok"] is False and out["sectors"] == []

@@ -208,9 +208,14 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         missing.append("valuasi")
         v_detail = ""
     else:
+        roe_tipis = roe is not None and 0 <= roe < 2
         if laba_negatif:
             points -= 2
             v_status, v_head = "bad", "laba negatif"
+        elif roe_tipis:
+            # PER/PBV "murah" tidak berarti apa-apa kalau labanya nyaris nol.
+            v_status, v_head = "warn", "laba nyaris nol"
+            points -= 1
         elif mahal:
             points -= 1
             v_status, v_head = "warn", "mahal menurut ambang"
@@ -237,6 +242,9 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
                          f"{peer_ret:+.1f}%".replace(".", ","))
         if laba_negatif:
             facts.append((-4, "Perusahaan sedang merugi (PER/ROE negatif)."))
+        elif roe_tipis:
+            facts.append((-2, (f"ROE {roe:.1f}% — laba nyaris nol, valuasi "
+                               "murah tidak otomatis aman.").replace(".", ",")))
         elif mahal:
             facts.append((-2, f"Valuasi di atas ambang (PER {per}, PBV {pbv})."
                           if per is not None and pbv is not None
@@ -334,6 +342,8 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         vetoes.append("papan Pemantauan Khusus")
     if laba_negatif:
         vetoes.append("laba negatif")
+    elif roe is not None and 0 <= roe < 2:
+        vetoes.append("ROE < 2% (laba nyaris nol)")
 
     if vetoes:
         verdict = "HINDARI"
