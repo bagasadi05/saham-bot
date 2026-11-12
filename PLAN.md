@@ -1,8 +1,9 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
-> **Baseline terukur sesi ini:** `495 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 80%` (gerbang CI 75%) · `bot.py` 4.179 baris.
+> **Baseline terukur sesi ini:** `502 passed` · `ruff check .` bersih ·
+> coverage `TOTAL 80%` (gerbang CI 75%) · `bot.py` 4.003 baris +
+> `core/reports.py` 199 baris.
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim
@@ -198,8 +199,17 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   `textutil.rupiah_desimal()` jadi satu implementasi; `bot.fmt_rp`,
   `bot._money`, `analysis.money_fmt`, `saran.fmt` kini mendelegasikan.
   (`bot._rp` sengaja beda: tanpa awalan Rp, untuk tabel sinyal.)
-- [ ] **Pecah `bot.py` per domain** (`app.py`, `formatters.py`, `guards.py`,
-  `jobs.py`, `handlers/*`), pertahankan `bot.py` sebagai entrypoint tipis.
+- [x] **Ekstraksi pertama: lapisan laporan** — `esc`, `fmt_rp`, `_rp`,
+  `build_report`, `market_context_line`, `data_age_line`,
+  `last_macd_cross_note` pindah ke `core/reports.py` (fungsi murni: data
+  masuk, string keluar, tanpa jaringan/store). `bot.py` mengimpor balik
+  nama yang sama sehingga tes & pemanggil lama tidak berubah.
+- [ ] **Pecah `bot.py` per domain handler** (`handlers/analisis.py`,
+  `handlers/market.py`, `handlers/portfolio.py`, `handlers/info.py`) +
+  `guards.py` / `jobs.py`. **Catatan pelaksanaan:** tes memegang 30 titik
+  `setattr(bot, ...)` dan 261 akses langsung ke nama di `bot`; pemecahan
+  handler harus memindahkan seam tes itu sekaligus, jadi dikerjakan satu
+  domain per commit dengan `pytest` hijau di tiap langkah.
 - [ ] **Non-blocking SQLite** — bungkus sisa panggilan `store.*` di handler
   async dengan `asyncio.to_thread` (sudah: `/validasi`, `/jejak`, dan
   `/cek`; menyusul di handler lain).
@@ -227,7 +237,10 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 - [x] **Alert admin** — `notify_admin()` dipakai saat screener harian gagal
   atau >100 kode gagal; tujuan `ADMIN_CHAT_ID` (fallback `ADMIN_IDS[0]`).
   Tes: `tests/test_admin_alert.py` (6).
-- [ ] **Logging terstruktur** (JSON saat `LOG_JSON=1`) + metrik per perintah.
+- [x] **Logging terstruktur** — `core/logsetup.py`: `JsonFormatter` satu
+  baris (ts/level/logger/msg + `cmd`, `chat_id`, `duration_ms`, `ok`,
+  `exc`); `timed()` menulis baris itu hanya saat `LOG_JSON=1`, jadi log
+  teks tetap seperti dulu. Tes: `tests/test_logsetup.py` (7).
 - [ ] **`LICENSE`** di root repo (README menyebut MIT untuk model, bukan kode).
 
 ---
@@ -236,15 +249,15 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **Pecah `bot.py`** (4.179 baris) per domain | Satu file sebesar ini menyulitkan review & risiko merge | `bot/` + entrypoint tipis; tes tetap lulus |
-| 2 | **Logging JSON (`LOG_JSON=1`)** | `/status` masih hitung di memori; log teks bebas sulit di-query | Formatter JSON + field `cmd`, `chat_id`, `duration_ms` |
-| 3 | **P18 `/sektor`** | Rotasi sektor melengkapi `/bandar` & `/sinyal` | Butuh sampel payload `GetIndexSummary` dulu |
-| 4 | **Fixture data terrekam** | Perubahan skema Yahoo/IDX tidak terdeteksi tes | `tests/fixtures/` + tes replay |
+| 1 | **Pecah handler `bot.py`** (4.003 baris) per domain | Sisa satu file besar setelah laporan diekstrak | `handlers/*` + entrypoint tipis; tes tetap lulus |
+| 2 | **Fixture data terrekam** | Perubahan skema Yahoo/IDX tidak terdeteksi tes | `tests/fixtures/` + tes replay |
+| 3 | **Scheduled research CI** | IC bisa memburuk tanpa ada yang melihat | Workflow mingguan + peringatan bila IC 6 bulan < 0 |
+| 4 | **P18 `/sektor`** (butuh sampel payload) | Rotasi sektor melengkapi `/bandar` & `/sinyal` | Setelah payload BEI diverifikasi |
 | 5 | **`LICENSE`** | README menyebut MIT untuk model | Keputusan pemilik repo |
 
 **Jangan dilakukan:** menaikkan bobot faktor karena `t` naif 2,68 (yang
 bertahan hanya `t_hac` 0,85); mengklaim survivorship bias tanpa tabel
-keanggotaan; menambah scraper IDX/Stockbit; big-bang refactor `bot.py`.
+keanggotaan; menambah scraper IDX/Stockbit; refactor `bot.py` sekaligus (satu domain per commit).
 
 ---
 
