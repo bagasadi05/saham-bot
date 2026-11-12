@@ -1,5 +1,9 @@
 # Prompt untuk Agent — Perbaikan SahamBuddy
 
+> **STATUS 2026-11-10 05:10 WIB — P1–P11 SUDAH SELESAI SEMUA.** P8–P11 dikerjakan agent arif dan sudah di-push ke origin/main (commit 4d72773, 8 commit di atas ac7a761): btcache (P8), weekly + skor relatif (P9), alert proaktif + /validasi (P10), /id + survive-restart (P11). Bot live sudah jalan dengan kode 4d72773 (22 command terdaftar, store SQLite utuh). Jangan kerjakan ulang P1–P11. Catatan: 1 tes gagal di sandbox karena torch tidak terinstal (`test_news_ml_cache_thread_safe`) — bukan regresi; Kronos masuk lagi sebagai kode riset (`vendor/kronos/`, `research/evaluate_kronos.py`), bukan sebagai analis utama.
+>
+> **TAMBAHAN 2026-11-12 — P13–P18 (batch asisten beli, bagian 5) ditambahkan, belum dikerjakan.**
+
 > Salin seluruh isi file ini ke agent kamu. Kalau mau dikerjakan sebagian,
 > hapus item yang tidak diinginkan dan biarkan sisanya — prioritas sudah diurutkan.
 
@@ -311,3 +315,172 @@ Allowlist juga masih kosong — siapa pun bisa memakai bot.
   baru), perintah lama tetap jalan (`/start`, `/analisis BBCA`, tombol menu).
 - Ringkasan perubahan per item (apa yang berubah, file apa, cara tesnya)
   ditulis sebagai balasan terakhir.
+
+> **P12 (baru, 2026-11-10) — Handler tahan NetworkError.** Saat ini kalau Telegram tidak terjangkau di tengah handler (mis. proxy 403 / disconnect), handler gagal diam-diam dan pemakai tidak mendapat balasan apa-apa (hanya tercatat "handler kena error" di log). Perbaiki: balasan/edit yang gagal karena NetworkError dicoba ulang sekali setelah jeda singkat; kalau masih gagal, kirim pesan singkat ke pemakai ("koneksi Telegram terganggu, coba lagi sebentar"). Jangan ubah logika perintah lain; satu commit kecil.
+
+## 5. Batch baru: asisten beli di Stockbit (2026-11-12)
+
+Pemilik sekarang memakai bot sebagai pembantu putusan membeli saham di
+Stockbit (eksekusi tetap manual di aplikasi Stockbit). Batch ini membuat bot
+lebih kuat sebagai asisten beli, tanpa mengubah sifatnya: alat bantu putusan,
+bukan mesin beli otomatis. Semua aturan di bagian 3 berlaku untuk batch ini,
+ditambah tiga aturan khusus batch:
+
+- **Bahasa sederhana.** Setiap keluaran baru memakai bahasa Indonesia
+  sederhana + satu baris legenda untuk singkatan/angka (pola legenda `/sinyal`
+  yang ditambahkan 12 Nov 2026: `rel`, `RSI`, `20h` dijelaskan, bukan cuma
+  dicetak). Pemilik sudah dua kali mengeluh keluaran terlalu sulit dipahami —
+  jangan tambah jargon tanpa penjelasan.
+- **Tanpa auto-trading.** Bot tidak pernah login ke Stockbit, tidak pernah
+  menaruh order, tidak pernah menyimpan kredensial Stockbit. Bot hanya
+  membantu memutuskan; ketukan beli tetap milik pemilik.
+- **Tanpa janji keuntungan.** Semua verdict memakai bingkai DYOR yang sama
+  dengan `/beli`/`/jual` (alasan + kondisi yang mengubah jawaban + disclaimer).
+
+### P13 — Rencana beli: ukuran posisi dalam rupiah
+
+**Masalah:** `/beli` memberi entry/SL/TP tapi tanpa hitungan uang: berapa lot
+dengan anggaran yang ada, berapa persen dari modal, berapa rugi maksimal
+kalau kena SL. Pemilik harus menghitung sendiri sebelum menekan beli di
+Stockbit.
+
+**Yang dibangun:**
+- Perintah baru `/rencana <KODE> <anggaran>` (mis. `/rencana BBCA 5000000`):
+  ambil entry/SL/TP dari logika verdict yang sudah ada (`build_verdict`),
+  lalu tampilkan: jumlah lot (dibulatkan ke bawah per 100 saham), total biaya,
+  persentase dari modal (baca modal dari store, perintah `/modal` yang sudah
+  ada), rugi maksimal dalam rupiah kalau kena SL, dan rasio untung:rugi
+  (TP−entry : entry−SL).
+- Kalau anggaran tidak cukup untuk 1 lot, katakan terus terang + sebut harga
+  1 lot. Kalau kode/anggaran tidak valid, balas ramah dengan contoh pakai.
+- Jangan ubah `/beli`, `/jual`, atau `/modal`.
+
+**Kriteria selesai:**
+- `/rencana BBCA 5000000` menampilkan lot, biaya, % modal, rugi maksimal (Rp),
+  dan rasio untung:rugi — angkanya konsisten dengan level `/beli BBCA` yang
+  sama.
+- Anggaran di bawah harga 1 lot dijawab jujur, bukan angka karangan.
+
+### P14 — Ceklist sebelum beli dalam satu perintah
+
+**Masalah:** sebelum membeli, pemilik harus memencet lima perintah terpisah
+(`/analisis`, `/fundamental`, `/berita`, `/bandar`, `/agenda`) lalu
+menyimpulkan sendiri. Satu perintah ceklist menghemat waktu dan mengurangi
+faktor yang terlewat.
+
+**Yang dibangun:**
+- Perintah baru `/cek <KODE>`: menjalankan dan meringkas, masing-masing 1–2
+  baris + satu kalimat kesimpulan per bagian: (a) tren daily + weekly
+  (dari P9), (b) valuasi vs sektor (PER/PBV emiten vs rata-rata 2–3 emiten
+  se-sektor), (c) aliran asing (dari `/bandar`; kalau datanya tidak tersedia,
+  tulis terus terang), (d) berita/sentimen terbaru, (e) agenda dekat
+  (ex-date dividen / aksi korporasi dalam 14 hari, dari `/agenda`),
+  (f) likuiditas (rata-rata nilai transaksi harian — cukup "likuid/kurang
+  likuid" dari angka, dengan ambang yang didokumentasikan di kode).
+- Baris penutup: verdict `LAYAK / TUNGGU / HINDARI` + 1–2 alasan terkuat
+  (faktual dari bagian di atas, bukan janji). Pakai ulang fetcher yang sudah
+  ada — jangan tulis logika ambil data baru yang menduplikasi `analyze()`,
+  `fundamental`, `bandar`, `agenda`, `berita`.
+- Jawaban harus sampai dalam <30 detik; kalau satu bagian gagal, tampilkan
+  bagian lain + catatan "bagian X tidak tersedia".
+
+**Kriteria selesai:**
+- `/cek BBCA` menampilkan keenam bagian + verdict + alasan, tanpa perintah
+  tambahan dari pemilik.
+- Bagian yang datanya kosong ditulis jujur ("tidak tersedia"), bukan karangan.
+- Perintah lama (`/analisis`, `/fundamental`, `/berita`, `/bandar`,
+  `/agenda`) tidak berubah perilakunya.
+
+### P15 — Filter kualitas di scanner seluruh pasar
+
+**Masalah:** `/scan` dan `/sinyal` murni teknikal (peringkat relatif, RSI,
+MA). Kandidat BELI bisa lolos walau perusahaannya merugi atau valuasinya
+sudah mahal — pemilik harus mengecek fundamentalnya satu per satu.
+
+**Yang dibangun:**
+- Tambah saringan/penanda kualitas fundamental pada hasil scan: untuk tiap
+  kandidat BELI, tampilkan penanda ringkas — laba positif/negatif, ROE, dan
+  PER/PBV — diambil dari data fundamental yang sudah dipakai `/fundamental`.
+- Jangan memperlambat scan sampai >7 menit dan jangan memicu rate-limit
+  Yahoo: ambil data fundamental hanya untuk kandidat BELI (bukan 944 emiten),
+  dengan cache per hari (pola `btcache` dari P8).
+- Tambah argumen `/sinyal beli bagus` (nama boleh diusulkan lain, yang
+  penting terdokumentasi): hanya kandidat BELI yang lolos saringan kualitas
+  (laba positif + ROE di atas ambang yang didokumentasikan di kode + PER/PBV
+  tidak ekstrem). Peringkat teknikal tetap penentu urutan.
+- Penanda kualitas memakai bahasa sederhana + legenda (aturan batch di atas).
+
+**Kriteria selesai:**
+- `/sinyal` menampilkan penanda kualitas pada kandidat BELI.
+- `/scan` selesai dalam <7 menit tanpa error rate-limit baru.
+- `/sinyal beli bagus` hanya menampilkan kandidat yang lolos saringan, dan
+  saringannya didokumentasikan di kode.
+
+### P16 — Alert zona beli untuk watchlist
+
+**Masalah:** pemilik harus mengecek manual kapan saham watchlist masuk zona
+beli. Bot sudah punya scan 30 menit + alert band (P10) tapi tidak ada alert
+untuk setup beli.
+
+**Yang dibangun:**
+- Di dalam job `scan_alerts` yang sudah ada, deteksi tiga zona beli untuk
+  emiten watchlist: (a) harga memantul dari support (S1 dari level yang sudah
+  dipakai `/beli`), (b) RSI pulih dari oversold (menembus naik melewati 30),
+  (c) breakout di atas resistance dengan volume >1,5× rata-rata.
+- Kirim 1 pesan saat emiten MASUK zona (bukan tiap scan): simpan status zona
+  terakhir per emiten di store; hanya kirim saat status berubah dari
+  "di luar zona" menjadi "di dalam zona". Pesan menyebut emiten, zona yang
+  terpicu, harga saat ini, dan level SL/TP dari logika yang sudah ada.
+- Ikut saklar `/auto on`/`/off` yang sama dengan P6/P10 — jangan bikin
+  saklar baru.
+
+**Kriteria selesai:**
+- Simulasi emiten watchlist masuk zona beli memicu tepat 1 pesan; scan
+  berikutnya saat masih di zona yang sama tidak mengirim apa-apa.
+- `/auto off` menghentikan alert zona beli.
+
+### P17 — Lacak portofolio beneran (Stockbit)
+
+**Masalah:** bot hanya punya paper trading latihan. Pembelian Stockbit asli
+pemilik tidak terlacak — untung/rugi dan sentuhan SL/TP tidak terpantau.
+
+**Yang dibangun:**
+- Perintah baru `/portofolio beli <KODE> <lot> <harga>` (mencatat pembelian
+  asli: kode, lot, harga beli, tanggal), `/portofolio jual <KODE> <lot>
+  <harga>`, dan `/portofolio` (daftar posisi + untung/rugi per posisi dan
+  total, dari harga berjalan).
+- Simpan di SQLite (tabel baru, pola `store.py` yang sudah ada) — TERPISAH
+  dari paper trading; jangan campur keduanya. Setiap keluaran portofolio
+  beneran diberi label jelas "PORTOFOLIO ASLI (uang sungguhan)" agar tidak
+  tertukar dengan latihan.
+- Alert SL/TP untuk posisi asli memakai mesin alert yang sudah ada (P10):
+  kabari saat harga menyentuh SL atau TP posisi (SL/TP dari level `/beli`
+  saat pencatatan, atau dari argumen opsional saat mencatat).
+- Jangan ubah perilaku paper trading yang sudah ada.
+
+**Kriteria selesai:**
+- Mencatat beli lalu `/portofolio` menampilkan posisi + P/L berjalan yang
+  benar angkanya.
+- Harga menyentuh SL/TP posisi asli memicu tepat 1 alert.
+- Posisi paper (ASII/INDF/PGAS dkk.) tidak berubah dan tidak tercampur.
+
+### P18 — Ranking satu sektor
+
+**Masalah:** `/banding` hanya membandingkan emiten yang disebut satu per satu.
+Pemilik ingin menjawab "bank mana yang paling layak dibeli sekarang?" tanpa
+menyebut semua kode.
+
+**Yang dibangun:**
+- Perintah baru `/sektor <nama>` (mis. `/sektor bank`, `/sektor energi`):
+  ambil semua emiten sektor itu (dari data universe idx yang sudah ada, atau
+  peta sektor statis kecil yang didokumentasikan sumbernya), lalu urutkan
+  dengan skor gabungan: valuasi (PER/PBV vs rata-rata sektor) + tren
+  (relatif vs IHSG, dari P9) + ROE. Tampilkan 5 teratas + 2 terbawah,
+  masing-masing 1 baris + 1 alasan singkat (angka, bukan opini).
+- Sektor yang tidak dikenal dijawab ramah + daftar sektor yang tersedia.
+- Bahasa sederhana + legenda (aturan batch di atas); disclaimer DYOR tetap ada.
+
+**Kriteria selesai:**
+- `/sektor bank` menampilkan tabel peringkat yang angkanya terverifikasi dari
+  sumber yang sama dengan `/fundamental` dan `/analisis`.
+- `/sektor <nama-yang-tidak-ada>` dijawab ramah dengan daftar sektor.
