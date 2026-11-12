@@ -8,11 +8,19 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.12"
+          - python-version: "3.13"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
@@ -23,4 +31,11 @@ jobs:
       - name: Test + coverage
         run: >
           pytest --cov=core --cov=bot --cov=config
-          --cov-report=term-missing --cov-fail-under=75
+          --cov-report=term-missing --cov-report=xml --cov-fail-under=75
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
