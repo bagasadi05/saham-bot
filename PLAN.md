@@ -2,8 +2,8 @@
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
 > **Baseline terukur sesi ini:** `517 passed` · `ruff check .` bersih ·
-> coverage tetap di atas gerbang 75% · `bot.py` 3.415 baris +
-> `handlers/` (portfolio, cek, sinyal, sektor) + `core/reports.py`.
+> coverage `TOTAL 80%` · `bot.py` 2.960 baris +
+> `handlers/` (portfolio, cek, sinyal, sektor, market) + `core/reports.py`.
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim
@@ -206,20 +206,20 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   `last_macd_cross_note` pindah ke `core/reports.py` (fungsi murni: data
   masuk, string keluar, tanpa jaringan/store). `bot.py` mengimpor balik
   nama yang sama sehingga tes & pemanggil lama tidak berubah.
-- [x] **Pecah handler, 4 domain** — `handlers/portfolio.py` (P17),
-  `handlers/cek.py` (P14), `handlers/sinyal.py` (P15), dan
-  `handlers/sektor.py` (P18) memakai pola **`deps`**: handler menerima
+- [x] **Pecah handler, 5 domain** — `handlers/portfolio.py` (P17),
+  `handlers/cek.py` (P14), `handlers/sinyal.py` (P15),
+  `handlers/sektor.py` (P18), dan `handlers/market.py` (/scan, /paket,
+  /rencana) memakai pola **`deps`**: handler menerima
   modul `bot` sebagai parameter dan mengakses `deps._quote_posisi`,
   `deps.fetch_and_analyze`, `deps.reply_long`, dst. Dengan begitu
   `monkeypatch.setattr(bot, ...)` di tes tetap mengenai sasaran yang sama,
   tanpa impor melingkar (handler tidak mengimpor `bot`). `bot.py` kini
   menyimpan wrapper tipis + alias nama lama.
 - [ ] **Pecah handler, sisa domain** — `handlers/analisis.py`,
-  `handlers/market.py` (`/scan`, `/paket`, `/rencana`),
   `handlers/info.py` (`/start`, `/help`, `/validasi`, `/status`), lalu
   `guards.py` (cooldown/PENDING) dan `jobs.py`. Seam tes yang perlu ikut
-  pindah: `_scan_with_guard`, `_screener_running`, `run_menu_action`,
-  `build_chart`, `TMP_DIR`, `ALLOWED_IDS`, `MAX_WATCH`.
+  pindah: `run_menu_action`, `build_chart`, `TMP_DIR`, `ALLOWED_IDS`,
+  `MAX_WATCH`.
 - [ ] **Non-blocking SQLite** — bungkus sisa panggilan `store.*` di handler
   async dengan `asyncio.to_thread` (sudah: `/validasi`, `/jejak`, dan
   `/cek`; menyusul di handler lain).
@@ -267,7 +267,7 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **Pecah handler sisa domain** (`bot.py` 3.415 baris) | Pola `deps` sudah terbukti di 4 domain | `handlers/*` + `guards.py`/`jobs.py`, tes hijau tiap langkah |
+| 1 | **Pecah handler sisa domain** (`bot.py` 2.960 baris) | Pola `deps` sudah terbukti di 5 domain | `handlers/*` + `guards.py`/`jobs.py`, tes hijau tiap langkah |
 | 2 | **Uji live setelah deploy** | Semua tes offline; perilaku nyata belum dilihat | `/cek`, `/portofolio`, `/sinyal beli bagus`, `/sektor` di chat asli |
 | 3 | **Rekam fixture asli** | Fixture sekarang sintetis | `python tools/record_fixtures.py` lalu commit hasilnya |
 | 4 | **Push & deploy** | Commit lokal belum di-push | `git push` + restart bot, cek `/status` |
