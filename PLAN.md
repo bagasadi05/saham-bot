@@ -1,8 +1,8 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
-> **Baseline terukur sesi ini:** `435 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 78%` (gerbang CI 75%) · `bot.py` 3.513 baris.
+> **Baseline terukur sesi ini:** `456 passed` · `ruff check .` bersih ·
+> coverage `TOTAL 79%` (gerbang CI 75%) · `bot.py` 3.740 baris.
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim
@@ -28,6 +28,7 @@ daripada dokumennya. Setelah diaudit baris per baris, inilah selisihnya:
 | Fase 2.3 `lam=10.0` statis | sudah CV deret waktu di dalam train | `research/evaluate.py:ridge_fit/choose_lam_cv` |
 | Fase 4.1 "5 formatter rupiah duplikat" | masih duplikat (belum disentuh) | `bot.py:87,875,2608`, `core/analysis.py:165`, `core/saran.py:445` |
 | Fase 3 P12/P13 | belum; **diselesaikan sesi ini** | `bot.py:send_with_retry`, `rencana.budget_plan` |
+| Fase 3 P14 & D2 | belum; **diselesaikan sesi ini** | `core/cek.py`, `bot.build_application` |
 | Plan menyebut `build_verdict` | fungsi itu **tidak ada**; yang dipakai `saran.build_candidate` / `rencana.enrich` | `core/saran.py:66`, `core/rencana.py:124` |
 
 **Konsekuensi:** tiga hal di plan lama tidak lagi relevan (biaya 0,50%,
@@ -57,8 +58,8 @@ ada di Fase 3 (P14–P18) dan Fase 4 (arsitektur & operasional).
 |---|---|---|---|
 | **Fase 1** | Bug, regresi & ketahanan runtime | ✅ selesai | P0 |
 | **Fase 2** | Kalibrasi riset & catatan sinyal live | ✅ selesai | P1 |
-| **Fase 3** | Backlog UX (`P12`–`P18`) | 🟡 2 dari 7 selesai | P1–P2 |
-| **Fase 4** | Arsitektur, CI & operasional | 🟡 sebagian | P2 |
+| **Fase 3** | Backlog UX (`P12`–`P18`) | 🟡 3 dari 7 selesai (P12–P14) | P1–P2 |
+| **Fase 4** | Arsitektur, CI & operasional | 🟡 sebagian (D2 selesai) | P2 |
 
 ---
 
@@ -155,10 +156,12 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
     perilaku lama.
   - Parser anggaran menerima `5000000`, `5.000.000`, `5jt`, `1,5jt`, `500rb`.
   - Tes: `tests/test_rencana_single.py` (24 tes).
-- [ ] **P14 — `/cek <KODE>`** checklist 1 layar: tren daily+weekly, valuasi vs
-  sektor, aliran asing, berita, agenda ≤14 hari, likuiditas; verdict
-  LAYAK/TUNGGU/HINDARI + alasan. Pakai fetcher yang ada (`analysis.analyze`,
-  `fundamental`, `bandar`, `news`, `agenda`) — jangan duplikasi logika.
+- [x] **P14 — `/cek <KODE>`** checklist 1 layar — `core/cek.py` (aturan
+  poin & veto bisa dibaca di docstring modul) + `bot._cek_gather` yang
+  memakai fetcher lama secara paralel. Enam bagian, verdict
+  LAYAK/TUNGGU/HINDARI, dan **TIDAK CUKUP DATA** bila ≥3 bagian kosong —
+  bukan HINDARI karangan. Bagian tanpa data ditulis apa adanya. Tes:
+  `tests/test_cek.py` (15), `tests/test_cek_handler.py` (5).
 - [ ] **P15 — `/sinyal beli bagus`** penanda kualitas fundamental untuk
   kandidat BELI + filter laba/ROE/PER-PBV; fundamental hanya untuk kandidat
   BELI, cache harian (`btcache`), scan tetap < 7 menit.
@@ -181,8 +184,8 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 - [ ] **Pecah `bot.py` per domain** (`app.py`, `formatters.py`, `guards.py`,
   `jobs.py`, `handlers/*`), pertahankan `bot.py` sebagai entrypoint tipis.
 - [ ] **Non-blocking SQLite** — bungkus sisa panggilan `store.*` di handler
-  async dengan `asyncio.to_thread` (sebagian sudah: `bot.py:1892`, scan
-  history).
+  async dengan `asyncio.to_thread` (sudah: `/validasi`, `/jejak`, dan
+  `/cek`; menyusul di handler lain).
 
 ### 4.2 Kualitas kode, testing & CI
 - [x] **CI**: matriks 3.12/3.13, `ruff check .`, `pip check`, coverage gate
@@ -199,8 +202,11 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   rotasi 7, job harian 23:30 WIB (`bot.py:backup_job`).
 - [x] **Migrasi bernomor** — `SCHEMA_VERSION=2` + `_MIGRATIONS`
   (`core/store.py:123-149`).
-- [ ] **`concurrent_updates(4)` + `AIORateLimiter`** — sekarang satu `/scan`
-  3–6 menit menahan chat lain; jangan pakai `True` (256).
+- [x] **`concurrent_updates(4)` + `AIORateLimiter`** — `bot.build_application()`:
+  4 update paralel, `connection_pool_size(8)`, `AIORateLimiter(max_retries=2)`;
+  `/cek` juga memindahkan baca store ke `asyncio.to_thread`. Tes:
+  `tests/test_app_builder.py`. Dependensi: extra `[rate-limiter]` +
+  `tenacity==9.2.1` di `requirements.txt`.
 - [ ] **Alert admin** bila `full_market_scan_job` gagal berulang.
 - [ ] **Logging terstruktur** (JSON saat `LOG_JSON=1`) + metrik per perintah.
 - [ ] **`LICENSE`** di root repo (README menyebut MIT untuk model, bukan kode).
@@ -211,12 +217,11 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **P14 `/cek`** | Paling sering dipakai sebelum menekan beli; semua fetcher sudah ada | 1 perintah, 6 bagian, verdict + alasan, < 30 detik, tes offline |
-| 2 | **D2 `concurrent_updates(4)` + `AIORateLimiter`** | `/scan` membekukan chat lain; risiko operasional nyata | `/analisis` jalan saat `/scan`; tidak ada `PoolTimeout`; tes asyncio |
-| 3 | **P17 `/portofolio`** | Melacak uang sungguhan; tabel sendiri, jangan campur paper | PnL, konsentrasi sektor, total risiko SL; tes store + handler |
-| 4 | **P15 `/sinyal beli bagus`** | Menjawab "kandidat BELI tapi fundamentalnya bagaimana" | Penanda kualitas + filter; scan tetap < 7 menit |
-| 5 | **Formatter + pecah `bot.py`** | 3.513 baris mulai menyulitkan review | 1 PR per domain, `bot.py` tetap entrypoint |
-| 6 | **P16, P18** | Fitur proaktif & rotasi sektor | Sesuai kriteria di `PROMPT-PERBAIKAN-BOT.md` |
+| 1 | **P17 `/portofolio`** | Melacak uang sungguhan; tabel sendiri, jangan campur paper | PnL, konsentrasi sektor, total risiko SL; tes store + handler |
+| 2 | **P15 `/sinyal beli bagus`** | Menjawab "kandidat BELI tapi fundamentalnya bagaimana" | Penanda kualitas + filter; scan tetap < 7 menit |
+| 3 | **P16 alert zona beli** | Fitur proaktif yang diminta, saklarnya sudah ada (`/auto`) | 1 pesan saat masuk zona, tidak berulang |
+| 4 | **Formatter + pecah `bot.py`** | 3.740 baris mulai menyulitkan review | 1 PR per domain, `bot.py` tetap entrypoint |
+| 5 | **P18 `/sektor`** | Rotasi sektor melengkapi `/bandar` & `/sinyal` | Ranking kekuatan relatif per sektor |
 
 **Jangan dilakukan:** menaikkan bobot faktor karena `t` naif 2,68 (yang
 bertahan hanya `t_hac` 0,85); mengklaim survivorship bias tanpa tabel
