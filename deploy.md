@@ -72,6 +72,28 @@ Checklist dijalankan dengan data Yahoo/BEI sungguhan, tanpa polling Telegram
 Uji tingkat chat (pesan benar-benar terkirim ke Telegram) tetap harus
 dijalankan di host yang punya token; langkahnya ada di tabel di atas.
 
+### Templat hasil uji chat (tempel di chat/PR)
+
+```
+# /status
+<tempel balasan /status>
+
+# /sektor
+<tempel balasan /sektor>
+
+# /cek BBCA
+<tempel balasan /cek BBCA>
+
+# /sinyal beli bagus
+<tempel balasan /sinyal beli bagus>
+```
+
+Yang dianggap lulus: `/status` menampilkan uptime & store; `/sektor` menampilkan
+daftar sektor **atau** pesan "diblokir Cloudflare" (bukan traceback); `/cek`
+menampilkan 6 bagian + kesimpulan; `/sinyal beli bagus` menampilkan penanda
+✅/⚠️/❔ atau pesan "tidak ada kandidat BELI". Kalau ada traceback, kirim juga
+`docker compose logs --tail=50`.
+
 ## Perintah sehari-hari
 
 | Tujuan | Perintah |
