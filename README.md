@@ -199,6 +199,8 @@ ruff check .      # lint
 pytest            # 200+ tes offline (tanpa Yahoo/Google News/HuggingFace)
 ```
 
+Atau lewat Makefile: `make install`, `make lint`, `make test`, `make docker`.
+
 CI GitHub Actions menjalankan lint + seluruh tes offline pada tiap push/PR.
 Build Docker bisa dicek lokal: `docker build --build-arg SKIP_MODEL=1 -t saham-bot:slim .`
 
