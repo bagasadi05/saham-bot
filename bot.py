@@ -37,9 +37,9 @@ from telegram.error import BadRequest
 
 import config
 from core import (alerts, analysis, bandar, banding, btcache, data,
-                  fundamental, learn, marketcal, news, powerscore,
-                  rencana, scorecard, screener, saran as saranmod,
-                  store, universe)
+                  data_quality, fundamental, learn, marketcal, news,
+                  powerscore, rencana, scorecard, screener,
+                  saran as saranmod, store, universe)
 from core.chart import build_chart
 from core.textutil import split_message
 
@@ -223,6 +223,7 @@ async def fetch_and_analyze(ticker: str) -> dict:
             res["stale_note"] += (
                 f"⚠️ <i>Data terakhir {esc(as_of)} ({gap} hari bursa lalu) — "
                 "angka mungkin sudah tidak berlaku.</i>\n")
+    res["quality_note"] = data_quality.summary_line(df.attrs.get("quality"))
     return res
 
 
@@ -334,6 +335,7 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
 
     return (
         f"{res.get('stale_note', '')}"
+        f"{res.get('quality_note', '')}"
         f"{res.get('history_note', '')}"
         f"📊 <b>{esc(res['ticker'])}</b>\n"
         f"Harga: <b>{fmt_rp(snap['close'])}</b> "

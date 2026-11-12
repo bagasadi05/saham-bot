@@ -9,6 +9,7 @@ Lapisan ketahanan:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -19,12 +20,17 @@ import pandas as pd
 import yfinance as yf
 
 from config import DEFAULT_PERIOD, TICKER_SUFFIX
+from core import data_quality
 
 log = logging.getLogger("sahambuddy.data")
 
 _CACHE_DIR = os.getenv("SAHAMBOT_CACHE", os.path.join("temp", "cache"))
 _MAX_RETRIES = int(os.getenv("YF_RETRIES", "3"))
 _TTL_SECONDS = int(os.getenv("SAHAMBOT_TTL", "300") or 0)
+
+# yfinance dipanggil dengan auto_adjust=True: OHLC sudah disesuaikan split
+# dan dividen. Penanda ini disimpan bersama cache agar data tidak tercampur.
+_ADJUSTED = True
 
 _mem: dict[tuple, tuple[float, pd.DataFrame]] = {}
 _mem_lock = threading.Lock()
@@ -99,6 +105,38 @@ def _cache_path(symbol: str, interval: str = "1d") -> str:
     return os.path.join(_CACHE_DIR, f"{symbol}{suffix}.csv")
 
 
+def _meta_path(symbol: str, interval: str = "1d") -> str:
+    """Sidecar JSON: penanda penyesuaian, penyedia, dan waktu unduh."""
+    return os.path.splitext(_cache_path(symbol, interval))[0] + ".json"
+
+
+def _read_meta(symbol: str, interval: str = "1d") -> dict | None:
+    try:
+        with open(_meta_path(symbol, interval), encoding="utf-8") as f:
+            meta = json.load(f)
+        return meta if isinstance(meta, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _write_meta(symbol: str, df, interval: str = "1d"):
+    meta = {
+        "symbol": symbol,
+        "interval": interval,
+        "provider": "yfinance",
+        "adjusted": _ADJUSTED,
+        "fetched_at": df.attrs.get("fetched_at")
+        or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "rows": int(len(df)),
+        "last_bar": _as_of(df),
+    }
+    path = _meta_path(symbol, interval)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
 def _save_cache(symbol: str, df, interval: str = "1d"):
     try:
         os.makedirs(_CACHE_DIR, exist_ok=True)
@@ -106,22 +144,46 @@ def _save_cache(symbol: str, df, interval: str = "1d"):
         tmp = path + ".tmp"
         df.to_csv(tmp)
         os.replace(tmp, path)  # atomik: pembaca tak pernah lihat file setengah jadi
+        try:
+            _write_meta(symbol, df, interval)
+        except Exception:
+            log.warning("%s: sidecar cache gagal ditulis", symbol)
     except Exception:
         pass  # cache gagal menulis tak menggagalkan bot
 
 
-def _load_cache(symbol: str, interval: str = "1d"):
+def _load_cache(symbol: str, interval: str = "1d", adjusted: bool = _ADJUSTED):
+    """Baca cache disk hanya bila penanda penyesuaiannya cocok.
+
+    Cache lama tanpa sidecar tetap diterima (dulu data.py juga memakai
+    auto_adjust=True), tetapi ditandai `provenance = cache-legacy` supaya
+    ketidakpastiannya terlihat oleh pemanggil.
+    """
     p = _cache_path(symbol, interval)
     if not os.path.exists(p):
+        return None
+    meta = _read_meta(symbol, interval)
+    if meta is not None and meta.get("adjusted") not in (None, adjusted):
+        log.warning(
+            "%s: cache adjusted=%s tidak cocok dengan permintaan adjusted=%s — diabaikan",
+            symbol, meta.get("adjusted"), adjusted)
         return None
     try:
         df = pd.read_csv(p, index_col=0, parse_dates=True)
         df.attrs["stale"] = True
         df.attrs["as_of"] = _as_of(df)
+        df.attrs["provider"] = (meta or {}).get("provider", "yfinance")
+        df.attrs["adjusted"] = (meta or {}).get("adjusted", None)
+        df.attrs["fetched_at"] = (meta or {}).get("fetched_at", "")
+        df.attrs["provenance"] = "cache" if meta else "cache-legacy"
         df.attrs["stale_note"] = (
             f"⚠️ <i>Data LIVE gagal diambil (Yahoo 429/koneksi) — dipakai cache terakhir: "
             f"{datetime.fromtimestamp(os.path.getmtime(p), tz=timezone.utc):%d %b %H:%M} UTC. "
             "Angkanya bisa jadul. Coba lagi nanti untuk data segar.</i>\n")
+        if meta is None:
+            df.attrs["stale_note"] += (
+                "⚠️ <i>Cache lama tanpa penanda penyesuaian — dianggap adjusted=True.</i>\n")
+        df.attrs["quality"] = data_quality.check(df)
         return df
     except Exception:
         return None
@@ -185,6 +247,12 @@ def _fetch_bars(ticker: str, period: str = DEFAULT_PERIOD,
     if df.empty:
         return None
     df.attrs["stale"] = False
+    df.attrs["provider"] = "yfinance"
+    df.attrs["adjusted"] = _ADJUSTED
+    df.attrs["interval"] = interval
+    df.attrs["fetched_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    df.attrs["provenance"] = "live"
+    df.attrs["quality"] = data_quality.check(df)
     df.attrs["as_of"] = _as_of(df)
     _save_cache(symbol, df, interval)
     _mem_put(key, df)
