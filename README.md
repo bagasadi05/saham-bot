@@ -236,6 +236,8 @@ Konsekuensinya di kode:
 
 ## 🧪 Pengembangan & tes
 
+> **Agent AI / kontributor baru:** baca [`AGENTS.md`](AGENTS.md) dulu (cara kerja, konvensi `deps`, aturan kejujuran data, status terakhir). Riwayat perubahan: [`CHANGELOG.md`](CHANGELOG.md).
+
 ```bash
 pip install -r requirements-dev.txt
 ruff check .      # lint
