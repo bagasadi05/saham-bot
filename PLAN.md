@@ -2,7 +2,7 @@
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
 > **Baseline terukur sesi ini:** `517 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 80%` · `bot.py` 2.428 baris +
+> coverage `TOTAL 80%` · `bot.py` 2.296 baris +
 > `handlers/` (analisis, cek, info, jobs, market, portfolio, sektor,
 > sinyal) + `core/reports.py` + `core/guards.py`.
 >
@@ -218,12 +218,13 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   menyimpan wrapper tipis + alias nama lama.
 - [x] **Pecah handler, domain terakhir** — `handlers/analisis.py`
   (`/analisis`, `/skor`, `/banding`), `handlers/info.py` (`/start`,
-  `/menu`, `/help`, `/id`, `/validasi`, `/status`), `handlers/jobs.py`
+  `/menu`, `/help`, `/id`, `/validasi`, `/status`, `/berita`,
+  `/fundamental`), `handlers/jobs.py`
   (alert 30 menit, autoscan, screener 16:15, backup, heartbeat), dan
   `core/guards.py` (cooldown + PENDING). Semua memakai pola `deps`;
-  `bot.py` tinggal 2.428 baris berisi menu/aksi, handler yang belum
-  dipindah (saran/berita/fundamental/backtest/beli-jual/watch-alert),
-  dan entrypoint. Seam tes (`run_menu_action`, `build_chart`, `TMP_DIR`,
+  `bot.py` tinggal 2.296 baris berisi menu/aksi, handler yang belum
+  dipindah (saran/backtest/beli-jual/watch-alert/modal/auto), dan
+  entrypoint. Seam tes (`run_menu_action`, `build_chart`, `TMP_DIR`,
   `ALLOWED_IDS`, `MAX_WATCH`, `_screener_running`) tetap bekerja karena
   diakses lewat `deps` atau tetap di `bot`.
 - [ ] **Non-blocking SQLite** — bungkus sisa panggilan `store.*` di handler
