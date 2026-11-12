@@ -37,6 +37,26 @@ docker compose logs -f
 
 Test ke Telegram: kirim `/start` ke bot-mu → jawaban menu. Selesai — bot hidup 24/7.
 
+## Uji live setelah deploy
+
+Jalankan di chat bot (bukan di mesin dev), urut dari yang paling murah:
+
+| # | Perintah | Yang harus terlihat | Kalau gagal |
+|---|---|---|---|
+| 1 | `/status` | uptime, jumlah perintah, cache, status bursa | cek `docker compose logs -f` |
+| 2 | `/sektor` | daftar sektor BEI + terkuat/terlemah, **atau** pesan "diblokir Cloudflare" | idx.co.id memblokir IP VPS — bukan bug bot |
+| 3 | `/cek BBCA` | 6 bagian + kesimpulan LAYAK/TUNGGU/HINDARI; bagian tanpa data ditulis "tidak tersedia" | kalau semua bagian kosong: cek koneksi Yahoo |
+| 4 | `/sinyal beli bagus` | penanda ✅/⚠️/❔ + jumlah kandidat dinilai | butuh snapshot `/scan` dulu |
+| 5 | `/portofolio` | "Belum ada posisi" atau daftar posisi + PnL | — |
+| 6 | `/rencana BBCA 5000000` | lot, biaya, % modal, rugi maks, RR | — |
+
+Catat tempel output `/cek` dan `/sektor` ke chat; kalau ada yang aneh, kirim
+barisnya — log JSON (`LOG_JSON=1`) memudahkan mencari perintah yang gagal:
+
+```bash
+docker compose logs -f | jq 'select(.level=="ERROR")'
+```
+
 ## Perintah sehari-hari
 
 | Tujuan | Perintah |

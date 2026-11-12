@@ -79,8 +79,8 @@ def _sinyal_section(rows: list[dict], sig: str, meta: dict, deps,
         # Sama seperti overview: yang terlemah dulu.
         picked.sort(key=lambda r: (r.get("rel_pct") if r.get("rel_pct") is not None
                                    else 101, r["ticker"]))
-    head = ("🟢 <b>KANDIDAT BELI</b>" if sig == "BELI"
-            else "🔴 <b>HINDARI / JUAL BILA PUNYA</b>")
+    head = ("🟢 <b>PERINGKAT ATAS</b> (kandidat beli)" if sig == "BELI"
+            else "🔴 <b>PERINGKAT BAWAH</b> (hindari / kurangi bila punya)")
     out = [head, f"<i>{esc(deps._scan_when(meta))}</i>", ""]
     if not picked:
         out += ["Tidak ada emiten yang lolos filter ini hari ini.",
@@ -95,7 +95,9 @@ def _sinyal_section(rows: list[dict], sig: str, meta: dict, deps,
             out += ["", "<i>✅ sehat · ⚠️ tidak lolos saringan · ❔ belum "
                     "dinilai (data fundamental gagal diambil). Penanda hanya "
                     "untuk 6 emiten teratas — bukan seluruh daftar.</i>"]
-    out += ["", deps._SINYAL_DISCLAIMER]
+    out += ["", "<i>Label ini peringkat relatif 12 faktor (IC OOS ±0,03), "
+            "bukan probabilitas naik. BELI = peringkat atas, JUAL = peringkat "
+            "bawah — bukan instruksi short.</i>", "", deps._SINYAL_DISCLAIMER]
     return "\n".join(out)
 
 

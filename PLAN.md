@@ -125,16 +125,23 @@ ada di Fase 3 (P14–P18) dan Fase 4 (arsitektur & operasional).
   grid {0,001 … 1,0} dengan purge horizon; dilaporkan per tahun.
 - [x] **Baseline bobot-sama** — `ic_eq` + `walk_forward_summary`; model menang
   4/5 tahun (0,0304 vs −0,0061).
-- [ ] **Survivorship bias & universe transfer (45 LQ45 → 944 BEI)** — BELUM.
-  Butuh `universe_membership`/`delistings` (lihat 4.2); jangan klaim angkanya
-  sebelum datanya ada.
-- [ ] **Faktor non-teknikal (PBV/ROE/earnings yield, low-vol, foreign flow)** —
-  BELUM; harus lolos `t_hac` ≥ 3 dan koreksi BH dulu.
-- [ ] **Backtest end-to-end pipeline `/rencana`** (ranking + likuiditas +
-  fundamental + sentimen sebagai satu paket) — BELUM.
+- ⛔ **Survivorship bias & universe transfer (45 LQ45 → 944 BEI)** — **di luar
+  cakupan** (keputusan pemilik, 2026-11-12). Prasyarat bila suatu saat
+  dikerjakan: `universe_membership` + `delistings` dari unduhan manual IDX
+  Stock List atau EODHD; tanpa itu angka apa pun hanya bias cuplikan.
+- ⛔ **Faktor non-teknikal (PBV/ROE/earnings yield, low-vol, foreign flow)** —
+  **di luar cakupan** (keputusan pemilik). Prasyarat: fundamental
+  *point-in-time*; Yahoo hanya memberi snapshot terkini, jadi IC historisnya
+  tidak bisa dihitung tanpa sumber data lain.
+- ⛔ **Backtest end-to-end pipeline `/rencana`** (ranking + likuiditas +
+  fundamental + sentimen sebagai satu paket) — **di luar cakupan** (keputusan
+  pemilik). Prasyarat: fundamental + berita historis; yang bisa diuji tanpa
+  data itu hanya subset teknikal + likuiditas.
 
 **Kriteria selesai Fase 2:** ✅ `scan_history` jalan & terbaca; artefak riset
-memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
+memuat CI, hysteresis, dan CV. ⛔ Uji filter gabungan & bias universe
+dinyatakan **di luar cakupan** karena butuh data historis yang tidak
+tersedia (keputusan pemilik, 2026-11-12).
 
 ---
 
@@ -190,8 +197,9 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   sektor. Bila tidak ada yang bisa dihitung, bot berkata **tidak tersedia**
   — bukan 0%. Cloudflare diblokir juga dilaporkan jujur. Tes:
   `tests/test_sektor.py` (11).
-- [ ] **Selaraskan label `BELI`/`JUAL`** di `/sinyal` menjadi "Peringkat
-  Atas/Bawah" atau tambahkan catatan `t_hac` di header (lihat angka 0,85).
+- [x] **Selaraskan label `BELI`/`JUAL`** — `/sinyal` memakai **Peringkat
+  Atas** / **Peringkat Bawah** + catatan "IC OOS ±0,03, bukan probabilitas;
+  JUAL bukan instruksi short". Tes: `tests/test_bot_handlers.py`.
 
 ---
 
@@ -247,8 +255,10 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   WIB) menjalankan `research/evaluate.py --period 3y --limit 12 --min-ic 0`;
   exit 2 bila IC rata-rata < 0, dan laporan tetap diunggah sebagai artefak.
   Ini alarm dini sampel kecil, bukan pengganti evaluasi 10 tahun.
-- [ ] **`universe_membership` + `delistings`** dari unduhan **manual** halaman
-  IDX Stock List (bukan scraper baru) — prasyarat uji survivorship.
+- ⛔ **`universe_membership` + `delistings`** — **di luar cakupan** (keputusan
+  pemilik, 2026-11-12). Datanya hanya bisa didapat lewat unduhan manual IDX
+  Stock List atau sumber berbayar (EODHD); tanpa itu tabel keanggotaan tidak
+  bisa diisi dan uji survivorship tidak bisa diklaim.
 
 ### 4.3 Operasional produksi
 - [x] **Backup SQLite otomatis** — `store.backup_to()` (API backup SQLite),

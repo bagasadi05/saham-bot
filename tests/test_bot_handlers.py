@@ -528,7 +528,7 @@ def test_sinyal_beli_hanya_kandidat_beli():
     upd = _FakeUpdate("/sinyal beli")
     asyncio.run(bot.cmd_sinyal(upd, _ctx()))
     text = upd.effective_message.replies[-1][0]
-    assert "KANDIDAT BELI" in text and "BBCA" in text
+    assert "PERINGKAT ATAS" in text and "BBCA" in text
     assert "ANTM" not in text
 
 
@@ -537,7 +537,7 @@ def test_sinyal_jual_dan_detail_kode():
     jual = _FakeUpdate("/sinyal jual")
     asyncio.run(bot.cmd_sinyal(jual, _ctx()))
     text = jual.effective_message.replies[-1][0]
-    assert "HINDARI" in text and "ANTM" in text and "BBCA" not in text
+    assert "PERINGKAT BAWAH" in text and "ANTM" in text and "BBCA" not in text
 
     detail = _FakeUpdate("/sinyal bbca")
     bot._last_used.clear()
