@@ -287,10 +287,26 @@ tersedia (keputusan pemilik, 2026-11-12).
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **Uji live tingkat chat di host** | Data-level sudah diuji di mesin dev; pengiriman pesan butuh token host. **Pemilik memilih menjalankan sendiri** (2026-11-12); templat hasil ada di `deploy.md` | `/status`, `/sektor`, `/cek`, `/sinyal beli bagus` di chat asli |
+| 1 | **Uji live tingkat chat di host** | ⛔ **diblokir akses**: sesi ini tidak punya `BOT_TOKEN` host (env kosong, tidak ada di riwayat git), dan pemilik memilih menjalankan sendiri | Empat balasan ditempel di chat; templat di `deploy.md` |
 | 2 | **Menu & markup tetap di `bot.py`** | Bagian aplikasi (callback, tombol, entrypoint); bukan logika perintah | Tidak perlu dipindah |
 | 3 | **Rekam fixture asli** | Fixture sekarang sintetis | `python tools/record_fixtures.py` lalu commit hasilnya |
 | 4 | **Push & deploy** | Commit lokal belum di-push | `git push` + restart bot, cek `/status` |
+
+## Verifikasi runtime (diblokir akses, bukan pekerjaan kode)
+
+Uji tingkat chat — `/status`, `/sektor`, `/cek BBCA`, `/sinyal beli bagus`
+benar-benar terkirim di Telegram — **belum bisa dijalankan dari sesi ini**:
+
+- `BOT_TOKEN` di mesin ini kosong (panjang 0); `getMe` menghasilkan
+  `InvalidToken`. Token tidak ada di env, `.env`, maupun riwayat git.
+- Uji data-level sudah dijalankan (Yahoo/BEI sungguhan) dan hasilnya dicatat
+  di `deploy.md`: `/status` OK, `/sektor` jujur "tidak bisa dibaca" (BEI
+  memblokir IP ini), `/cek BBCA` OK dengan ROE hilang ditandai, `/sinyal beli
+  bagus` benar-benar tidak menemukan kandidat BELI.
+- Pemilik memilih menjalankan checklist chat di host (2026-11-12); templat
+  hasil ada di `deploy.md` bagian "Templat hasil uji chat".
+
+Status ini **tidak** dihitung selesai sampai empat balasan host ditempel.
 
 **Jangan dilakukan:** menaikkan bobot faktor karena `t` naif 2,68 (yang
 bertahan hanya `t_hac` 0,85); mengklaim survivorship bias tanpa tabel

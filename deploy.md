@@ -74,6 +74,9 @@ dijalankan di host yang punya token; langkahnya ada di tabel di atas.
 
 ### Templat hasil uji chat (tempel di chat/PR)
 
+> Status: **menunggu eksekusi pemilik di host** — sesi dev tidak punya
+> `BOT_TOKEN`, jadi empat balasan di bawah belum ada.
+
 ```
 # /status
 <tempel balasan /status>
