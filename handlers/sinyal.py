@@ -10,11 +10,12 @@ import asyncio
 import logging
 import re
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 
 from core import fundamental, kualitas as kvalmod, marketcal, store
 from core.reports import _rp, esc
+from core.textutil import rupiah
 
 log = logging.getLogger("sahambuddy")
 
@@ -42,33 +43,71 @@ def _sinyal_row(i: int, r: dict, kval: dict | None = None) -> str:
     return line
 
 
+# Peringatan kualitas dalam kata biasa untuk ringkasan: label teknis
+# ("ROE tipis") diterjemahkan supaya ringkasan bisa dibaca tanpa kamus.
+# Label lengkap + angka tetap ada di tampilan rincian.
+_PERINGATAN_POLOS = {
+    "merugi": "perusahaan sedang merugi",
+    "ROE tipis": "laba tipis",
+    "mahal": "harga sudah mahal",
+}
+
+
+def _peringatan(kval: dict | None) -> str:
+    """Peringatan satu frasa untuk ringkasan; kosong bila sehat/belum dinilai."""
+    if not kval or kval.get("ok") is not False:
+        return ""
+    label = kval.get("label") or ""
+    return _PERINGATAN_POLOS.get(label, label)
+
+
+def _sinyal_row_ringkas(i: int, r: dict, kval: dict | None = None) -> str:
+    """Satu baris ringkas: nama, harga, arah sebulan terakhir, satu peringatan.
+
+    Tanpa rel/RSI/entry/fundamental — angka detail pindah ke tampilan
+    rincian yang dibuka lewat tombol.
+    """
+    parts = [f"{i}. <b>{esc(r['ticker'])}</b> {rupiah(r.get('price'))}"]
+    ret = r.get("ret20d")
+    if ret is not None:
+        arah = "naik" if ret >= 0 else "turun"
+        parts.append(f"{arah} {abs(ret):.1f}% sebulan terakhir"
+                     .replace(".", ","))
+    line = " · ".join(parts)
+    warn = _peringatan(kval)
+    if warn:
+        line += f" ⚠️ {esc(warn)}"
+    return line
+
+
 def _sinyal_overview(rows: list[dict], meta: dict, deps,
                      kval: dict | None = None) -> str:
+    """Ringkasan satu layar: hanya intinya, kata biasa, tanpa jargon.
+
+    Angka detail (rel, RSI, entry/SL/TP, fundamental) pindah ke tampilan
+    rincian yang dibuka lewat tombol di overview_markup().
+    """
     buys = [r for r in rows if r["signal"] == "BELI"]
     sells = [r for r in rows if r["signal"] == "JUAL"]
-    holds = len(rows) - len(buys) - len(sells)
     # JUAL: yang terlemah dulu (rel terendah = paling layak dihindari),
     # supaya 3 besar yang tampil memang peringatan terkuat.
     sells.sort(key=lambda r: (r.get("rel_pct") if r.get("rel_pct") is not None
                               else 101, r["ticker"]))
-    out = ["📡 <b>SINYAL PASAR IDX</b>", f"<i>{esc(deps._scan_when(meta))}</i>", "",
-           f"🟢 BELI: <b>{len(buys)}</b> · 🔴 JUAL/HINDARI: <b>{len(sells)}</b>"
-           f" · ⚪ TAHAN: <b>{holds}</b>",
-           "<i>rel = peringkat 0–100, makin tinggi makin kuat · RSI di atas "
-           "70 = jenuh beli · 20h = perubahan 20 hari terakhir</i>"]
+    out = ["📡 <b>SINYAL PASAR IDX</b>",
+           f"<i>{esc(deps._scan_when(meta))}</i>", "",
+           f"Dari <b>{len(rows)}</b> saham: <b>{len(buys)}</b> layak dilirik · "
+           f"<b>{len(sells)}</b> sebaiknya dihindari"]
     if buys:
-        out += ["", "🟢 <b>Kandidat BELI</b> (peringkat relatif tertinggi)"]
-        out += [_sinyal_row(i + 1, r, (kval or {}).get(r["ticker"]))
+        out += ["", "🟢 <b>BELI — layak dilirik</b>"]
+        out += [_sinyal_row_ringkas(i + 1, r, (kval or {}).get(r["ticker"]))
                 for i, r in enumerate(buys[:3])]
     else:
         out += ["", "🟢 Tidak ada kandidat BELI yang lolos filter hari ini — "
                 "itu informasi, bukan kegagalan."]
     if sells:
-        out += ["", "🔴 <b>Hindari / JUAL bila punya</b> (tren &amp; peringkat lemah)"]
-        out += [_sinyal_row(i + 1, r) for i, r in enumerate(sells[:3])]
-    out += ["", "Rincian: <code>/sinyal beli</code> · <code>/sinyal jual</code> · "
-            "<code>/sinyal BBCA</code> · <code>/sinyal csv</code>",
-            "Perbarui data: <code>/scan</code>", "", deps._SINYAL_DISCLAIMER]
+        out += ["", "🔴 <b>JUAL — sebaiknya dihindari</b>"]
+        out += [_sinyal_row_ringkas(i + 1, r) for i, r in enumerate(sells[:3])]
+    out += ["", deps._SINYAL_DISCLAIMER]
     return "\n".join(out)
 
 
@@ -226,9 +265,138 @@ def _beli_bagus_text(rows: list[dict], meta: dict, deps,
     if belum:
         out += [f"❔ {len(belum)} kandidat belum dinilai (data fundamental "
                 "gagal diambil) — tidak ditampilkan, bukan berarti buruk."]
-    out += ["", "Semua sinyal: <code>/sinyal beli</code> · perbarui data: "
-            "<code>/scan</code>", "", deps._SINYAL_DISCLAIMER]
+    out += ["", deps._SINYAL_DISCLAIMER]
     return "\n".join(out)
+
+
+def overview_markup() -> InlineKeyboardMarkup:
+    """Tombol ringkasan: semua navigasi sinyal tanpa ketik perintah."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 Semua BELI", callback_data="sg:buy"),
+         InlineKeyboardButton("🔴 Semua JUAL", callback_data="sg:sell")],
+        [InlineKeyboardButton("✅ BELI berkualitas", callback_data="sg:good"),
+         InlineKeyboardButton("🔍 Detail saham",
+                              callback_data="pick:sinyal_detail")],
+        [InlineKeyboardButton("⬇️ Unduh CSV", callback_data="sg:csv"),
+         InlineKeyboardButton("🔄 Scan ulang", callback_data="sg:scan")],
+    ])
+
+
+def section_markup(sig: str) -> InlineKeyboardMarkup:
+    rows = []
+    if sig == "BELI":
+        rows.append([InlineKeyboardButton("✅ BELI berkualitas",
+                                          callback_data="sg:good")])
+    rows.append([InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov"),
+                 InlineKeyboardButton("🔄 Scan ulang",
+                                      callback_data="sg:scan")])
+    return InlineKeyboardMarkup(rows)
+
+
+def detail_markup(ticker: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Analisis lengkap",
+                              callback_data=f"sg:an:{ticker}")],
+        [InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov")],
+    ])
+
+
+def bagus_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 Semua BELI", callback_data="sg:buy"),
+         InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov")],
+    ])
+
+
+def empty_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Scan pasar sekarang",
+                              callback_data="sg:scan")],
+    ])
+
+
+_EMPTY_TEXT = (
+    "📡 Belum ada hasil pemindaian pasar.\n\n"
+    "Jalankan <code>/scan</code> dulu (±3–6 menit, sekali sehari). "
+    "Untuk cepat di watchlist, pakai <code>/saran</code>.")
+
+
+async def _overview_text(rows: list[dict], meta: dict, deps) -> str:
+    buys = [r for r in rows if r["signal"] == "BELI"]
+    buys.sort(key=lambda r: -(r.get("rel_pct") or -1))
+    kval = await deps._kualitas_map([r["ticker"] for r in buys[:3]])
+    return _sinyal_overview(rows, meta, deps, kval)
+
+
+async def nav(update: Update, cb_data: str, deps, job_queue=None):
+    """Navigasi tombol `sg:*`: ringkasan, rincian, CSV, scan, analisis.
+
+    Dipanggil dari menu_callback di bot.py. Ringkasan diedit di tempat
+    (pesan pendek); tampilan panjang dikirim sebagai pesan baru mengikuti
+    pola tombol Perbarui yang sudah ada.
+    """
+    msg = update.effective_message
+    if not msg:
+        return
+    rows = await asyncio.to_thread(store.load_market_scan)
+    meta = await asyncio.to_thread(store.market_scan_meta)
+    if not rows:
+        await deps._safe_edit(msg, _EMPTY_TEXT, parse_mode=ParseMode.HTML,
+                              reply_markup=empty_markup())
+        return
+    if cb_data == "sg:ov":
+        await deps._safe_edit(
+            msg, await _overview_text(rows, meta, deps),
+            parse_mode=ParseMode.HTML, reply_markup=overview_markup())
+        return
+    if cb_data == "sg:scan":
+        await deps._safe_edit(
+            msg, "⏳ Memindai seluruh pasar (±3–6 menit)...",
+            reply_markup=deps.home_markup())
+        await deps._do_scan(update, [], job_queue)
+        return
+    if cb_data == "sg:csv":
+        await msg.reply_document(
+            document=_sinyal_csv(rows), filename="sinyal_idx.csv",
+            caption=f"📡 Sinyal seluruh pasar — {len(rows)} emiten. "
+                    "Buka di Excel/Sheets. Bukan saran investasi.")
+        return
+    if cb_data.startswith("sg:an:"):
+        ticker = cb_data.split(":", 2)[2].upper()
+        if not ticker:
+            return
+        await deps._safe_edit(
+            msg, f"⏳ Menganalisis <b>{esc(ticker)}</b>...",
+            parse_mode=ParseMode.HTML, reply_markup=deps.home_markup())
+        await deps.run_menu_action(update, "analisis", [ticker])
+        return
+    if cb_data in ("sg:buy", "sg:sell", "sg:good"):
+        await deps._safe_edit(msg, "⏳ Memuat...",
+                              reply_markup=deps.home_markup())
+        if cb_data == "sg:buy":
+            buys = [r for r in rows if r["signal"] == "BELI"]
+            buys.sort(key=lambda r: -(r.get("rel_pct") or -1))
+            kval = await deps._kualitas_map([r["ticker"] for r in buys[:6]])
+            text = _sinyal_section(rows, "BELI", meta, deps, kval)
+            kb = section_markup("BELI")
+        elif cb_data == "sg:sell":
+            text = _sinyal_section(rows, "JUAL", meta, deps)
+            kb = section_markup("JUAL")
+        else:
+            buys = [r for r in rows if r["signal"] == "BELI"]
+            buys.sort(key=lambda r: -(r.get("rel_pct") or -1))
+            if not buys:
+                await deps.reply_long(
+                    msg, "🟢 Tidak ada kandidat BELI di snapshot hari ini — "
+                    "jadi tidak ada yang bisa disaring.",
+                    reply_markup=section_markup("BELI"))
+                return
+            pool = buys[:BELI_BAGUS_POOL]
+            kval = await deps._kualitas_map([r["ticker"] for r in pool])
+            text = _beli_bagus_text(pool, meta, deps, kval)
+            kb = bagus_markup()
+        await deps.reply_long(msg, text, reply_markup=kb)
+        return
 
 
 async def do(update: Update, args: list[str], deps):
@@ -236,10 +404,8 @@ async def do(update: Update, args: list[str], deps):
     meta = await asyncio.to_thread(store.market_scan_meta)
     if not rows:
         await update.effective_message.reply_text(
-            "📡 Belum ada hasil pemindaian pasar.\n\n"
-            "Jalankan <code>/scan</code> dulu (±3–6 menit, sekali sehari). "
-            "Untuk cepat di watchlist, pakai <code>/saran</code>.",
-            parse_mode=ParseMode.HTML)
+            _EMPTY_TEXT, parse_mode=ParseMode.HTML,
+            reply_markup=empty_markup())
         return
 
     if not await deps.cooldown_ok(update, "sinyal"):
@@ -259,7 +425,9 @@ async def do(update: Update, args: list[str], deps):
         buys = [r for r in rows if r["signal"] == "BELI"]
         buys.sort(key=lambda r: -(r.get("rel_pct") or -1))
         kval = await deps._kualitas_map([r["ticker"] for r in buys[:6]])
-        await deps.reply_long(msg, _sinyal_section(rows, "BELI", meta, deps, kval))
+        await deps.reply_long(msg, _sinyal_section(rows, "BELI", meta, deps,
+                                                   kval),
+                              reply_markup=section_markup("BELI"))
         return
     if arg in ("beli bagus", "bagus", "bagus beli", "beli berkualitas"):
         buys = [r for r in rows if r["signal"] == "BELI"]
@@ -271,10 +439,12 @@ async def do(update: Update, args: list[str], deps):
             return
         pool = buys[:BELI_BAGUS_POOL]
         kval = await deps._kualitas_map([r["ticker"] for r in pool])
-        await deps.reply_long(msg, _beli_bagus_text(pool, meta, deps, kval))
+        await deps.reply_long(msg, _beli_bagus_text(pool, meta, deps, kval),
+                              reply_markup=bagus_markup())
         return
     if arg in ("jual", "sell", "hindari"):
-        await deps.reply_long(msg, _sinyal_section(rows, "JUAL", meta, deps))
+        await deps.reply_long(msg, _sinyal_section(rows, "JUAL", meta, deps),
+                              reply_markup=section_markup("JUAL"))
         return
     if re.fullmatch(r"[A-Za-z]{4}", arg):
         found = next((r for r in rows if r["ticker"] == arg.upper()), None)
@@ -287,11 +457,10 @@ async def do(update: Update, args: list[str], deps):
             return
         kval = await deps._kualitas_map([found["ticker"]])
         await deps.reply_long(msg, _sinyal_detail(found, meta, deps,
-                                             kval.get(found["ticker"])))
+                                                  kval.get(found["ticker"])),
+                              reply_markup=detail_markup(found["ticker"]))
         return
-    buys = [r for r in rows if r["signal"] == "BELI"]
-    buys.sort(key=lambda r: -(r.get("rel_pct") or -1))
-    kval = await deps._kualitas_map([r["ticker"] for r in buys[:3]])
-    await deps.reply_long(msg, _sinyal_overview(rows, meta, deps, kval))
+    await deps.reply_long(msg, await _overview_text(rows, meta, deps),
+                          reply_markup=overview_markup())
 
 

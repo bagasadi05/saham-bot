@@ -59,6 +59,12 @@ coverage 80–81%.
 
 ### Diubah
 
+- **`/sinyal` ringkas + tombol navigasi** — ringkasan satu layar kini hanya
+  intinya (nama, harga, arah sebulan terakhir, satu peringatan kata biasa);
+  rel/RSI/entry/fundamental pindah ke tampilan rincian. Navigasi lewat tombol
+  (`sg:*`): semua BELI/JUAL, BELI berkualitas, detail saham (pemilih emiten),
+  unduh CSV, scan ulang, dan kembali ke ringkasan. `reply_long` kini menerima
+  `reply_markup` yang dipasang hanya di potongan terakhir.
 - **Retry pengiriman Telegram** — `send_with_retry()` untuk
   `NetworkError`/`TimedOut` di `reply_long`, `_safe_edit`, chart, dan hasil
   scan. `BadRequest` dikecualikan eksplisit karena di PTB ia subclass

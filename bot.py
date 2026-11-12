@@ -181,23 +181,30 @@ async def send_with_retry(call, *, tries: int = 3, base: float = 0.7,
     raise last
 
 
-async def reply_long(message, text: str, **kwargs) -> None:
+async def reply_long(message, text: str, reply_markup=None, **kwargs) -> None:
     """Kirim pesan panjang: Telegram menolak pesan >4096 karakter.
 
     Dibagi per baris; kalau satu bagian ditolak parser HTML, bagian itu dikirim
     ulang sebagai teks polos supaya laporan panjang (/saran lq45) tetap sampai.
-    Setiap bagian diulang saat NetworkError/TimedOut (P12).
+    Setiap bagian diulang saat NetworkError/TimedOut (P12). `reply_markup`
+    (bila ada) hanya dipasang di potongan terakhir supaya tombol tidak ganda.
     """
     kwargs.setdefault("parse_mode", ParseMode.HTML)
-    for part in split_message(text):
+    parts = split_message(text)
+    for idx, part in enumerate(parts):
+        kw = dict(kwargs)
+        if reply_markup is not None and idx == len(parts) - 1:
+            kw["reply_markup"] = reply_markup
         try:
             await send_with_retry(
-                lambda p=part: message.reply_text(p, **kwargs),
+                lambda p=part, k=kw: message.reply_text(p, **k),
                 what="kirim laporan")
         except Exception:
             log.warning("bagian pesan ditolak parser HTML — dikirim sebagai teks polos")
+            plain_kw = {k: v for k, v in kw.items() if k != "parse_mode"}
             await send_with_retry(
-                lambda p=part: message.reply_text(re.sub(r"<[^>]+>", "", p)),
+                lambda p=part, k=plain_kw: message.reply_text(
+                    re.sub(r"<[^>]+>", "", p), **k),
                 what="kirim laporan (teks polos)")
 
 
@@ -452,6 +459,7 @@ NEED_TICKER = {
     "backtest": "📈 Backtest",
     "beli": "🛒 Beli",
     "jual": "💰 Jual",
+    "sinyal_detail": "📡 Detail sinyal",
 }
 
 # chat_id -> aksi yang sedang menunggu input emiten
@@ -532,6 +540,7 @@ _MANUAL_PROMPT = {
     "backtest": "Ketik kode emiten untuk di-backtest (contoh: <code>BBCA</code>):",
     "beli": "Mau beli emiten apa? Ketik kodenya (contoh: <code>BBCA</code>):",
     "jual": "Mau jual emiten apa? Ketik kodenya (contoh: <code>TLKM</code>):",
+    "sinyal_detail": "Ketik kode emiten untuk detail sinyalnya (contoh: <code>BBCA</code>):",
     "watch_add": "Ketik kode emiten yang mau ditambah ke watchlist (contoh: <code>ANTM</code>):",
     "watch_del": "Ketik kode emiten yang mau dihapus dari watchlist:",
     "alert_add": "Ketik kode emiten untuk alarm:",
@@ -565,6 +574,8 @@ async def run_menu_action(update: Update, action: str, tickers: list[str]):
         await _do_tanya(update, tickers[0], "jual")
     elif action == "tanya_umum":
         await _do_tanya(update, tickers[0], "umum")
+    elif action == "sinyal_detail":
+        await _do_sinyal(update, tickers[:1])
     elif action == "saran":
         await _do_saran(update, from_menu=True)
     elif action == "saran_list":
@@ -670,6 +681,11 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=home_markup(),
         )
         await run_menu_action(update, action, [ticker])
+        return
+    if cb_data.startswith("sg:"):
+        _pending_clear(chat_id)
+        await sinyal_handler.nav(update, cb_data, sys.modules[__name__],
+                                 ctx.job_queue)
         return
     if cb_data.startswith("run:"):
         action = cb_data.split(":", 1)[1]
