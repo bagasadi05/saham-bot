@@ -174,7 +174,6 @@ def test_news_score_title_tanpa_dead_var():
 
 def test_marketcal_upcoming_dividend_exdate_parsing(monkeypatch):
     import datetime as dt
-    import types
     import yfinance as yf
     from core import marketcal
 

@@ -54,8 +54,10 @@ def test_berita_lama_bobotnya_lebih_kecil():
     now = datetime.now(timezone.utc)
     baru = [{"title": "laba melonjak", "link": "https://a", "date": now}]
     lama = [{"title": "laba melonjak", "link": "https://a", "date": now - timedelta(days=30)}]
-    # nilai absolut sama, tapi decay hanya memengaruhi bobot — pastikan tidak crash
-    assert news.news_sentiment(baru)["pct"] == news.news_sentiment(lama)["pct"]
+    # Nilai absolut sama, decay hanya memengaruhi bobot. Toleransi 0,2 poin
+    # untuk menghindari flaky di batas pembulatan (mis. 83,25 → 83,2/83,3).
+    assert news.news_sentiment(baru)["pct"] == pytest.approx(
+        news.news_sentiment(lama)["pct"], abs=0.2)
 
 
 def test_news_sentiment_kosong():

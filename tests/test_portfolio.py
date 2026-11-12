@@ -64,7 +64,7 @@ def test_kuintil_teratas_memang_prediksi_tertinggi():
     oos = make_oos(n_dates=20, n_tickers=10)
     d = oos["date"].iloc[0]
     g = oos[oos["date"] == d].sort_values("pred", ascending=False)
-    picks = set(g.head(2)["ticker"])          # 20% dari 10 emiten
+    # 20% dari 10 emiten = 2 prediksi teratas
     df = portfolio.one_phase(oos, q=0.2, step=20, offset=0)
     # gross periode pertama = rata-rata fwd dua prediksi teratas
     assert df["gross"].iloc[0] == pytest.approx(
