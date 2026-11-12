@@ -287,7 +287,7 @@ tersedia (keputusan pemilik, 2026-11-12).
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |
 |---|---|---|---|
-| 1 | **Uji live setelah deploy** | Semua tes offline; perilaku nyata belum dilihat | `/cek`, `/portofolio`, `/sinyal beli bagus`, `/sektor` di chat asli |
+| 1 | **Uji live tingkat chat di host** | Data-level sudah diuji di mesin dev (lihat deploy.md); pengiriman pesan butuh token host | `/status`, `/sektor`, `/cek`, `/sinyal beli bagus` di chat asli |
 | 2 | **Menu & markup tetap di `bot.py`** | Bagian aplikasi (callback, tombol, entrypoint); bukan logika perintah | Tidak perlu dipindah |
 | 3 | **Rekam fixture asli** | Fixture sekarang sintetis | `python tools/record_fixtures.py` lalu commit hasilnya |
 | 4 | **Push & deploy** | Commit lokal belum di-push | `git push` + restart bot, cek `/status` |

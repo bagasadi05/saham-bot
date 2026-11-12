@@ -155,6 +155,7 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
     facts: list[tuple[int, str]] = []
     items: list[dict] = []
     missing: list[str] = []
+    warnings: list[str] = []
 
     # 1. Tren ---------------------------------------------------------------
     if tech is None and wdir is None:
@@ -234,6 +235,9 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         if roe is not None:
             vals.append(f"ROE {roe:.1f}%".replace(".", ","))
         v_detail = " · ".join(vals)
+        if roe is None:
+            v_detail += " · ROE tidak tersedia"
+            warnings.append("ROE tidak tersedia — valuasi hanya dari PER/PBV")
         if sector:
             v_detail += f" · sektor {sector}"
         peer_ret = _num((peers or {}).get("ret20d"))
@@ -377,4 +381,5 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         "verdict": verdict,
         "reasons": reasons,
         "missing": missing,
+        "warnings": warnings,
     }

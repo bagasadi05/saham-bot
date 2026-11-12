@@ -144,3 +144,11 @@ def test_roe_nyaris_nol_tidak_disebut_murah():
     assert valuasi["status"] == "warn"
     assert "nyaris nol" in valuasi["headline"]
     assert out["verdict"] != "LAYAK"
+
+def test_roe_hilang_ditulis_terbuka():
+    """ROE gagal diambil tidak boleh membuat valuasi tampak lengkap."""
+    fund, fund_raw = _fund(per=11.0, pbv=2.3, roe=None)
+    out = _build(fund=fund, fund_raw=fund_raw)
+    valuasi = next(it for it in out["items"] if it["key"] == "valuasi")
+    assert "ROE tidak tersedia" in valuasi["detail"]
+    assert any("ROE tidak tersedia" in w for w in out["warnings"])

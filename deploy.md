@@ -57,6 +57,21 @@ barisnya — log JSON (`LOG_JSON=1`) memudahkan mencari perintah yang gagal:
 docker compose logs -f | jq 'select(.level=="ERROR")'
 ```
 
+### Hasil uji data (2026-11-12, mesin dev)
+
+Checklist dijalankan dengan data Yahoo/BEI sungguhan, tanpa polling Telegram
+(mesin ini tidak punya `BOT_TOKEN`; `getMe` → `InvalidToken`). Hasil:
+
+| Perintah | Hasil |
+|---|---|
+| `/status` | OK — uptime, cache, store, histori sinyal, status bursa tampil |
+| `/sektor` | Jujur gagal: payload BEI tidak memuat kode sektor yang dikenal (idx.co.id memblokir IP ini) |
+| `/cek BBCA` | OK — 6 bagian; ROE tidak tersedia ditulis terbuka; verdict TUNGGU |
+| `/sinyal beli bagus` | OK — "tidak ada kandidat BELI" (12 emiten sampel semuanya TAHAN oleh gate tren pasar) |
+
+Uji tingkat chat (pesan benar-benar terkirim ke Telegram) tetap harus
+dijalankan di host yang punya token; langkahnya ada di tabel di atas.
+
 ## Perintah sehari-hari
 
 | Tujuan | Perintah |
