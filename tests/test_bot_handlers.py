@@ -632,3 +632,72 @@ def test_full_market_scan_job_kirim_ke_chat_auto(monkeypatch):
     asyncio.run(bot.full_market_scan_job(app))
     assert app.bot.sent and app.bot.sent[0][0] == 200
     assert "SCREENER HARIAN" in app.bot.sent[0][1]
+
+
+# ------------------------------------------- rencana beli siap Stockbit
+def _plan_enriched():
+    return {
+        "ticker": "BBCA", "name": "Bank Central Asia Tbk.", "board": "Utama",
+        "sector": "Financials", "price": 8750.0, "atr": 150.0,
+        "rel_pct": 92.0, "rsi": 58.0, "ret20d": 3.2,
+        "value_avg20": 7_500_000_000.0, "vol_avg20": 900_000.0,
+        "per": 18.0, "pbv": 4.1, "roe": 21.0, "der": 20.0,
+        "div_yield": 2.5, "fund_pct": 20.0, "fund_label": "BAIK",
+        "fund_notes": ["ROE bagus"], "news_pct": 5.0,
+        "news_label": "NETRAL", "news_n": 2,
+        "news_top": [{"title": "Berita uji", "sent": 0.2,
+                      "source": "Contoh"}],
+        "reason": "Tren naik (MA20 > MA50, MACD+)",
+        "vetoes": [], "warnings": [], "grade": "A",
+    }
+
+
+def test_rencana_tanpa_snapshot_mengarahkan_scan():
+    upd = _FakeUpdate("/rencana")
+    asyncio.run(bot.cmd_rencana(upd, _ctx()))
+    text = upd.effective_message.replies[-1][0]
+    assert "Belum ada snapshot" in text and "/scan" in text
+
+
+def test_rencana_menyusun_lalu_memakai_cache(monkeypatch):
+    _seed_scan()
+
+    async def fake_build(rows, meta):
+        return {"enriched": [_plan_enriched()], "rejected": {},
+                "meta": meta, "pool": 1}
+
+    monkeypatch.setattr(bot, "_build_plan_payload", fake_build)
+    upd = _FakeUpdate("/rencana")
+    asyncio.run(bot.cmd_rencana(upd, _ctx()))
+    replies = [t for t, _ in upd.effective_message.replies]
+    assert any("Menyusun rencana" in t for t in replies)
+    final = replies[-1]
+    assert "RENCANA BELI" in final and "BBCA" in final
+    assert "LIMIT" in final and "lot" in final
+    assert "Stockbit" in final and "SL" in final and "TP" in final
+
+    key = "plan:v1:" + str(store.market_scan_meta()["scanned_at"])
+    assert store.load_plan_cache(key)
+
+    bot._last_used.clear()
+    upd2 = _FakeUpdate("/rencana")
+    asyncio.run(bot.cmd_rencana(upd2, _ctx()))
+    assert not any("Menyusun rencana" in t for t, _ in upd2
+                   .effective_message.replies)
+
+
+def test_rencana_teks_tanpa_kandidat_jujur():
+    _seed_scan()
+    text = bot._rencana_text(
+        {"picks": [], "rejected": {"likuiditas < Rp2 miliar/hari": 3},
+         "modal": 10_000_000},
+        {"rejected": {"bukan sinyal BELI": 5}}, store.market_scan_meta())
+    assert "Tidak ada kandidat" in text
+    assert "likuiditas" in text.lower()
+    assert "/sinyal beli" in text
+
+
+def test_format_rupiah_rencana_gaya_indonesia():
+    assert bot._money(1080) == "Rp1.080"
+    assert bot._money(1_944_000) == "Rp1.944.000"
+    assert bot._money(246.5) == "Rp246,50"

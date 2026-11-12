@@ -32,6 +32,7 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 - **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**. Urutan kandidat memakai **skor relatif 12 faktor** (`core/relatif.py`) yang lolos uji walk-forward (fallback ke PowerScore bila universe < 8 emiten) — lihat `/validasi`. Posisi dicatat **realistis**: masuk antrean `pending` dan baru dibeli di **harga open sesi berikutnya**, PnL dihitung setelah biaya beli 0,15% & jual 0,25%, ditutup otomatis setelah ±20 hari bursa, maksimal 5 posisi terbuka & 2 per sektor. `/saran list` = rekap posisi + rata-rata hasil net; riwayat menyimpan **20 posisi selesai terakhir** per chat agar rekap tidak membengkak.
 - **/scan** — pindai **seluruh pasar BEI** (±944 kode aktif, daftar API resmi IDX) secara borongan (batch Yahoo, ±2–3 menit). Hasil disimpan sebagai snapshot SQLite. Berjalan otomatis **16:15 WIB** setiap hari bursa untuk chat `/auto on` (matikan dengan `FULL_SCAN_AUTO=off`). Emiten tanpa data harga cukup (delisted/suspensi baru) dilewati dan jumlahnya dilaporkan — tidak diisi data palsu.
 - **/sinyal** — baca snapshot seluruh pasar: ringkasan **BELI / JUAL / TAHAN**, `/sinyal beli`, `/sinyal jual`, detail `/sinyal BBCA`, unduh `/sinyal csv`. Sinyal = filter tren (MA20/MA50/MACD/RSI) + peringkat relatif 12 faktor yang sama dengan `/saran`. Ini peringkat statistik tipis (IC OOS ±0,03), **bukan jaminan**; JUAL berarti hindari/kurangi bila punya — bukan instruksi short. Daftar universe + provenance ada di `data/idx_universe.json`; perbarui dengan `python tools/build_universe.py`.
+- **/rencana** (alias **/stockbit**) — paket beli siap eksekusi: ambil kandidat BELI terbaik dari snapshot seluruh pasar, saring **likuiditas ≥ Rp2 miliar/hari**, harga ≥ Rp50, bukan papan Pemantauan Khusus, dan veto fundamental/berita yang jelas bermasalah. Hasilnya: **grade A/B/C** (kelengkapan syarat, bukan probabilitas), entry **limit**, SL 1×ATR, TP 2×ATR, **lot & rupiah sesuai modal `/modal`** (risiko maks 1%/posisi, nilai posisi maks 20% per emiten, total alokasi maks 90% modal), plus cara pasang di Stockbit. `/rencana 5` untuk 5 kandidat, `/rencana refresh` untuk membangun ulang cache. Kalau tidak ada yang lolos, bot mengatakan tidak ada — bukan memaksa beli.
 - **/validasi** — menampilkan hasil uji statistik yang tersimpan: IC skor lama (antar-emiten & dalam satu emiten), excess return per rating, IC walk-forward per tahun, kalibrasi kuintil OOS, dan hasil uji Kronos. Angkanya hasil `research/evaluate.py`, bukan klaim.
 - **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, **±1–2 menit** — 4 emiten diproses paralel, progres bertahap tiap 10 emiten).
 - **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
@@ -132,6 +133,11 @@ Deployment 24/7 (Docker/systemd/supervisor) → lihat **[deploy.md](deploy.md)**
 | `FULL_SCAN_PERIOD` | periode data batch screener | `1y` |
 | `FULL_SCAN_CHUNK` | jumlah ticker per batch Yahoo | `80` |
 | `FULL_SCAN_PAUSE` | jeda antar batch (detik) | `1.0` |
+| `PLAN_MIN_VALUE` | minimum nilai transaksi harian (Rp) untuk `/rencana` | `2000000000` |
+| `PLAN_MIN_PRICE` | harga minimum kandidat `/rencana` | `50` |
+| `PLAN_MAX_POS_PCT` | nilai maksimum satu posisi terhadap modal | `0.20` |
+| `PLAN_MAX_PLANS` | jumlah rencana default (1–5) | `3` |
+| `PLAN_POOL` | kandidat yang diperkaya fundamental/berita | `16` |
 | `SAHAMBOT_CACHE` | folder cache harga (fallback saat Yahoo mati) | `temp/cache` |
 | `SAHAMBOT_LOCAL_MODEL` | folder model sentimen lokal | `models/indo-fin-roberta` |
 | `STORE_DB` | database SQLite data pribadi (watchlist/alert/paper) | `store.db` |

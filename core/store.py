@@ -6,6 +6,7 @@ memberi transaksi atomik; `store.json` lama dimigrasikan otomatis sekali.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import os
@@ -72,6 +73,8 @@ CREATE TABLE IF NOT EXISTS market_scan (
     sma50      REAL,
     sma200     REAL,
     atr        REAL,
+    vol_avg20  REAL,
+    value_avg20 REAL,
     tech_score REAL,
     rel_pct    REAL,
     signal     TEXT NOT NULL,
@@ -84,11 +87,25 @@ CREATE TABLE IF NOT EXISTS scan_meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS plan_cache (
+    cache_key  TEXT PRIMARY KEY,
+    trade_date TEXT,
+    created_at TEXT,
+    payload    TEXT NOT NULL
+);
 """
 
 
 _init_lock = threading.Lock()
 _ready_for: str | None = None
+
+
+def _migrate_scan_columns(conn):
+    """Tambah kolom snapshot baru pada DB lama tanpa menghapus data."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(market_scan)")}
+    for name, typ in (("vol_avg20", "REAL"), ("value_avg20", "REAL")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE market_scan ADD COLUMN {name} {typ}")
 
 
 def _ensure_ready(conn):
@@ -104,6 +121,7 @@ def _ensure_ready(conn):
         if _ready_for == STORE_DB:
             return
         conn.executescript(_SCHEMA)
+        _migrate_scan_columns(conn)
         _migrate_json(conn)
         _ready_for = STORE_DB
 
@@ -418,7 +436,8 @@ def counts() -> dict:
 _SCAN_COLS = (
     "ticker", "name", "board", "trade_date", "price", "ret1d", "ret5d",
     "ret20d", "rsi", "macd_hist", "sma20", "sma50", "sma200", "atr",
-    "tech_score", "rel_pct", "signal", "reason", "entry", "sl", "tp",
+    "vol_avg20", "value_avg20", "tech_score", "rel_pct", "signal", "reason",
+    "entry", "sl", "tp",
 )
 
 
@@ -463,3 +482,28 @@ def market_scan_counts() -> dict:
     with _db() as conn:
         return {r["signal"]: int(r["n"]) for r in conn.execute(
             "SELECT signal, COUNT(*) AS n FROM market_scan GROUP BY signal")}
+
+
+def save_plan_cache(cache_key: str, payload: dict, trade_date: str = ""):
+    """Simpan hasil pengayaan rencana beli (global, bukan per chat)."""
+    with _db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO plan_cache"
+            "(cache_key, trade_date, created_at, payload) VALUES (?,?,?,?)",
+            (str(cache_key), str(trade_date),
+             dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+             json.dumps(payload, ensure_ascii=False)))
+
+
+def load_plan_cache(cache_key: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT payload FROM plan_cache WHERE cache_key=?",
+            (str(cache_key),)).fetchone()
+    if not row:
+        return None
+    try:
+        data = json.loads(row["payload"])
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None

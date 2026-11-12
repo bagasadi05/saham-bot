@@ -206,6 +206,15 @@ def evaluate(frames: dict[str, pd.DataFrame],
         atr = _f(last.get("atr14"))
         ret1d = _f(last.get("ret1d"))
         ret20d = _f(last.get("ret20d"))
+        vol_avg20 = _f(last.get("vol_avg20"))
+        value_avg20 = None
+        try:
+            vol_avg20 = vol_avg20 or _f(
+                ind["volume"].rolling(20).mean().iloc[-1])
+            value_avg20 = _f(
+                (ind["close"] * ind["volume"]).rolling(20).mean().iloc[-1])
+        except Exception:
+            value_avg20 = None
         ret5d = None
         try:
             if len(ind) > 5:
@@ -247,6 +256,8 @@ def evaluate(frames: dict[str, pd.DataFrame],
             "sma50": round(sma50, 2) if sma50 is not None else None,
             "sma200": round(sma200, 2) if sma200 is not None else None,
             "atr": round(atr, 2) if atr is not None else None,
+            "vol_avg20": round(vol_avg20, 0) if vol_avg20 is not None else None,
+            "value_avg20": round(value_avg20, 0) if value_avg20 is not None else None,
             "tech_score": round(tech_pct, 1) if tech_pct is not None else None,
             "rel_pct": round(rel_pct, 1) if rel_pct is not None else None,
             "signal": signal,

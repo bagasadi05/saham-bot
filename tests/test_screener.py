@@ -107,6 +107,7 @@ def test_evaluate_skips_short_history_and_attaches_names():
     assert row["name"] == "PT Contoh"
     assert row["signal"] in screener.SIGNALS
     assert row["price"] and row["trade_date"] and row["reason"]
+    assert row["value_avg20"] and row["vol_avg20"]
 
 
 def test_evaluate_buy_rows_get_entry_sl_tp(monkeypatch):
@@ -175,7 +176,9 @@ def test_scan_saves_snapshot_then_uses_cache(tmp_store):
     assert res["meta"]["ok"] == len(frames)
     assert sum(res["counts"].values()) == len(frames)
     assert store.market_scan_counts() == res["counts"]
-    assert len(store.load_market_scan()) == len(frames)
+    saved = store.load_market_scan()
+    assert len(saved) == len(frames)
+    assert all(r.get("value_avg20") for r in saved)
     assert store.market_scan_meta()["trade_date"]
 
     res2 = screener.scan()          # snapshot hari ini sudah ada

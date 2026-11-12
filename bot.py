@@ -38,7 +38,7 @@ from telegram.error import BadRequest
 import config
 from core import (alerts, analysis, bandar, banding, btcache, data,
                   fundamental, learn, marketcal, news, powerscore,
-                  screener, saran as saranmod, store, universe)
+                  rencana, screener, saran as saranmod, store, universe)
 from core.chart import build_chart
 from core.textutil import split_message
 
@@ -171,7 +171,7 @@ def timed(fn):
 # permintaan jaringan.
 _COOLDOWN_SECONDS = {"analisis": 10, "banding": 10, "saran": 20,
                      "bandar": 20, "backtest": 60,
-                     "scan": 30, "sinyal": 5}
+                     "scan": 30, "sinyal": 5, "rencana": 20}
 _last_used: dict[tuple[int, str], float] = {}
 
 
@@ -561,8 +561,9 @@ def main_menu_markup() -> InlineKeyboardMarkup:
          InlineKeyboardButton("💰 Fundamental", callback_data="pick:fundamental")],
         [InlineKeyboardButton("💡 Saran", callback_data="run:saran"),
          InlineKeyboardButton("📈 Backtest", callback_data="pick:backtest")],
-        [InlineKeyboardButton("📡 Sinyal Pasar", callback_data="run:sinyal"),
-         InlineKeyboardButton("🔄 Scan Pasar", callback_data="run:scan")],
+        [InlineKeyboardButton("📡 Sinyal", callback_data="run:sinyal"),
+         InlineKeyboardButton("🎯 Rencana Beli", callback_data="run:rencana"),
+         InlineKeyboardButton("🔄 Scan", callback_data="run:scan")],
         [InlineKeyboardButton("🛒 Beli", callback_data="pick:beli"),
          InlineKeyboardButton("💰 Jual", callback_data="pick:jual")],
         [InlineKeyboardButton("👀 Watchlist", callback_data="run:watch"),
@@ -1401,6 +1402,8 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await run_menu_action(update, "bandar", [])
         elif action == "sinyal":
             await _do_sinyal(update, [])
+        elif action == "rencana":
+            await _do_rencana(update, [])
         elif action == "scan":
             await _do_scan(update, [], ctx.job_queue)
         else:
@@ -1473,6 +1476,7 @@ async def _post_init(app: Application):
             BotCommand("fundamental", "PER/PBV/ROE/dividen/DER"),
             BotCommand("saran", "Kandidat BUY harian + paper trading"),
             BotCommand("sinyal", "Sinyal BELI/JUAL seluruh pasar IDX"),
+            BotCommand("rencana", "Paket beli siap Stockbit + lot/SL/TP"),
             BotCommand("scan", "Pindai seluruh pasar sekarang (±3–6 menit)"),
             BotCommand("beli", "Tanya: layak beli? mis. /beli BBCA"),
             BotCommand("jual", "Tanya: layak jual? mis. /jual BBCA"),
@@ -2016,8 +2020,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "ukuran posisi (1% modal), dilacak otomatis; <b>/saran list</b>, "
         "<b>/saran lq45</b>, ubah modal: <b>/modal 10000000</b>\n"
         "• <b>/sinyal</b> — sinyal BELI/JUAL <b>seluruh pasar IDX</b> "
-        "(±950 emiten): <b>/sinyal beli</b>, <b>/sinyal jual</b>, "
+        "(±944 emiten): <b>/sinyal beli</b>, <b>/sinyal jual</b>, "
         "<b>/sinyal BBCA</b>, <b>/sinyal csv</b>; perbarui: <b>/scan</b>\n"
+        "• <b>/rencana</b> — paket beli <b>siap Stockbit</b>: kandidat paling "
+        "likuid &amp; berkualitas + lot sesuai modal, SL/TP, cara pasang\n"
         "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
         "• <b>/banding BBCA BBRI</b> — tabel PER/PBV/ROE/return + konteks IHSG\n"
         "• <b>/agenda BBCA</b> — ex-date dividen & aksi korporasi\n"
@@ -2624,6 +2630,259 @@ async def cmd_sinyal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_sinyal(update, tokens(update))
 
 
+PLAN_CONCURRENCY = 3
+
+
+def _rp_big(v) -> str:
+    """Nilai rupiah besar: Rp7,8 miliar / Rp750 juta."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if x >= 1e12:
+        return f"Rp{x / 1e12:.1f} triliun".replace(".", ",")
+    if x >= 1e9:
+        return f"Rp{x / 1e9:.1f} miliar".replace(".", ",")
+    if x >= 1e6:
+        return f"Rp{x / 1e6:.0f} juta"
+    return f"Rp{x:,.0f}".replace(",", ".")
+
+
+def _money(v) -> str:
+    """Rupiah gaya Indonesia: Rp1.080 / Rp1.944.000."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if abs(x - round(x)) < 1e-9:
+        return "Rp" + f"{x:,.0f}".replace(",", ".")
+    return ("Rp" + f"{x:,.2f}".replace(",", "X")
+            .replace(".", ",").replace("X", "."))
+
+
+def _plan_pct(v, sign: bool = True) -> str:
+    try:
+        txt = f"{float(v):+.1f}%" if sign else f"{float(v):.1f}%"
+        return txt.replace(".", ",")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _reject_summary(*counters, limit: int = 4) -> str:
+    from collections import Counter
+    total: Counter = Counter()
+    for c in counters:
+        if c:
+            total.update(c)
+    skip = {"bukan sinyal BELI", "di luar kandidat teratas"}
+    items = [(k, v) for k, v in total.most_common()
+             if v > 0 and k not in skip][:limit]
+    return " · ".join(f"{esc(k)} ({v})" for k, v in items)
+
+
+def _plan_card(p: dict, idx: int) -> str:
+    medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "▫️")
+    name = esc(p.get("name") or "")
+    head = f"{medal} <b>{esc(p['ticker'])}</b>"
+    if name:
+        head += f" — {name}"
+    lines = [
+        head,
+        f"Grade <b>{esc(p.get('grade') or '—')}</b> · "
+        f"{esc(p.get('sector') or 'sektor tidak tersedia')} · "
+        f"{esc(p.get('board') or '—')}",
+        f"Harga <b>{_money(p['price'])}</b>"
+        + (f" · rel {p['rel_pct']:.0f}" if p.get("rel_pct") is not None else "")
+        + (f" · RSI {p['rsi']:.0f}" if p.get("rsi") is not None else "")
+        + f" · 20h {_plan_pct(p.get('ret20d'))}"
+        + f" · likuiditas {_rp_big(p.get('value_avg20'))}/hari",
+    ]
+    fund_bits = []
+    for key, label, fmt in (("per", "PER", "{:.1f}"), ("pbv", "PBV", "{:.2f}"),
+                            ("roe", "ROE", "{:.1f}%"),
+                            ("div_yield", "Div", "{:.1f}%")):
+        val = p.get(key)
+        if val is not None:
+            fund_bits.append(f"{label} " + fmt.format(val).replace(".", ","))
+    lines.append("Fundamental: " + (" · ".join(fund_bits) if fund_bits
+                                    else "tidak tersedia"))
+    if p.get("news_pct") is not None:
+        news = (f"Berita: <b>{esc(p.get('news_label') or '—')}</b> "
+                f"({p['news_pct']:+.0f}")
+        if p.get("news_n"):
+            news += f" · {p['news_n']} berita"
+        news += ")"
+        if p.get("news_top"):
+            news += f" — <i>{esc(p['news_top'][0].get('title'))}</i>"
+        lines.append(news)
+    shares_txt = f"{p['shares']:,}".replace(",", ".")
+    risk_pct_txt = f"{p['risk_pct']:.2f}".replace(".", ",")
+    lines += [
+        "",
+        f"Beli <b>LIMIT ≤ {_money(p['entry'])}</b> · "
+        f"<b>{p['lots']} lot</b> ({shares_txt} lembar) ≈ "
+        f"<b>{_money(p['value'])}</b>",
+        f"SL <b>{_money(p['sl'])}</b> · TP <b>{_money(p['tp'])}</b> "
+        f"(net {_plan_pct(p.get('net_tp_pct'))}) · RR 1:{p['rr']:g}",
+        f"Risiko maks <b>{_money(p['real_risk'])}</b> "
+        f"({risk_pct_txt}% modal) · batalkan bila open di atas "
+        f"{_money(p['chase_above'])}",
+    ]
+    if p.get("reason"):
+        lines.append(f"Alasan: <i>{esc(p['reason'])}</i>")
+    warns = list(p.get("warnings") or [])[:2]
+    if warns:
+        lines.append("⚠️ " + esc("; ".join(
+            w.replace(".", ",") for w in warns)))
+    return "\n".join(lines)
+
+
+def _rencana_text(result: dict, payload: dict, meta: dict) -> str:
+    picks = result.get("picks") or []
+    modal = result.get("modal") or 0
+    out = [
+        "🎯 <b>RENCANA BELI — SIAP STOCKBIT</b>",
+        f"<i>{esc(_scan_when(meta))}</i>",
+        f"Modal rencana <b>{_money(modal)}</b> · risiko maks <b>1%</b>/posisi · "
+        f"nilai posisi maks <b>{int(rencana.MAX_POS_PCT * 100)}%</b>/emiten · "
+        f"total maks <b>{int(rencana.MAX_TOTAL_PCT * 100)}%</b> modal",
+        "",
+    ]
+    rejected = _reject_summary(payload.get("rejected"), result.get("rejected"))
+    if not picks:
+        out += [
+            "❌ <b>Tidak ada kandidat yang lolos semua saringan hari ini.</b>",
+            "",
+            "Itu bukan error — lebih baik tidak memaksa beli daripada "
+            "melanggar aturan likuiditas/risiko.",
+        ]
+        if rejected:
+            out += ["", f"Alasan terbanyak: {rejected}"]
+        else:
+            out += ["", "Alasan: tidak ada sinyal BELI yang lolos saringan."]
+        out += ["", "Cek kandidat yang lebih longgar: <code>/sinyal beli</code>",
+                "Perbarui data: <code>/scan</code>",
+                "Ubah modal: <code>/modal 10000000</code>",
+                "", _SINYAL_DISCLAIMER]
+        return "\n".join(out)
+
+    for i, p in enumerate(picks, 1):
+        out.append(_plan_card(p, i))
+        out.append("")
+    if modal:
+        total_cost = sum(p.get("buy_cost") or 0 for p in picks)
+        total_risk = sum(p.get("real_risk") or 0 for p in picks)
+        out += [
+            f"Total biaya beli (termasuk fee): <b>{_money(total_cost)}</b> "
+            f"({_plan_pct(total_cost / modal * 100, sign=False)} modal) · "
+            f"total risiko di SL <b>{_money(total_risk)}</b> "
+            f"({_plan_pct(total_risk / modal * 100, sign=False)} modal) · "
+            f"sisa cash <b>{_money(max(modal - total_cost, 0))}</b>",
+            "",
+        ]
+    if rejected:
+        out += [f"Yang gugur: {rejected}", ""]
+    out += [
+        "📱 <b>Cara pasang di Stockbit</b>",
+        "1. Cari kode → pilih <b>Limit Order</b>, bukan Market.",
+        "2. Isi lot sesuai rencana; harga beli ≤ entry. Jangan kejar harga.",
+        "3. Pasang alert harga di SL &amp; TP. Kalau Stockbit-mu tidak punya "
+        "stop order otomatis, eksekusi manual saat alert berbunyi.",
+        "4. Fee beli/jual (±0,15%/±0,25%) sudah diperhitungkan; "
+        "cek fee akunmu di Stockbit.",
+        "",
+        "Grade A/B/C = kelengkapan syarat, <b>bukan probabilitas</b>. Yang "
+        "tervalidasi hanya peringkat relatif (IC ±0,03); saringan likuiditas/"
+        "kualitas belum di-backtest sebagai satu paket. SL wajib dipakai.",
+        "", "Ubah modal rencana: <code>/modal 10000000</code>",
+        "", _SINYAL_DISCLAIMER,
+    ]
+    return "\n".join(out)
+
+
+async def _build_plan_payload(rows: list[dict], meta: dict) -> dict:
+    """Perkaya kandidat teratas dengan fundamental + berita (paralel dibatasi)."""
+    import datetime as _dt
+
+    cands, rejected = rencana.prefilter(rows)
+    sem = asyncio.Semaphore(PLAN_CONCURRENCY)
+
+    async def one(c: dict):
+        async with sem:
+            try:
+                analyzed = await gather_candidate(c["ticker"])
+            except Exception:
+                log.exception("pengayaan %s gagal", c.get("ticker"))
+                analyzed = None
+            try:
+                return rencana.enrich(c, analyzed)
+            except Exception:
+                log.exception("enrich %s gagal", c.get("ticker"))
+                return None
+
+    enriched = [x for x in await asyncio.gather(*(one(c) for c in cands))
+                if x]
+    return {"enriched": enriched, "rejected": dict(rejected),
+            "meta": meta, "pool": len(cands),
+            "built_at": _dt.datetime.now().isoformat(timespec="seconds")}
+
+
+async def _do_rencana(update: Update, args: list[str]):
+    rows = store.load_market_scan()
+    meta = store.market_scan_meta()
+    if not rows:
+        await update.effective_message.reply_text(
+            "🎯 Belum ada snapshot pasar.\n\n"
+            "Jalankan <code>/scan</code> dulu (±2–3 menit). Setelah itu "
+            "<code>/rencana</code> menyusun paket beli siap Stockbit.",
+            parse_mode=ParseMode.HTML)
+        return
+
+    top = rencana.MAX_PLANS
+    force = False
+    for a in args:
+        al = a.lower()
+        if al in ("refresh", "ulang", "paksa"):
+            force = True
+        elif al.isdigit():
+            top = max(1, min(5, int(al)))
+
+    key = "plan:v1:" + str(meta.get("scanned_at") or meta.get("trade_date") or "")
+    payload = None if force else store.load_plan_cache(key)
+    if payload is None:
+        cands, pre_rejected = rencana.prefilter(rows)
+        if not cands:
+            await reply_long(update.effective_message, _rencana_text(
+                {"picks": [], "rejected": {}, "modal": store.get_modal(
+                    update.effective_chat.id)},
+                {"rejected": dict(pre_rejected)}, meta))
+            return
+        await update.effective_message.reply_text(
+            f"⏳ Menyusun rencana dari <b>{len(cands)} kandidat</b> teratas "
+            "(fundamental + berita). Sekali per scan, ±20–60 detik…",
+            parse_mode=ParseMode.HTML)
+        payload = await _build_plan_payload(rows, meta)
+        if not payload.get("enriched"):
+            await update.effective_message.reply_text(
+                "❌ Gagal mengambil data fundamental/berita untuk kandidat. "
+                "Coba lagi nanti atau <code>/rencana refresh</code>.",
+                parse_mode=ParseMode.HTML)
+            return
+        store.save_plan_cache(key, payload, meta.get("trade_date", ""))
+
+    modal = store.get_modal(update.effective_chat.id)
+    result = rencana.finalize(payload.get("enriched") or [], modal, top)
+    await reply_long(update.effective_message,
+                     _rencana_text(result, payload, meta))
+
+
+async def cmd_rencana(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Paket beli siap Stockbit: /rencana [1-5|refresh]."""
+    if not await cooldown_ok(update, "rencana"):
+        return
+    await _do_rencana(update, tokens(update))
+
+
 def _scan_summary_text(res: dict, intro: str) -> str:
     m = res.get("meta") or {}
     counts = res.get("counts") or {}
@@ -2784,6 +3043,7 @@ def main():
     reg("watch", cmd_watch)
     reg(["saran", "recommendasi"], cmd_saran)
     reg(["sinyal", "signal"], cmd_sinyal)
+    reg(["rencana", "stockbit", "plan"], cmd_rencana)
     reg(["scan", "pindai"], cmd_scan)
     reg(["beli", "buy"], cmd_beli)
     reg(["jual", "sell"], cmd_jual)
