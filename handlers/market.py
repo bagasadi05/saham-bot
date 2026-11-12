@@ -174,8 +174,8 @@ async def build_plan_payload(rows: list[dict], meta: dict, deps) -> dict:
 
 async def do_paket(update: Update, args: list[str], deps):
     """Paket beli MULTI-emiten dari snapshot /scan: /paket [1-5|refresh]."""
-    rows = store.load_market_scan()
-    meta = store.market_scan_meta()
+    rows = await asyncio.to_thread(store.load_market_scan)
+    meta = await asyncio.to_thread(store.market_scan_meta)
     if not rows:
         await update.effective_message.reply_text(
             "🎯 Belum ada snapshot pasar.\n\n"
@@ -199,13 +199,16 @@ async def do_paket(update: Update, args: list[str], deps):
             top = max(1, min(5, int(al)))
 
     key = "plan:v1:" + str(meta.get("scanned_at") or meta.get("trade_date") or "")
-    payload = None if force else store.load_plan_cache(key)
+    payload = None
+    if not force:
+        payload = await asyncio.to_thread(store.load_plan_cache, key)
     if payload is None:
         cands, pre_rejected = rencana.prefilter(rows)
         if not cands:
             await deps.reply_long(update.effective_message, _rencana_text(
-                {"picks": [], "rejected": {}, "modal": store.get_modal(
-                    update.effective_chat.id)},
+                {"picks": [], "rejected": {},
+                 "modal": await asyncio.to_thread(
+                     store.get_modal, update.effective_chat.id)},
                 {"rejected": dict(pre_rejected)}, meta, deps))
             return
         await update.effective_message.reply_text(
@@ -219,9 +222,11 @@ async def do_paket(update: Update, args: list[str], deps):
                 "Coba lagi nanti atau <code>/paket refresh</code>.",
                 parse_mode=ParseMode.HTML)
             return
-        store.save_plan_cache(key, payload, meta.get("trade_date", ""))
+        await asyncio.to_thread(store.save_plan_cache, key, payload,
+                                meta.get("trade_date", ""))
 
-    modal = store.get_modal(update.effective_chat.id)
+    modal = await asyncio.to_thread(store.get_modal,
+                                    update.effective_chat.id)
     result = rencana.finalize(payload.get("enriched") or [], modal, top)
     await deps.reply_long(update.effective_message,
                      _rencana_text(result, payload, meta, deps))
@@ -271,7 +276,11 @@ def _parse_rupiah(tok: str) -> float | None:
 
 
 def _snapshot_row(ticker: str) -> dict:
-    """Baris snapshot /scan terakhir untuk satu ticker (kosong bila belum ada)."""
+    """Baris snapshot /scan terakhir untuk satu ticker (kosong bila belum ada).
+
+    Fungsi ini SINKRON dan harus dipanggil lewat `asyncio.to_thread` —
+    pemanggilnya di `do_rencana` sudah begitu.
+    """
     try:
         for r in store.load_market_scan():
             if (r.get("ticker") or "").upper() == ticker:
@@ -385,7 +394,7 @@ async def do_rencana(update: Update, args: list[str], deps):
                 + _RENCANA_USAGE)
             return
 
-    modal = store.get_modal(chat_id)
+    modal = await asyncio.to_thread(store.get_modal, chat_id)
     from_modal = budget is None
     if budget is None:
         budget = float(modal or 0)
@@ -415,7 +424,7 @@ async def do_rencana(update: Update, args: list[str], deps):
             parse_mode=ParseMode.HTML)
         return
 
-    row = _snapshot_row(head)
+    row = await asyncio.to_thread(_snapshot_row, head)
     cand = {
         "ticker": head,
         "rel_pct": row.get("rel_pct"),
@@ -444,9 +453,10 @@ async def run_scan_job(ctx: ContextTypes.DEFAULT_TYPE, deps):
         res = await scan_with_guard(True, deps, owns_flag=True)
         kval = {}
         if res is not None:
-            top = store.load_market_scan("BELI")[:5]
+            top = (await asyncio.to_thread(store.load_market_scan,
+                                           "BELI"))[:5]
             kval = await deps._kualitas_map([r["ticker"] for r in top])
-        txt = (deps._scan_summary_text(res, "✅ <b>Scan pasar selesai</b>", kval)
+        txt = (await deps._scan_summary_text(res, "✅ <b>Scan pasar selesai</b>", kval)
                if res is not None
                else "⏳ Scan lain sedang berjalan — permintaan ini dilewati. "
                     "Coba /scan lagi setelah yang sekarang selesai.")
@@ -494,13 +504,14 @@ async def scan_with_guard(force: bool, deps, *,
 async def do_scan(update: Update, args: list[str], job_queue, deps):
     force = any(a.lower() in ("paksa", "force", "ulang", "refresh")
                 for a in args)
-    meta = store.market_scan_meta()
+    meta = await asyncio.to_thread(store.market_scan_meta)
     today = marketcal.now_wib().date().isoformat()
     if not force and (meta.get("scanned_at") or "")[:10] == today:
+        counts = await asyncio.to_thread(store.market_scan_counts)
         await deps.reply_long(update.effective_message,
-                         deps._scan_summary_text({"cached": True,
+                         await deps._scan_summary_text({"cached": True,
                                              "meta": meta,
-                                             "counts": store.market_scan_counts()},
+                                             "counts": counts},
                                             "📡 <b>Screener pasar</b>"))
         return
     if deps._screener_running:

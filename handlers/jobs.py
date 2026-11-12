@@ -28,13 +28,14 @@ async def morning_scan(app: Application, deps):
     now = marketcal.now_wib()
     if not marketcal.is_trading_day(now.date()):
         return  # Sabtu/Minggu & libur bursa tidak jalan
-    for cid in store.get_auto_chats():
+    for cid in await asyncio.to_thread(store.get_auto_chats):
         try:
             txt = await deps.saran_scan_text(int(cid))
             if txt is None:
                 continue  # semua sumber gagal — jangan spam error
             recap = []
-            for t in store.get_watchlist(cid)[:10]:
+            for t in (await asyncio.to_thread(store.get_watchlist,
+                                              cid))[:10]:
                 try:
                     res = await deps.fetch_and_analyze(t)
                     recap.append(deps.build_quick(res))
@@ -55,13 +56,14 @@ async def morning_scan(app: Application, deps):
 
 async def check_band_alerts(app: Application, bars_fn, deps) -> int:
     """[P10] Kabari chat /auto on bila band PowerScore saham watchlist berubah."""
-    auto_chats = store.get_auto_chats()
+    auto_chats = await asyncio.to_thread(store.get_auto_chats)
     if not auto_chats:
         return 0
     sent = 0
     analysis_cache: dict[str, tuple[dict, dict, dict] | None] = {}
     for cid in auto_chats:
-        for sym in store.get_watchlist(cid)[:15]:
+        for sym in (await asyncio.to_thread(store.get_watchlist,
+                                            cid))[:15]:
             try:
                 if sym not in analysis_cache:
                     df = await asyncio.to_thread(bars_fn, sym)
@@ -83,7 +85,8 @@ async def check_band_alerts(app: Application, bars_fn, deps) -> int:
                 if not cached:
                     continue
                 pw, snap, _sc = cached
-                prev_band = store.update_score_band(cid, sym, pw["rating"])
+                prev_band = await asyncio.to_thread(
+                    store.update_score_band, cid, sym, pw["rating"])
                 if not prev_band:
                     continue
                 msg_txt = (
@@ -110,7 +113,8 @@ async def fill_open(app: Application, deps):
     if not marketcal.is_trading_day(marketcal.now_wib().date()):
         return
     pending: dict[str, set[str]] = {}
-    for chat_id, symbol, rec in store.all_papers():
+    for chat_id, symbol, rec in await asyncio.to_thread(
+            store.all_papers):
         if rec.get("status") == "pending":
             pending.setdefault(chat_id, set()).add(symbol)
     for chat_id, symbols in pending.items():
@@ -124,8 +128,9 @@ async def fill_open(app: Application, deps):
             if df is not None:
                 bars_map[symbol] = df
         try:
+            modal = await asyncio.to_thread(store.get_modal, chat_id)
             msgs = await asyncio.to_thread(
-                saranmod.fill_pending, chat_id, bars_map, store.get_modal(chat_id))
+                saranmod.fill_pending, chat_id, bars_map, modal)
             for msg in msgs:
                 await app.bot.send_message(int(chat_id), msg, parse_mode=ParseMode.HTML)
         except Exception:
@@ -211,14 +216,16 @@ async def scan_alerts(app: Application, deps):
         return cache[symbol]
 
     # 1) alert — dikirim hanya saat kondisi berubah (False → True), bukan tiap 30 menit
-    for chat_id, symbol, kinds in store.alert_subscriptions():
+    for chat_id, symbol, kinds in await asyncio.to_thread(
+            store.alert_subscriptions):
         try:
             df = await asyncio.to_thread(bars, symbol)
             if df is None:
                 continue
             ind = await asyncio.to_thread(analysis.compute_indicators, df)
             hit = alerts.match_kinds(alerts.check_triggers(ind), kinds)
-            fresh = store.update_alert_state(chat_id, symbol, hit)
+            fresh = await asyncio.to_thread(
+                store.update_alert_state, chat_id, symbol, hit)
             if not fresh:
                 continue
             snap = analysis.last_snapshot(ind)
@@ -233,7 +240,8 @@ async def scan_alerts(app: Application, deps):
 
     # 2) paper trading — isi antrean 'pending' lalu cek SL/TP posisi terbuka
     papers: dict[str, dict[str, dict]] = {}
-    for chat_id, symbol, rec in store.all_papers():
+    for chat_id, symbol, rec in await asyncio.to_thread(
+            store.all_papers):
         papers.setdefault(chat_id, {})[symbol] = rec
     for chat_id, recs in papers.items():
         need = [s for s, r in recs.items() if r.get("status") in ("pending", "open")]
@@ -248,7 +256,7 @@ async def scan_alerts(app: Application, deps):
                 continue
             if df is not None:
                 bars_map[symbol] = df
-        modal = store.get_modal(chat_id)
+        modal = await asyncio.to_thread(store.get_modal, chat_id)
         msgs: list[str] = []
         if any(r.get("status") == "pending" for r in recs.values()):
             msgs += await asyncio.to_thread(saranmod.fill_pending, chat_id, bars_map, modal)
@@ -305,10 +313,10 @@ async def full_market_scan_job(app: Application, deps):
             f"{res['meta'].get('failed')} kode gagal dari "
             f"{res['meta'].get('universe', '?')}. Kemungkinan rate-limit "
             "Yahoo — cek /status.")
-    chats = store.get_auto_chats()
+    chats = await asyncio.to_thread(store.get_auto_chats)
     if not chats:
         return
-    txt = deps._scan_summary_text(res, "📡 <b>SCREENER HARIAN SELURUH PASAR</b>")
+    txt = await deps._scan_summary_text(res, "📡 <b>SCREENER HARIAN SELURUH PASAR</b>")
     for cid in chats:
         for part in split_message(txt):
             try:

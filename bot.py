@@ -684,7 +684,7 @@ async def _do_saran(update: Update, sub: str = "", list_only: bool = False,
 
         txt = await saran_scan_text(chat_id, saranmod.LQ45, _prog)
     else:
-        wl = store.get_watchlist(chat_id)
+        wl = await asyncio.to_thread(store.get_watchlist, chat_id)
         universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
         if not from_menu:
             await msg.reply_text(
@@ -708,7 +708,7 @@ async def _do_saran(update: Update, sub: str = "", list_only: bool = False,
 async def _do_watch_list(update: Update):
     msg = update.effective_message
     chat_id = update.effective_chat.id
-    wl = store.get_watchlist(chat_id)
+    wl = await asyncio.to_thread(store.get_watchlist, chat_id)
     if not wl:
         await msg.reply_text(
             "Watchlist masih kosong. Tambahkan dulu lewat tombol ➕ Tambah.",
@@ -738,7 +738,7 @@ async def _do_watch_add(update: Update, ticker: str, from_menu: bool = True):
             reply_markup=watch_menu_markup() if from_menu else None,
         )
         return
-    wl_now = store.get_watchlist(chat_id)
+    wl_now = await asyncio.to_thread(store.get_watchlist, chat_id)
     if symbol not in wl_now and len(wl_now) >= MAX_WATCH:
         await msg.reply_text(
             f"❌ Watchlist maksimal {MAX_WATCH} emiten. Hapus dulu: "
@@ -747,7 +747,7 @@ async def _do_watch_add(update: Update, ticker: str, from_menu: bool = True):
             reply_markup=watch_menu_markup() if from_menu else None,
         )
         return
-    ok, wl = store.watchlist_add(chat_id, symbol)
+    ok, wl = await asyncio.to_thread(store.watchlist_add, chat_id, symbol)
     prefix = "✅ Ditambahkan" if ok else "📌 Sudah ada di"
     await msg.reply_text(
         f"{prefix} watchlist: {esc(', '.join(wl))}",
@@ -762,7 +762,7 @@ async def _do_watch_del(update: Update, ticker: str, from_menu: bool = True):
         symbol = data.normalize_ticker(ticker).replace(".JK", "")
     except ValueError:
         symbol = ticker.strip().upper().replace(".JK", "")
-    ok, wl = store.watchlist_remove(update.effective_chat.id, symbol)
+    ok, wl = await asyncio.to_thread(store.watchlist_remove, update.effective_chat.id, symbol)
     prefix = "🗑️ Dihapus" if ok else "❓ Tidak ditemukan di"
     await msg.reply_text(
         f"{prefix} watchlist. Sisanya: {esc(', '.join(wl)) or '(kosong)'}",
@@ -773,7 +773,7 @@ async def _do_watch_del(update: Update, ticker: str, from_menu: bool = True):
 
 async def _do_alert_list(update: Update, from_menu: bool = True):
     msg = update.effective_message
-    al = store.get_alerts(update.effective_chat.id)
+    al = await asyncio.to_thread(store.get_alerts, update.effective_chat.id)
     if al:
         txt = "\n".join(
             f"  • <b>{esc(s)}</b>: {esc(', '.join(sorted(k)))}" for s, k in al.items()
@@ -815,10 +815,10 @@ async def _do_alert_add(update: Update, ticker: str, kinds: set[str] | None = No
             reply_markup=alert_menu_markup() if from_menu else None,
         )
         return
-    saved = store.set_alert(chat_id, symbol, kinds)
-    wl_now = store.get_watchlist(chat_id)
+    saved = await asyncio.to_thread(store.set_alert, chat_id, symbol, kinds)
+    wl_now = await asyncio.to_thread(store.get_watchlist, chat_id)
     if symbol in wl_now or len(wl_now) < MAX_WATCH:
-        store.watchlist_add(chat_id, symbol)
+        await asyncio.to_thread(store.watchlist_add, chat_id, symbol)
     kind_txt = ", ".join(sorted(saved))
     await msg.reply_text(
         f"🔔 Alert untuk <b>{esc(symbol)}</b> aktif: <code>{esc(kind_txt)}</code>\n"
@@ -1000,7 +1000,9 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             msg,
             f"{esc(label)} — pilih emiten:",
             parse_mode=ParseMode.HTML,
-            reply_markup=ticker_pick_markup(action, store.get_watchlist(chat_id)),
+            reply_markup=ticker_pick_markup(
+                action, await asyncio.to_thread(store.get_watchlist,
+                                                chat_id)),
         )
         return
     if cb_data.startswith("manual:"):
@@ -1103,10 +1105,11 @@ async def menu_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             else:
                 pick_action = "beli" if focus != "jual" else "jual"
                 label = "🛒 Beli" if pick_action == "beli" else "💰 Jual"
+                wl = await asyncio.to_thread(store.get_watchlist,
+                                             chat_id)
                 await update.effective_message.reply_text(
                     f"{label} — pilih emiten:",
-                    reply_markup=ticker_pick_markup(
-                        pick_action, store.get_watchlist(chat_id)))
+                    reply_markup=ticker_pick_markup(pick_action, wl))
         return
     if ALLOWED_IDS and update.effective_user.id not in ALLOWED_IDS:
         _pending_clear(chat_id)
@@ -1268,9 +1271,9 @@ async def saran_scan_text(chat_id: int, universe: list[str] | None = None,
     sesuai universe, dan satu emiten gagal tidak membatalkan sisanya.
     Return teks ringkasan, atau None kalau semua sumber gagal."""
     if universe is None:
-        wl = store.get_watchlist(chat_id)
+        wl = await asyncio.to_thread(store.get_watchlist, chat_id)
         universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
-    modal = store.get_modal(chat_id)
+    modal = await asyncio.to_thread(store.get_modal, chat_id)
     total = len(universe)
     done = 0
     report_at = 0
@@ -1305,7 +1308,8 @@ async def saran_scan_text(chat_id: int, universe: list[str] | None = None,
         return None
 
     # posisi yang masih hidup ikut dihitung supaya batas portofolio dihormati
-    open_recs = {t: r for t, r in store.get_paper(chat_id).items()
+    paper = await asyncio.to_thread(store.get_paper, chat_id)
+    open_recs = {t: r for t, r in paper.items()
                  if r.get("status") in ("open", "pending")}
     result = saranmod.pick(analyzed, modal, open_recs)  # sizing pakai modal latihan
     paper_msgs = saranmod.update_paper(chat_id, latest)  # notifikasi TP/SL posisi lama
@@ -1593,7 +1597,7 @@ async def cmd_modal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """[P5] Set/ubah modal latihan paper trading (default Rp10 juta)."""
     args = tokens(update)
     chat_id = update.effective_chat.id
-    cur = store.get_modal(chat_id)
+    cur = await asyncio.to_thread(store.get_modal, chat_id)
     if not args:
         await update.effective_message.reply_text(
             f"💼 Modal latihan kamu: <b>{saranmod.fmt(cur)}</b>\n"
@@ -1614,7 +1618,7 @@ async def cmd_modal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(
             "❌ Modal wajar antara Rp100 ribu dan Rp10 miliar (latihan, kan?)")
         return
-    store.set_modal(chat_id, val)
+    await asyncio.to_thread(store.set_modal, chat_id, val)
     await update.effective_message.reply_text(
         f"💼 Modal latihan diubah: <b>{saranmod.fmt(cur)}</b> → "
         f"<b>{saranmod.fmt(val)}</b>\n"
@@ -1671,7 +1675,7 @@ async def cmd_watch(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = tokens(update)
     chat_id = update.effective_chat.id
     if not args:
-        wl = store.get_watchlist(chat_id)
+        wl = await asyncio.to_thread(store.get_watchlist, chat_id)
         if not wl:
             await update.effective_message.reply_text(
                 "👀 Watchlist masih kosong — pilih:",
@@ -1723,7 +1727,7 @@ async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             symbol = data.normalize_ticker(rest[0]).replace(".JK", "")
         except ValueError:
             symbol = rest[0].strip().upper().replace(".JK", "")
-        ok = store.remove_alert(chat_id, symbol)
+        ok = await asyncio.to_thread(store.remove_alert, chat_id, symbol)
         await update.effective_message.reply_text(
             "🗑️ Alert dihapus." if ok else "❓ Alert untuk emiten itu tidak ada.")
     elif sub in ("list",):
@@ -1736,11 +1740,12 @@ async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args = tokens(update)
     if not args:
+        wl = await asyncio.to_thread(store.get_watchlist,
+                                     update.effective_chat.id)
         await update.effective_message.reply_text(
             "📈 Backtest — pilih emiten:\n"
             "Tiap hari 5 tahun terakhir bot berteori, lalu dicek hasil 20 hari kemudian.",
-            reply_markup=ticker_pick_markup(
-                "backtest", store.get_watchlist(update.effective_chat.id)))
+            reply_markup=ticker_pick_markup("backtest", wl))
         return
     await _do_backtest(update, args[0], from_menu=False)
 
@@ -1749,10 +1754,11 @@ async def cmd_beli(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Jawab 'layak beli gak?' untuk satu emiten."""
     args = tokens(update)
     if not args:
+        wl = await asyncio.to_thread(store.get_watchlist,
+                                     update.effective_chat.id)
         await update.effective_message.reply_text(
             "🛒 Beli — pilih emiten:",
-            reply_markup=ticker_pick_markup(
-                "beli", store.get_watchlist(update.effective_chat.id)))
+            reply_markup=ticker_pick_markup("beli", wl))
         return
     await _do_tanya(update, args[0], "beli")
 
@@ -1761,10 +1767,11 @@ async def cmd_jual(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Jawab 'layak jual gak?' untuk satu emiten (sudut pandang yang pegang)."""
     args = tokens(update)
     if not args:
+        wl = await asyncio.to_thread(store.get_watchlist,
+                                     update.effective_chat.id)
         await update.effective_message.reply_text(
             "💰 Jual — pilih emiten:",
-            reply_markup=ticker_pick_markup(
-                "jual", store.get_watchlist(update.effective_chat.id)))
+            reply_markup=ticker_pick_markup("jual", wl))
         return
     await _do_tanya(update, args[0], "jual")
 
@@ -1773,14 +1780,15 @@ async def cmd_jual(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def check_dividend_reminders(app: Application, today: date | None = None) -> int:
     """[P10] Pengingat H-3 & H-1 ex-date dividen watchlist untuk chat /auto on."""
-    auto_chats = store.get_auto_chats()
+    auto_chats = await asyncio.to_thread(store.get_auto_chats, )
     if not auto_chats:
         return 0
     today = today or marketcal.now_wib().date()
     sent = 0
     cal_cache: dict[str, dict | None] = {}
     for cid in auto_chats:
-        for sym in store.get_watchlist(cid)[:15]:
+        for sym in (await asyncio.to_thread(store.get_watchlist,
+                                            cid))[:15]:
             try:
                 if sym not in cal_cache:
                     cal_cache[sym] = await asyncio.to_thread(
@@ -1792,7 +1800,9 @@ async def check_dividend_reminders(app: Application, today: date | None = None) 
                 if days_left not in (3, 1):
                     continue
                 ex_iso = info["ex_date"].isoformat()
-                if not store.mark_div_reminder(cid, sym, ex_iso, days_left):
+                ok_rem = await asyncio.to_thread(
+                    store.mark_div_reminder, cid, sym, ex_iso, days_left)
+                if not ok_rem:
                     continue
                 amt = info.get("amount")
                 amt_txt = f" (estimasi {fmt_rp(amt)}/lembar)" if amt else ""
@@ -1816,19 +1826,20 @@ async def cmd_auto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sub = args[0].lower() if args else ""
     chat_id = update.effective_chat.id
     if sub in ("on", "aktif", "nyala"):
-        store.set_auto(chat_id, True)
+        await asyncio.to_thread(store.set_auto, chat_id, True)
         await update.effective_message.reply_text(
             "🌅 <b>Auto-scan pagi: AKTIF</b>\n"
             " Tiap hari bursa ±08:30 WIB: ringkasan /saran + rekap watchlist "
             "dikirim otomatis di chat ini.\n"
             " Matikan: <code>/auto off</code>", parse_mode=ParseMode.HTML)
     elif sub in ("off", "mati", "nonaktif"):
-        store.set_auto(chat_id, False)
+        await asyncio.to_thread(store.set_auto, chat_id, False)
         await update.effective_message.reply_text(
             "🌙 Auto-scan pagi <b>mati</b>. Kapan pun nyala lagi: <code>/auto on</code>.",
             parse_mode=ParseMode.HTML)
     else:
-        status = "AKTIF ✅" if store.get_auto(chat_id) else "mati (default)"
+        auto_on = await asyncio.to_thread(store.get_auto, chat_id)
+        status = "AKTIF ✅" if auto_on else "mati (default)"
         await update.effective_message.reply_text(
             f"🌅 Auto-scan pagi di chat ini: <b>{status}</b>\n"
             "Nyalakan: <code>/auto on</code> — Matikan: <code>/auto off</code>\n"
@@ -2079,8 +2090,8 @@ async def cmd_sektor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_sektor(update, tokens(update))
 
 
-def _scan_summary_text(res: dict, intro: str,
-                       kval: dict | None = None) -> str:
+async def _scan_summary_text(res: dict, intro: str,
+                             kval: dict | None = None) -> str:
     m = res.get("meta") or {}
     counts = res.get("counts") or {}
     if res.get("cached"):
@@ -2090,8 +2101,8 @@ def _scan_summary_text(res: dict, intro: str,
                 f"🔴 JUAL <b>{counts.get('JUAL', 0)}</b> · "
                 f"⚪ TAHAN <b>{counts.get('TAHAN', 0)}</b>\n\n"
                 "Lihat: <code>/sinyal</code>")
-    buys = store.load_market_scan("BELI")[:5]
-    sells = store.load_market_scan("JUAL")[:5]
+    buys = (await asyncio.to_thread(store.load_market_scan, "BELI"))[:5]
+    sells = (await asyncio.to_thread(store.load_market_scan, "JUAL"))[:5]
     skipped = int(m.get("skipped") or 0)
     failed = int(m.get("failed") or 0)
     out = [intro, "",

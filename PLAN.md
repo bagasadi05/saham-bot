@@ -2,7 +2,7 @@
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-12 (sesi lanjutan)
 > **Baseline terukur sesi ini:** `517 passed` · `ruff check .` bersih ·
-> coverage `TOTAL 80%` · `bot.py` 2.296 baris +
+> coverage `TOTAL 80%` · `bot.py` 2.310 baris +
 > `handlers/` (analisis, cek, info, jobs, market, portfolio, sektor,
 > sinyal) + `core/reports.py` + `core/guards.py`.
 >
@@ -227,9 +227,12 @@ memuat CI, hysteresis, dan CV. ⬜ uji filter gabungan belum.
   entrypoint. Seam tes (`run_menu_action`, `build_chart`, `TMP_DIR`,
   `ALLOWED_IDS`, `MAX_WATCH`, `_screener_running`) tetap bekerja karena
   diakses lewat `deps` atau tetap di `bot`.
-- [ ] **Non-blocking SQLite** — bungkus sisa panggilan `store.*` di handler
-  async dengan `asyncio.to_thread` (sudah: `/validasi`, `/jejak`, dan
-  `/cek`; menyusul di handler lain).
+- [x] **Non-blocking SQLite** — seluruh panggilan `store.*` di
+  `handlers/*.py` **dan** `bot.py` sekarang lewat `asyncio.to_thread`
+  (grep `store\.[a-z_]+(` tidak menyisakan panggilan sinkron di jalur
+  async). Satu pengecualian disengaja: `_snapshot_row` tetap fungsi
+  sinkron dan selalu dipanggil lewat `asyncio.to_thread` — didokumentasi
+  di docstring-nya.
 
 ### 4.2 Kualitas kode, testing & CI
 - [x] **CI**: matriks 3.12/3.13, `ruff check .`, `pip check`, coverage gate

@@ -25,7 +25,8 @@ async def do_analisis(update: Update, tickers: list[str], deps):
         return
     msg = update.effective_message
     chat_id = update.effective_chat.id if update.effective_chat else None
-    wl = store.get_watchlist(chat_id) if chat_id is not None else []
+    wl = (await asyncio.to_thread(store.get_watchlist, chat_id)
+          if chat_id is not None else [])
     mkt = await asyncio.to_thread(banding.market_context)
     for t in tickers[:5]:
         try:
@@ -100,7 +101,9 @@ async def do_analisis(update: Update, tickers: list[str], deps):
 async def do_skor(update: Update, tickers: list[str], deps,
                         from_menu: bool = False):
     msg = update.effective_message
-    args = tickers or store.get_watchlist(update.effective_chat.id) or ["BBCA"]
+    wl = await asyncio.to_thread(store.get_watchlist,
+                                 update.effective_chat.id)
+    args = tickers or wl or ["BBCA"]
     lines = []
     for t in args[:8]:
         try:
@@ -167,10 +170,11 @@ async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
 async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     args = deps.tokens(update)
     if not args:
+        wl = await asyncio.to_thread(store.get_watchlist,
+                                     update.effective_chat.id)
         await update.effective_message.reply_text(
             "📊 Analisis — pilih emiten:",
-            reply_markup=deps.ticker_pick_markup(
-                "analisis", store.get_watchlist(update.effective_chat.id)))
+            reply_markup=deps.ticker_pick_markup("analisis", wl))
         return
     await do_analisis(update, args, deps)
 
@@ -178,9 +182,10 @@ async def cmd_analisis(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
 async def cmd_skor(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     args = deps.tokens(update)
     if not args:
+        wl = await asyncio.to_thread(store.get_watchlist,
+                                     update.effective_chat.id)
         await update.effective_message.reply_text(
             "⚡ Skor — pilih emiten:",
-            reply_markup=deps.ticker_pick_markup(
-                "skor", store.get_watchlist(update.effective_chat.id)))
+            reply_markup=deps.ticker_pick_markup("skor", wl))
         return
     await do_skor(update, args, deps)

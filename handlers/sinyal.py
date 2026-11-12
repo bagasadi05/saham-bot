@@ -230,8 +230,8 @@ def _beli_bagus_text(rows: list[dict], meta: dict, deps,
 
 
 async def do(update: Update, args: list[str], deps):
-    rows = store.load_market_scan()
-    meta = store.market_scan_meta()
+    rows = await asyncio.to_thread(store.load_market_scan)
+    meta = await asyncio.to_thread(store.market_scan_meta)
     if not rows:
         await update.effective_message.reply_text(
             "📡 Belum ada hasil pemindaian pasar.\n\n"

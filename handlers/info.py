@@ -96,8 +96,8 @@ async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     up_min = int((time.time() - deps.STARTED_AT) // 60)
     jam, menit = divmod(up_min, 60)
     try:
-        c = store.counts()
-        h = store.scan_history_counts()
+        c = await asyncio.to_thread(store.counts)
+        h = await asyncio.to_thread(store.scan_history_counts)
     except Exception:
         log.exception("status: store gagal dibaca")
         c, h = {}, {}
@@ -174,10 +174,11 @@ async def cmd_berita(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     """Ringkasan berita terkini + skor sentimen lexicon Indonesia."""
     args = deps.tokens(update)
     if not args:
+        wl = await asyncio.to_thread(store.get_watchlist,
+                                     update.effective_chat.id)
         await update.effective_message.reply_text(
             "📰 Berita — pilih emiten:",
-            reply_markup=deps.ticker_pick_markup(
-                "berita", store.get_watchlist(update.effective_chat.id)))
+            reply_markup=deps.ticker_pick_markup("berita", wl))
         return
     await do_berita(update, args[0], deps)
 
@@ -262,9 +263,10 @@ async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     """Rincian fundamental emiten (PER, PBV, ROE, dividen, DER)."""
     args = deps.tokens(update)
     if not args:
+        wl = await asyncio.to_thread(store.get_watchlist,
+                                     update.effective_chat.id)
         await update.effective_message.reply_text(
             "💰 Fundamental — pilih emiten:",
-            reply_markup=deps.ticker_pick_markup(
-                "fundamental", store.get_watchlist(update.effective_chat.id)))
+            reply_markup=deps.ticker_pick_markup("fundamental", wl))
         return
     await do_fundamental(update, args[0], deps)

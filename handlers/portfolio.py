@@ -218,5 +218,5 @@ async def do(update, args: list[str], deps):
     await update.effective_chat.send_action(ChatAction.TYPING)
     quotes = await _porto_quotes([p["ticker"] for p in positions], deps)
     summary = portmod.summarize(positions, quotes)
-    await deps.reply_long(msg, _porto_text(summary, store.get_modal(chat_id),
-                                           deps))
+    modal = await asyncio.to_thread(store.get_modal, chat_id)
+    await deps.reply_long(msg, _porto_text(summary, modal, deps))
