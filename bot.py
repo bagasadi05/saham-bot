@@ -5,6 +5,8 @@ Perintah:
   /beli BBCA / /jual BBCA  - tanya layak beli/jual (atau ketik bebas:
                             "BBCA beli gak?", "jual TLKM?")
   /analisis BBCA           - laporan teknikal lengkap + chart
+  /sinyal [beli|jual|KODE] - sinyal BELI/JUAL seluruh pasar IDX
+  /scan                    - pindai ulang seluruh pasar (±2–3 menit)
   /skor ANTM TLKM          - ringkasan skor (tanpa chart)
   /watch add <TICKER>      - tambah saham ke watchlist
   /watch list              - lihat watchlist
@@ -36,7 +38,7 @@ from telegram.error import BadRequest
 import config
 from core import (alerts, analysis, bandar, banding, btcache, data,
                   fundamental, learn, marketcal, news, powerscore,
-                  saran as saranmod, store)
+                  screener, saran as saranmod, store, universe)
 from core.chart import build_chart
 from core.textutil import split_message
 
@@ -168,7 +170,8 @@ def timed(fn):
 # ALLOWED_USER_IDS kosong, dan tiap panggilan memakan menit CPU + puluhan
 # permintaan jaringan.
 _COOLDOWN_SECONDS = {"analisis": 10, "banding": 10, "saran": 20,
-                     "bandar": 20, "backtest": 60}
+                     "bandar": 20, "backtest": 60,
+                     "scan": 30, "sinyal": 5}
 _last_used: dict[tuple[int, str], float] = {}
 
 
@@ -558,6 +561,8 @@ def main_menu_markup() -> InlineKeyboardMarkup:
          InlineKeyboardButton("💰 Fundamental", callback_data="pick:fundamental")],
         [InlineKeyboardButton("💡 Saran", callback_data="run:saran"),
          InlineKeyboardButton("📈 Backtest", callback_data="pick:backtest")],
+        [InlineKeyboardButton("📡 Sinyal Pasar", callback_data="run:sinyal"),
+         InlineKeyboardButton("🔄 Scan Pasar", callback_data="run:scan")],
         [InlineKeyboardButton("🛒 Beli", callback_data="pick:beli"),
          InlineKeyboardButton("💰 Jual", callback_data="pick:jual")],
         [InlineKeyboardButton("👀 Watchlist", callback_data="run:watch"),
@@ -1394,6 +1399,10 @@ async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif action == "bandar":
             await _safe_edit(msg, "⏳ Mengambil data BEI...", reply_markup=home_markup())
             await run_menu_action(update, "bandar", [])
+        elif action == "sinyal":
+            await _do_sinyal(update, [])
+        elif action == "scan":
+            await _do_scan(update, [], ctx.job_queue)
         else:
             await run_menu_action(update, action, [])
         return
@@ -1463,6 +1472,8 @@ async def _post_init(app: Application):
             BotCommand("berita", "Berita + sentimen emiten"),
             BotCommand("fundamental", "PER/PBV/ROE/dividen/DER"),
             BotCommand("saran", "Kandidat BUY harian + paper trading"),
+            BotCommand("sinyal", "Sinyal BELI/JUAL seluruh pasar IDX"),
+            BotCommand("scan", "Pindai seluruh pasar sekarang (±3–6 menit)"),
             BotCommand("beli", "Tanya: layak beli? mis. /beli BBCA"),
             BotCommand("jual", "Tanya: layak jual? mis. /jual BBCA"),
             BotCommand("bandar", "Data resmi BEI / IHSG"),
@@ -2004,6 +2015,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "• <b>/saran</b> — pemindaian harian: kandidat BUY + entry/SL/TP + "
         "ukuran posisi (1% modal), dilacak otomatis; <b>/saran list</b>, "
         "<b>/saran lq45</b>, ubah modal: <b>/modal 10000000</b>\n"
+        "• <b>/sinyal</b> — sinyal BELI/JUAL <b>seluruh pasar IDX</b> "
+        "(±950 emiten): <b>/sinyal beli</b>, <b>/sinyal jual</b>, "
+        "<b>/sinyal BBCA</b>, <b>/sinyal csv</b>; perbarui: <b>/scan</b>\n"
         "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
         "• <b>/banding BBCA BBRI</b> — tabel PER/PBV/ROE/return + konteks IHSG\n"
         "• <b>/agenda BBCA</b> — ex-date dividen & aksi korporasi\n"
@@ -2423,6 +2437,302 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+# ------------------------------------------------- screener seluruh pasar
+_screener_running = False
+
+_SINYAL_DISCLAIMER = (
+    "⚠️ Peringkat statistik tipis (IC OOS ±0,03), <b>bukan jaminan</b>. "
+    "JUAL = hindari/kurangi bila punya — bukan instruksi short. Selalu DYOR."
+)
+
+
+def _rp(v) -> str:
+    """Harga ringkas: 8.750 / 1.234,5 kalau pecahan."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{x:,.0f}" if abs(x) >= 1 else f"{x:,.2f}"
+
+
+def _sinyal_emoji(sig: str) -> str:
+    return {"BELI": "🟢", "JUAL": "🔴"}.get(sig, "⚪")
+
+
+def _scan_when(meta: dict) -> str:
+    trade = meta.get("trade_date") or "?"
+    scanned = (meta.get("scanned_at") or "").replace("T", " ")[:16]
+    ok = meta.get("ok") or "?"
+    txt = (f"Data per {trade} · scan {scanned} WIB · {ok} emiten "
+           f"lolos data")
+    if marketcal.market_open():
+        txt += " · ⚠️ bursa masih buka, bar hari ini belum final"
+    return txt
+
+
+def _sinyal_row(i: int, r: dict) -> str:
+    parts = [f"{i}. <b>{esc(r['ticker'])}</b> {_rp(r.get('price'))}"]
+    if r.get("rel_pct") is not None:
+        parts.append(f"rel {r['rel_pct']:.0f}")
+    if r.get("rsi") is not None:
+        parts.append(f"RSI {r['rsi']:.0f}")
+    if r.get("ret20d") is not None:
+        parts.append(f"20h {r['ret20d']:+.1f}%")
+    line = " · ".join(parts)
+    if r.get("entry") and r.get("sl") and r.get("tp"):
+        line += (f"\n   <i>entry {_rp(r['entry'])} · SL {_rp(r['sl'])} · "
+                 f"TP {_rp(r['tp'])}</i>")
+    return line
+
+
+def _sinyal_overview(rows: list[dict], meta: dict) -> str:
+    buys = [r for r in rows if r["signal"] == "BELI"]
+    sells = [r for r in rows if r["signal"] == "JUAL"]
+    holds = len(rows) - len(buys) - len(sells)
+    out = ["📡 <b>SINYAL PASAR IDX</b>", f"<i>{esc(_scan_when(meta))}</i>", "",
+           f"🟢 BELI: <b>{len(buys)}</b> · 🔴 JUAL/HINDARI: <b>{len(sells)}</b>"
+           f" · ⚪ TAHAN: <b>{holds}</b>"]
+    if buys:
+        out += ["", "🟢 <b>Kandidat BELI</b> (peringkat relatif tertinggi)"]
+        out += [_sinyal_row(i + 1, r) for i, r in enumerate(buys[:8])]
+    else:
+        out += ["", "🟢 Tidak ada kandidat BELI yang lolos filter hari ini — "
+                "itu informasi, bukan kegagalan."]
+    if sells:
+        out += ["", "🔴 <b>Hindari / JUAL bila punya</b> (tren &amp; peringkat lemah)"]
+        out += [_sinyal_row(i + 1, r) for i, r in enumerate(sells[:8])]
+    out += ["", "Rincian: <code>/sinyal beli</code> · <code>/sinyal jual</code> · "
+            "<code>/sinyal BBCA</code> · <code>/sinyal csv</code>",
+            "Perbarui data: <code>/scan</code>", "", _SINYAL_DISCLAIMER]
+    return "\n".join(out)
+
+
+def _sinyal_section(rows: list[dict], sig: str, meta: dict) -> str:
+    picked = [r for r in rows if r["signal"] == sig]
+    head = ("🟢 <b>KANDIDAT BELI</b>" if sig == "BELI"
+            else "🔴 <b>HINDARI / JUAL BILA PUNYA</b>")
+    out = [head, f"<i>{esc(_scan_when(meta))}</i>", ""]
+    if not picked:
+        out += ["Tidak ada emiten yang lolos filter ini hari ini.",
+                "Itu bukan error — filter memang sengaja ketat.", ""]
+    else:
+        out += [_sinyal_row(i + 1, r) for i, r in enumerate(picked[:25])]
+        out += ["", f"Menampilkan {min(25, len(picked))} dari "
+                f"{len(picked)} sinyal."]
+    out += ["", _SINYAL_DISCLAIMER]
+    return "\n".join(out)
+
+
+def _sinyal_detail(r: dict, meta: dict) -> str:
+    def pct(v):
+        return f"{v:+.1f}%" if v is not None else "—"
+
+    sig = r.get("signal") or "TAHAN"
+    lines = [
+        f"📡 <b>{esc(r['ticker'])}</b> — {esc(r.get('name') or '')}".rstrip(" —"),
+        f"Sinyal: {_sinyal_emoji(sig)} <b>{esc(sig)}</b>",
+        f"Harga: <b>{_rp(r.get('price'))}</b>",
+        f"1 hari {pct(r.get('ret1d'))} · 5 hari {pct(r.get('ret5d'))} · "
+        f"20 hari {pct(r.get('ret20d'))}",
+        f"RSI <b>{r['rsi']:.1f}</b>" if r.get("rsi") is not None else "RSI —",
+    ]
+    if r.get("rel_pct") is not None:
+        lines.append(f"Persentil relatif: <b>{r['rel_pct']:.0f}</b> dari "
+                     f"{esc(meta.get('ok') or '?')} emiten")
+    lines.append(f"MA20 {_rp(r.get('sma20'))} · MA50 {_rp(r.get('sma50'))} · "
+                 f"MA200 {_rp(r.get('sma200'))}")
+    if r.get("entry") and r.get("sl") and r.get("tp"):
+        lines.append(f"Entry {_rp(r['entry'])} · SL {_rp(r['sl'])} "
+                     f"(1×ATR) · TP {_rp(r['tp'])} (2×ATR)")
+    if r.get("reason"):
+        lines += ["", f"<i>{esc(r['reason'])}</i>"]
+    lines += ["", f"<i>{esc(_scan_when(meta))}</i>",
+              f"Laporan lengkap: <code>/analisis {esc(r['ticker'])}</code>",
+              "", _SINYAL_DISCLAIMER]
+    return "\n".join(lines)
+
+
+def _sinyal_csv(rows: list[dict]) -> bytes:
+    import csv
+    import io
+
+    cols = ["ticker", "name", "board", "signal", "price", "ret1d", "ret5d",
+            "ret20d", "rsi", "macd_hist", "sma20", "sma50", "sma200", "atr",
+            "tech_score", "rel_pct", "entry", "sl", "tp", "trade_date",
+            "reason"]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
+    w.writeheader()
+    w.writerows(rows)
+    return buf.getvalue().encode("utf-8")
+
+
+async def _do_sinyal(update: Update, args: list[str]):
+    rows = store.load_market_scan()
+    meta = store.market_scan_meta()
+    if not rows:
+        await update.effective_message.reply_text(
+            "📡 Belum ada hasil pemindaian pasar.\n\n"
+            "Jalankan <code>/scan</code> dulu (±3–6 menit, sekali sehari). "
+            "Untuk cepat di watchlist, pakai <code>/saran</code>.",
+            parse_mode=ParseMode.HTML)
+        return
+
+    arg = (args[0].strip().lower() if args else "")
+    msg = update.effective_message
+    if arg in ("csv", "unduh", "download"):
+        data = _sinyal_csv(rows)
+        await msg.reply_document(
+            document=data, filename="sinyal_idx.csv",
+            caption=f"📡 Sinyal seluruh pasar — {len(rows)} emiten. "
+                    "Buka di Excel/Sheets. Bukan saran investasi.")
+        return
+    if arg in ("beli", "buy"):
+        await reply_long(msg, _sinyal_section(rows, "BELI", meta))
+        return
+    if arg in ("jual", "sell", "hindari"):
+        await reply_long(msg, _sinyal_section(rows, "JUAL", meta))
+        return
+    if re.fullmatch(r"[A-Za-z]{4}", arg):
+        found = next((r for r in rows if r["ticker"] == arg.upper()), None)
+        if not found:
+            await msg.reply_text(
+                f"Kode <b>{esc(arg.upper())}</b> tidak ada di snapshot "
+                f"(mungkin delisted/suspensi, atau tidak ada data harga cukup).\n"
+                f"Coba <code>/analisis {esc(arg.upper())}</code> untuk cek "
+                "langsung.", parse_mode=ParseMode.HTML)
+            return
+        await reply_long(msg, _sinyal_detail(found, meta))
+        return
+    await reply_long(msg, _sinyal_overview(rows, meta))
+
+
+async def cmd_sinyal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Baca snapshot sinyal seluruh pasar: /sinyal [beli|jual|KODE|csv]."""
+    if not await cooldown_ok(update, "sinyal"):
+        return
+    await _do_sinyal(update, tokens(update))
+
+
+def _scan_summary_text(res: dict, intro: str) -> str:
+    m = res.get("meta") or {}
+    counts = res.get("counts") or {}
+    if res.get("cached"):
+        return (f"{intro}\n\n<i>Snapshot hari ini sudah ada — tidak scan ulang.</i>\n"
+                f"{esc(_scan_when(m))}\n\n"
+                f"🟢 BELI <b>{counts.get('BELI', 0)}</b> · "
+                f"🔴 JUAL <b>{counts.get('JUAL', 0)}</b> · "
+                f"⚪ TAHAN <b>{counts.get('TAHAN', 0)}</b>\n\n"
+                "Lihat: <code>/sinyal</code>")
+    buys = store.load_market_scan("BELI")[:5]
+    sells = store.load_market_scan("JUAL")[:5]
+    skipped = int(m.get("skipped") or 0)
+    failed = int(m.get("failed") or 0)
+    out = [intro, "",
+           f"✅ <b>{m.get('ok', '?')}</b> emiten dianalisis dari "
+           f"{m.get('universe', '?')} kode universe "
+           f"({m.get('elapsed_sec', '?')} detik).",
+           f"🟢 BELI <b>{counts.get('BELI', 0)}</b> · "
+           f"🔴 JUAL <b>{counts.get('JUAL', 0)}</b> · "
+           f"⚪ TAHAN <b>{counts.get('TAHAN', 0)}</b>"]
+    if skipped or failed:
+        out.append(f"ℹ️ {skipped or failed} kode dilewati — tanpa data harga "
+                   "cukup (delisted/suspensi baru), bukan diisi data palsu.")
+    if buys:
+        out += ["", "🟢 <b>Top BELI</b>"]
+        out += [_sinyal_row(i + 1, r) for i, r in enumerate(buys)]
+    if sells:
+        out += ["", "🔴 <b>Top JUAL/hindari</b>"]
+        out += [_sinyal_row(i + 1, r) for i, r in enumerate(sells)]
+    out += ["", "Selengkapnya: <code>/sinyal</code> · "
+            "<code>/sinyal csv</code>", "", _SINYAL_DISCLAIMER]
+    return "\n".join(out)
+
+
+async def _run_scan_job(ctx: ContextTypes.DEFAULT_TYPE):
+    global _screener_running
+    chat_id = int(ctx.job.data["chat_id"])
+    try:
+        res = await asyncio.to_thread(screener.scan, True)
+        txt = _scan_summary_text(res, "✅ <b>Scan pasar selesai</b>")
+    except Exception as exc:
+        log.exception("scan pasar gagal")
+        txt = (f"❌ Scan gagal: <code>{esc(str(exc)[:300])}</code>\n"
+               "Coba lagi nanti. Kalau berulang, cek log VPS.")
+    finally:
+        _screener_running = False
+    for part in split_message(txt):
+        try:
+            await ctx.bot.send_message(chat_id, part,
+                                       parse_mode=ParseMode.HTML,
+                                       disable_web_page_preview=True)
+        except Exception:
+            log.exception("gagal mengirim hasil scan ke %s", chat_id)
+
+
+async def _do_scan(update: Update, args: list[str], job_queue):
+    global _screener_running
+    force = any(a.lower() in ("paksa", "force", "ulang", "refresh")
+                for a in args)
+    meta = store.market_scan_meta()
+    today = marketcal.now_wib().date().isoformat()
+    if not force and (meta.get("scanned_at") or "")[:10] == today:
+        await reply_long(update.effective_message,
+                         _scan_summary_text({"cached": True,
+                                             "meta": meta,
+                                             "counts": store.market_scan_counts()},
+                                            "📡 <b>Screener pasar</b>"))
+        return
+    if _screener_running:
+        await update.effective_message.reply_text(
+            "⏳ Scan pasar masih berjalan. Tunggu sampai selesai, ya.")
+        return
+    _screener_running = True
+    n = len(universe.codes())
+    await update.effective_message.reply_text(
+        f"⏳ Memindai <b>{n} emiten</b> BEI secara borongan (3–6 menit).\n"
+        "Hasil dikirim otomatis ke chat ini. Kamu bisa lanjut pakai perintah lain.",
+        parse_mode=ParseMode.HTML)
+    job_queue.run_once(_run_scan_job, when=0.5,
+                       data={"chat_id": update.effective_chat.id},
+                       name=f"scan-{update.effective_chat.id}")
+
+
+async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Pindai seluruh pasar sekarang: /scan [paksa]."""
+    if not await cooldown_ok(update, "scan"):
+        return
+    await _do_scan(update, tokens(update), ctx.job_queue)
+
+
+async def full_market_scan_job(app: Application):
+    """Job harian 16:15 WIB: snapshot sinyal untuk chat /auto on."""
+    if not config.FULL_SCAN_AUTO:
+        return
+    if not marketcal.is_trading_day(marketcal.now_wib().date()):
+        return
+    try:
+        res = await asyncio.to_thread(screener.scan, False)
+    except Exception:
+        log.exception("screener harian gagal")
+        return
+    if res.get("cached"):
+        return
+    chats = store.get_auto_chats()
+    if not chats:
+        return
+    txt = _scan_summary_text(res, "📡 <b>SCREENER HARIAN SELURUH PASAR</b>")
+    for cid in chats:
+        for part in split_message(txt):
+            try:
+                await app.bot.send_message(
+                    int(cid), part, parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True)
+            except Exception:
+                log.exception("kirim screener harian ke %s gagal", cid)
+                break
+
+
 def main():
     """Entry point: python bot.py"""
     token = config.BOT_TOKEN  # config sudah memuat .env & menyaring placeholder
@@ -2463,6 +2773,8 @@ def main():
     reg("backtest", cmd_backtest)
     reg("watch", cmd_watch)
     reg(["saran", "recommendasi"], cmd_saran)
+    reg(["sinyal", "signal"], cmd_sinyal)
+    reg(["scan", "pindai"], cmd_scan)
     reg(["beli", "buy"], cmd_beli)
     reg(["jual", "sell"], cmd_jual)
     reg(["bandar", "ihsg"], cmd_bandar)
@@ -2487,6 +2799,10 @@ def main():
                         name="morning-scan")
     # isi antrean 'pending' begitu harga open sesi hari ini tersedia
     job_queue.run_daily(fill_open, time=_dt.time(9, 20, tzinfo=WIB), name="fill-open")
+    # screener seluruh pasar setelah bursa tutup (matikan: FULL_SCAN_AUTO=off)
+    job_queue.run_daily(full_market_scan_job,
+                        time=_dt.time(16, 15, tzinfo=WIB),
+                        name="full-market-scan")
     # heartbeat tiap 5 menit: dipakai healthcheck Docker untuk tahu bot masih hidup
     job_queue.run_repeating(heartbeat, interval=300, first=5, name="heartbeat")
 

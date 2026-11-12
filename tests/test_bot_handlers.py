@@ -77,8 +77,16 @@ class _FakeBot:
         self.sent.append((chat_id, text, kwargs))
 
 
-def _ctx():
-    return types.SimpleNamespace(bot=_FakeBot())
+class _FakeJobQueue:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def run_once(self, callback, when=None, data=None, name=None, **kwargs):
+        self.calls.append((callback, when, data, name))
+
+
+def _ctx(job_queue=None):
+    return types.SimpleNamespace(bot=_FakeBot(), job_queue=job_queue)
 
 
 def _app():
@@ -464,3 +472,163 @@ def test_alert_add_valid_dan_jenis_tidak_dikenal():
     asyncio.run(bot.cmd_alert(asing, _ctx()))
     assert "Jenis tidak dikenal" in asing.effective_message.replies[-1][0]
     assert "BBCA" in store.get_alerts(105)  # alert lama tidak rusak
+
+
+# ------------------------------------------------ screener pasar (/scan, /sinyal)
+def _seed_scan():
+    """Snapshot sintetis: satu BELI, satu JUAL — tanpa jaringan."""
+    from core import marketcal
+    rows = [
+        {"ticker": "BBCA", "name": "Bank Central Asia Tbk.", "board": "Utama",
+         "trade_date": "2026-11-11", "price": 8750, "ret1d": 0.5,
+         "ret5d": 1.2, "ret20d": 3.2, "rsi": 58.0, "macd_hist": 12.0,
+         "sma20": 8600, "sma50": 8400, "sma200": 7900, "atr": 150,
+         "tech_score": 55.0, "rel_pct": 92.0, "signal": "BELI",
+         "reason": "Tren naik (MA20 > MA50, MACD+), RSI 58",
+         "entry": 8750, "sl": 8600, "tp": 9050},
+        {"ticker": "ANTM", "name": "Aneka Tambang Tbk.", "board": "Utama",
+         "trade_date": "2026-11-11", "price": 1500, "ret1d": -1.0,
+         "ret5d": -3.0, "ret20d": -8.0, "rsi": 35.0, "macd_hist": -9.0,
+         "sma20": 1560, "sma50": 1620, "sma200": 1700, "atr": 40,
+         "tech_score": -50.0, "rel_pct": 12.0, "signal": "JUAL",
+         "reason": "Tren turun (MA20 < MA50, MACD−), RSI 35",
+         "entry": None, "sl": None, "tp": None},
+    ]
+    meta = {
+        "scanned_at": marketcal.now_wib().strftime("%Y-%m-%dT%H:%M:%S"),
+        "trade_date": "2026-11-11", "universe": 2, "ok": 2,
+        "skipped": 0, "failed": 0, "elapsed_sec": 1.0,
+        "universe_source": "uji", "universe_snapshot": "2026-11-01",
+        "buy": 1, "sell": 1, "hold": 0,
+    }
+    store.save_market_scan(rows, meta)
+    return rows, meta
+
+
+def test_sinyal_tanpa_snapshot_jujur_arahkan_scan():
+    upd = _FakeUpdate("/sinyal")
+    asyncio.run(bot.cmd_sinyal(upd, _ctx()))
+    text = upd.effective_message.replies[-1][0]
+    assert "Belum ada" in text and "/scan" in text
+
+
+def test_sinyal_ringkasan_memuat_beli_jual_dan_disclaimer():
+    _seed_scan()
+    upd = _FakeUpdate("/sinyal")
+    asyncio.run(bot.cmd_sinyal(upd, _ctx()))
+    text = upd.effective_message.replies[-1][0]
+    assert "SINYAL PASAR IDX" in text
+    assert "BBCA" in text and "ANTM" in text
+    assert "BELI" in text and "JUAL" in text
+    assert "bukan jaminan" in text
+
+
+def test_sinyal_beli_hanya_kandidat_beli():
+    _seed_scan()
+    upd = _FakeUpdate("/sinyal beli")
+    asyncio.run(bot.cmd_sinyal(upd, _ctx()))
+    text = upd.effective_message.replies[-1][0]
+    assert "KANDIDAT BELI" in text and "BBCA" in text
+    assert "ANTM" not in text
+
+
+def test_sinyal_jual_dan_detail_kode():
+    _seed_scan()
+    jual = _FakeUpdate("/sinyal jual")
+    asyncio.run(bot.cmd_sinyal(jual, _ctx()))
+    text = jual.effective_message.replies[-1][0]
+    assert "HINDARI" in text and "ANTM" in text and "BBCA" not in text
+
+    detail = _FakeUpdate("/sinyal bbca")
+    bot._last_used.clear()
+    asyncio.run(bot.cmd_sinyal(detail, _ctx()))
+    text = detail.effective_message.replies[-1][0]
+    assert "Bank Central Asia" in text
+    assert "Entry 8,750" in text and "SL 8,600" in text
+    assert "/analisis BBCA" in text
+
+
+def test_sinyal_kode_tidak_dikenal_tidak_mengarang():
+    _seed_scan()
+    upd = _FakeUpdate("/sinyal ZZZZ")
+    asyncio.run(bot.cmd_sinyal(upd, _ctx()))
+    text = upd.effective_message.replies[-1][0]
+    assert "tidak ada di snapshot" in text
+    assert "/analisis ZZZZ" in text
+
+
+def test_sinyal_csv_berisi_header_dan_semua_emiten():
+    _seed_scan()
+    data = bot._sinyal_csv(store.load_market_scan()).decode("utf-8")
+    assert data.splitlines()[0].startswith("ticker,")
+    assert "BBCA" in data and "ANTM" in data
+
+
+def test_scan_saat_snapshot_hari_ini_sudah_ada_tidak_scan_ulang():
+    _seed_scan()
+    jq = _FakeJobQueue()
+    upd = _FakeUpdate("/scan")
+    asyncio.run(bot.cmd_scan(upd, _ctx(jq)))
+    text = upd.effective_message.replies[-1][0]
+    assert "sudah ada" in text.lower()
+    assert jq.calls == []
+
+
+def test_scan_memicu_job_latar_belakang():
+    jq = _FakeJobQueue()
+    upd = _FakeUpdate("/scan")
+    try:
+        asyncio.run(bot.cmd_scan(upd, _ctx(jq)))
+    finally:
+        bot._screener_running = False
+    assert "Memindai" in upd.effective_message.replies[0][0]
+    assert jq.calls and jq.calls[0][2]["chat_id"] == 100
+
+
+def test_run_scan_job_mengirim_ringkasan_dan_reset_flag(monkeypatch):
+    _seed_scan()
+    res = {"cached": False, "counts": store.market_scan_counts(),
+           "meta": store.market_scan_meta()}
+    monkeypatch.setattr(bot.screener, "scan", lambda force: res)
+    ctx = types.SimpleNamespace(
+        bot=_FakeBot(), job=types.SimpleNamespace(data={"chat_id": 100}))
+    bot._screener_running = True
+    asyncio.run(bot._run_scan_job(ctx))
+    assert bot._screener_running is False
+    assert ctx.bot.sent and "Scan pasar selesai" in ctx.bot.sent[0][1]
+
+
+def test_run_scan_job_gagal_tidak_bocorkan_traceback(monkeypatch):
+    def boom(force):
+        raise RuntimeError("Yahoo down")
+
+    monkeypatch.setattr(bot.screener, "scan", boom)
+    ctx = types.SimpleNamespace(
+        bot=_FakeBot(), job=types.SimpleNamespace(data={"chat_id": 100}))
+    bot._screener_running = True
+    asyncio.run(bot._run_scan_job(ctx))
+    text = ctx.bot.sent[-1][1]
+    assert "Scan gagal" in text and "Yahoo down" in text
+    assert bot._screener_running is False
+
+
+def test_full_market_scan_job_patuhi_auto_off(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bot.config, "FULL_SCAN_AUTO", False)
+    monkeypatch.setattr(bot.screener, "scan", lambda force: calls.append(force))
+    asyncio.run(bot.full_market_scan_job(_app()))
+    assert calls == []
+
+
+def test_full_market_scan_job_kirim_ke_chat_auto(monkeypatch):
+    _seed_scan()
+    store.set_auto(200, True)
+    res = {"cached": False, "counts": store.market_scan_counts(),
+           "meta": store.market_scan_meta()}
+    monkeypatch.setattr(bot.config, "FULL_SCAN_AUTO", True)
+    monkeypatch.setattr(bot.marketcal, "is_trading_day", lambda d: True)
+    monkeypatch.setattr(bot.screener, "scan", lambda force: res)
+    app = _app()
+    asyncio.run(bot.full_market_scan_job(app))
+    assert app.bot.sent and app.bot.sent[0][0] == 200
+    assert "SCREENER HARIAN" in app.bot.sent[0][1]

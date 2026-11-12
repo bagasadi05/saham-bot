@@ -57,6 +57,33 @@ CREATE TABLE IF NOT EXISTS div_reminders (
     days     INTEGER NOT NULL,
     PRIMARY KEY (chat_id, symbol, ex_date, days)
 );
+CREATE TABLE IF NOT EXISTS market_scan (
+    ticker     TEXT PRIMARY KEY,
+    name       TEXT,
+    board      TEXT,
+    trade_date TEXT,
+    price      REAL,
+    ret1d      REAL,
+    ret5d      REAL,
+    ret20d     REAL,
+    rsi        REAL,
+    macd_hist  REAL,
+    sma20      REAL,
+    sma50      REAL,
+    sma200     REAL,
+    atr        REAL,
+    tech_score REAL,
+    rel_pct    REAL,
+    signal     TEXT NOT NULL,
+    reason     TEXT,
+    entry      REAL,
+    sl         REAL,
+    tp         REAL
+);
+CREATE TABLE IF NOT EXISTS scan_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 
@@ -381,4 +408,58 @@ def counts() -> dict:
             "paper_total": len(papers),
             "paper_open": sum(1 for p in papers
                               if p.get("status") in ("open", "pending")),
+            "market_scan": one("SELECT COUNT(*) FROM market_scan"),
         }
+
+
+# ---------------------------------------------------------------- screener
+# Hasil pemindaian seluruh pasar (lihat core/screener.py). Disimpan sebagai
+# snapshot: satu baris per emiten, ditimpa atomik setiap scan selesai.
+_SCAN_COLS = (
+    "ticker", "name", "board", "trade_date", "price", "ret1d", "ret5d",
+    "ret20d", "rsi", "macd_hist", "sma20", "sma50", "sma200", "atr",
+    "tech_score", "rel_pct", "signal", "reason", "entry", "sl", "tp",
+)
+
+
+def save_market_scan(rows: list[dict], meta: dict | None = None):
+    """Ganti snapshot lama dengan hasil scan baru (atomik, satu transaksi)."""
+    sql = (f"INSERT OR REPLACE INTO market_scan ({','.join(_SCAN_COLS)}) "
+           f"VALUES ({','.join('?' * len(_SCAN_COLS))})")
+    with _db() as conn:
+        conn.execute("DELETE FROM market_scan")
+        conn.executemany(sql, [tuple(r.get(c) for c in _SCAN_COLS)
+                               for r in rows])
+        if meta:
+            for k, v in meta.items():
+                conn.execute(
+                    "INSERT INTO scan_meta(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(k), str(v)))
+
+
+def load_market_scan(signal: str | None = None) -> list[dict]:
+    """Snapshot hasil scan; `signal` opsional (BELI/JUAL/TAHAN)."""
+    with _db() as conn:
+        if signal:
+            rows = conn.execute(
+                "SELECT * FROM market_scan WHERE signal=? "
+                "ORDER BY rel_pct DESC, ticker", (signal,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM market_scan "
+                "ORDER BY CASE signal WHEN 'BELI' THEN 0 WHEN 'JUAL' THEN 1 "
+                "ELSE 2 END, rel_pct DESC, ticker").fetchall()
+        return [dict(r) for r in rows]
+
+
+def market_scan_meta() -> dict:
+    with _db() as conn:
+        return {r["key"]: r["value"]
+                for r in conn.execute("SELECT key, value FROM scan_meta")}
+
+
+def market_scan_counts() -> dict:
+    with _db() as conn:
+        return {r["signal"]: int(r["n"]) for r in conn.execute(
+            "SELECT signal, COUNT(*) AS n FROM market_scan GROUP BY signal")}

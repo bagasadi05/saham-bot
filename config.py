@@ -66,3 +66,8 @@ MARKET_CLOSE = (16, 0)  # 16:00 WIB
 
 # Scanner alert dijalankan tiap X menit
 ALERT_SCAN_MINUTES = 30
+
+# Screener seluruh pasar setelah bursa tutup (16:15 WIB, hari bursa).
+# Matikan dengan FULL_SCAN_AUTO=off kalau VPS terlalu kecil / kuota Yahoo ketat.
+FULL_SCAN_AUTO = os.getenv("FULL_SCAN_AUTO", "on").strip().lower() not in (
+    "0", "off", "false", "no", "")

@@ -30,6 +30,8 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
    CLI: `python backtest.py BBCA` & `python backtest_real.py BBCA`.
 - **Watchlist & alert** — `/watch`, `/alert add BBCA jump breakout`: dicek tiap 30 menit saat bursa buka (hari bursa XIDX, 09:00–16:00 WIB). Alert **hanya dikirim saat kondisi berubah** (False → True), tidak lagi diulang tiap 30 menit selama kondisi bertahan.
 - **/saran** — pemindaian harian seluruh watchlist (atau universe default LQ45-ish): kandidat BUY dengan **entry / SL 1×ATR / TP 2×ATR**. Urutan kandidat memakai **skor relatif 12 faktor** (`core/relatif.py`) yang lolos uji walk-forward (fallback ke PowerScore bila universe < 8 emiten) — lihat `/validasi`. Posisi dicatat **realistis**: masuk antrean `pending` dan baru dibeli di **harga open sesi berikutnya**, PnL dihitung setelah biaya beli 0,15% & jual 0,25%, ditutup otomatis setelah ±20 hari bursa, maksimal 5 posisi terbuka & 2 per sektor. `/saran list` = rekap posisi + rata-rata hasil net; riwayat menyimpan **20 posisi selesai terakhir** per chat agar rekap tidak membengkak.
+- **/scan** — pindai **seluruh pasar BEI** (±944 kode aktif, daftar API resmi IDX) secara borongan (batch Yahoo, ±2–3 menit). Hasil disimpan sebagai snapshot SQLite. Berjalan otomatis **16:15 WIB** setiap hari bursa untuk chat `/auto on` (matikan dengan `FULL_SCAN_AUTO=off`). Emiten tanpa data harga cukup (delisted/suspensi baru) dilewati dan jumlahnya dilaporkan — tidak diisi data palsu.
+- **/sinyal** — baca snapshot seluruh pasar: ringkasan **BELI / JUAL / TAHAN**, `/sinyal beli`, `/sinyal jual`, detail `/sinyal BBCA`, unduh `/sinyal csv`. Sinyal = filter tren (MA20/MA50/MACD/RSI) + peringkat relatif 12 faktor yang sama dengan `/saran`. Ini peringkat statistik tipis (IC OOS ±0,03), **bukan jaminan**; JUAL berarti hindari/kurangi bila punya — bukan instruksi short. Daftar universe + provenance ada di `data/idx_universe.json`; perbarui dengan `python tools/build_universe.py`.
 - **/validasi** — menampilkan hasil uji statistik yang tersimpan: IC skor lama (antar-emiten & dalam satu emiten), excess return per rating, IC walk-forward per tahun, kalibrasi kuintil OOS, dan hasil uji Kronos. Angkanya hasil `research/evaluate.py`, bukan klaim.
 - **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, **±1–2 menit** — 4 emiten diproses paralel, progres bertahap tiap 10 emiten).
 - **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
@@ -126,6 +128,10 @@ Deployment 24/7 (Docker/systemd/supervisor) → lihat **[deploy.md](deploy.md)**
 | `SAHAMBOT_NEWS_TTL` | umur cache berita Google News, detik (`0` = nonaktif) | `900` (15 menit) |
 | `BANDAR_TTL` | umur cache data BEI `/bandar`, detik (`0` = nonaktif) | `600` (10 menit) |
 | `SARAN_CONCURRENCY` | jumlah emiten yang dipindai paralel di `/saran` | `4` |
+| `FULL_SCAN_AUTO` | screener seluruh pasar otomatis 16:15 WIB (`off` = mati) | `on` |
+| `FULL_SCAN_PERIOD` | periode data batch screener | `1y` |
+| `FULL_SCAN_CHUNK` | jumlah ticker per batch Yahoo | `80` |
+| `FULL_SCAN_PAUSE` | jeda antar batch (detik) | `1.0` |
 | `SAHAMBOT_CACHE` | folder cache harga (fallback saat Yahoo mati) | `temp/cache` |
 | `SAHAMBOT_LOCAL_MODEL` | folder model sentimen lokal | `models/indo-fin-roberta` |
 | `STORE_DB` | database SQLite data pribadi (watchlist/alert/paper) | `store.db` |
@@ -200,6 +206,17 @@ pytest            # 200+ tes offline (tanpa Yahoo/Google News/HuggingFace)
 ```
 
 Atau lewat Makefile: `make install`, `make lint`, `make test`, `make docker`.
+
+Daftar emiten untuk `/scan` & `/sinyal` ada di `data/idx_universe.json`
+(sumber + tanggal tercatat di file). Perbarui kapan saja:
+
+```bash
+python tools/build_universe.py                  # coba API resmi idx.co.id
+python tools/build_universe.py --from-file x.json  # build dari respons tersimpan
+```
+
+Screener menguji tiap kode lewat data harga Yahoo; kode delisted/suspensi
+dilewati dan dihitung, bukan diisi data karangan.
 
 CI GitHub Actions menjalankan lint + seluruh tes offline pada tiap push/PR.
 Build Docker bisa dicek lokal: `docker build --build-arg SKIP_MODEL=1 -t saham-bot:slim .`
