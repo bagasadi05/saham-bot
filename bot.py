@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import html
 import json
 import logging
 import os
@@ -57,10 +56,11 @@ PENDING_TTL = core_guards.PENDING_TTL
 _pending_prune = core_guards._pending_prune
 _pending_ts = core_guards._pending_ts
 _last_used = core_guards._last_used
-from core.reports import _trend_line, esc, fmt_rp
+from core.reports import esc, fmt_rp
 
 from core.chart import build_chart  # noqa: F401 - dipakai handler via deps
 from core.reports import build_report  # noqa: F401 - dipakai handler via deps
+from core.reports import _trend_line  # noqa: F401 - dipakai tes
 import backtest as btmod
 from handlers import analisis as analisis_handler
 from handlers import cek as cek_handler
@@ -540,132 +540,6 @@ _MANUAL_PROMPT = {
 _MANUAL_PROMPT["alert_add"] = (
     "Ketik kode emiten untuk alarm (jenis default: "
     + ", ".join(sorted(alerts.ALL_KINDS)) + "):")
-
-
-async def _do_berita(update: Update, ticker: str):
-    msg = update.effective_message
-    try:
-        t = data.normalize_ticker(ticker).replace(".JK", "")
-    except ValueError as e:
-        await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=home_markup())
-        return
-    await update.effective_chat.send_action(ChatAction.TYPING)
-    try:
-        items = await asyncio.to_thread(news.fetch_news, t)
-    except Exception:
-        items = []
-    if not items:
-        await msg.reply_text(
-            f"❌ Berita untuk {esc(t)} tidak tersedia — atau jaringan sedang bermasalah.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_markup(),
-        )
-        return
-    sent = await asyncio.to_thread(news.news_sentiment, items)
-    n_ml = sent.get("engine_ml", 0)
-    if n_ml == sent["n"] and sent["n"] > 0:
-        engine_tag = "ML lokal"
-    elif n_ml > 0:
-        engine_tag = f"ML {n_ml}/{sent['n']} + lexicon"
-    else:
-        engine_tag = "lexicon"
-    lines = [
-        f"📰 <b>Berita {esc(t)}</b> — sentimen {sent['emoji']} "
-        f"({sent['pct']:+.0f}%, {sent['n']} berita, mesin: {engine_tag})"
-    ]
-    for d in sent["details"][:7]:
-        har = f" {d['sent']:+.0f}" if d["sent"] else ""
-        age = f", {d['age_days']:.0f} hari lalu" if d.get("age_days", 0) >= 1 else ""
-        src = f" — <i>{esc(d['source'])}</i>" if d.get("source") else ""
-        when = f"{d['date']:%d %b}" if d.get("date") else "—"
-        url = html.escape(str(d.get("link") or "https://news.google.com"), quote=True)
-        lines.append(
-            f"\n{when} · <a href=\"{url}\">{esc(d['title'][:110])}</a>"
-            f"{har}{age}{src}"
-        )
-    lines.append("\n\n🔒 Bukan saran investasi.")
-    await reply_long(
-        msg,
-        "\n".join(lines),
-        disable_web_page_preview=True,
-        reply_markup=result_markup("berita", t),
-    )
-
-
-async def _do_fundamental(update: Update, ticker: str):
-    msg = update.effective_message
-    try:
-        t = data.normalize_ticker(ticker).replace(".JK", "")
-    except ValueError as e:
-        await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=home_markup())
-        return
-    await update.effective_chat.send_action(ChatAction.TYPING)
-    try:
-        fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
-    except ValueError as e:
-        await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=home_markup())
-        return
-    except Exception as e:
-        log.warning("fundamental gagal %s: %s", t, e)
-        await msg.reply_text(
-            f"❌ Data fundamental untuk {esc(t)} tidak tersedia — "
-            "sumber sedang bermasalah (rate-limit/jaringan). Coba lagi nanti.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_markup(),
-        )
-        return
-    if fund is None:
-        await msg.reply_text(
-            f"❌ Data fundamental untuk {esc(t)} tidak tersedia.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_markup(),
-        )
-        return
-    sc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
-    rows = [f"🏛️ <b>Fundamental {esc(t)}</b> — {esc(fund.get('name'))}"]
-    if fund.get("sector"):
-        rows.append(f"Sektor: {esc(fund['sector'])}")
-    rows.append(f"Skor: <b>{sc['pct']:+d}%</b> {sc['emoji']} {esc(sc['label'])}\n")
-
-    def _fmt(key, tpl, suffix=""):
-        v = fund.get(key)
-        return tpl % v + suffix if v is not None else "—"
-
-    der_v = fundamental.normalize_der(fund.get("debt_eq"))
-    der_txt = f"{der_v:.0f}%" if der_v is not None else "—"
-    rows.append(f"  PER: {_fmt('per', '%.1f')}   PBV: {_fmt('pbv', '%.2f')}")
-    rows.append(f"  EPS: {_fmt('eps', '%d')}   DER: {der_txt}")
-    roe = fundamental.normalize_roe(fund.get("roe"))
-    margin = fundamental.normalize_margin(fund.get("margin"))
-    roe_parts = []
-    if roe is not None:
-        roe_parts.append(f"ROE: {roe:.1f}%")
-    if margin is not None:
-        roe_parts.append(f"Margin: {margin:.1f}%")
-    if roe_parts:
-        rows.append("  " + "   ".join(roe_parts))
-    dy = fundamental.normalize_div_yield(fund.get("div_yield"))
-    if dy is not None:
-        rows.append(f"  Dividend yield: {dy:.1f}%")
-    if fund.get("market_cap"):
-        rows.append(f"  Kap. pasar: Rp{fund['market_cap'] / 1e12:.1f} T")
-
-    rows.append(
-        f"\nData per: {esc(str(fund.get('as_of') or 'kuartal terakhir yang tercatat'))}"
-        " <i>(laporan keuangan via Yahoo, bisa delay 1-2 kuartal)</i>"
-    )
-    for lbl, key in (("Pendapatan", "rev_trend"), ("Laba bersih", "profit_trend")):
-        line = _trend_line(fund.get(key))
-        rows.append(f"  {lbl} 4K: {line if line else '<i>tren tidak tersedia</i>'}")
-
-    rows.append("\nCatatan skor:")
-    rows.extend(f"  {esc(n)}" for n in sc["notes"])
-    rows.append("\n🔒 Bukan saran investasi.")
-    await reply_long(
-        msg,
-        "\n".join(rows),
-        reply_markup=result_markup("fundamental", t),
-    )
 
 
 async def _do_backtest(update: Update, ticker: str, from_menu: bool = False):
@@ -1350,30 +1224,6 @@ async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await analisis_handler.cmd_banding(update, ctx, sys.modules[__name__])
 
 
-async def cmd_berita(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Ringkasan berita terkini + skor sentimen lexicon Indonesia."""
-    args = tokens(update)
-    if not args:
-        await update.effective_message.reply_text(
-            "📰 Berita — pilih emiten:",
-            reply_markup=ticker_pick_markup(
-                "berita", store.get_watchlist(update.effective_chat.id)))
-        return
-    await _do_berita(update, args[0])
-
-
-async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Rincian fundamental emiten (PER, PBV, ROE, dividen, DER)."""
-    args = tokens(update)
-    if not args:
-        await update.effective_message.reply_text(
-            "💰 Fundamental — pilih emiten:",
-            reply_markup=ticker_pick_markup(
-                "fundamental", store.get_watchlist(update.effective_chat.id)))
-        return
-    await _do_fundamental(update, args[0])
-
-
 async def gather_candidate(t: str) -> dict | None:
     """Analisis gabungan satu emiten: teknikal + fundamental + berita (paralel)."""
     try:
@@ -1770,6 +1620,24 @@ async def cmd_modal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"<b>{saranmod.fmt(val)}</b>\n"
         f"Risiko per trade /saran berikutnya: {saranmod.fmt(val * 0.01)} (1%)",
         parse_mode=ParseMode.HTML)
+
+
+async def _do_berita(update: Update, ticker: str):
+    await info_handler.do_berita(update, ticker, sys.modules[__name__])
+
+
+async def cmd_berita(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Ringkasan berita terkini + skor sentimen lexicon Indonesia."""
+    await info_handler.cmd_berita(update, ctx, sys.modules[__name__])
+
+
+async def _do_fundamental(update: Update, ticker: str):
+    await info_handler.do_fundamental(update, ticker, sys.modules[__name__])
+
+
+async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Rincian fundamental emiten (PER, PBV, ROE, dividen, DER)."""
+    await info_handler.cmd_fundamental(update, ctx, sys.modules[__name__])
 
 
 # --------------------------- info (kode di handlers/info.py)
