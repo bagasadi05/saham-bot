@@ -4,6 +4,14 @@
 >
 > **TAMBAHAN 2026-11-12 — P13–P18 (batch asisten beli, bagian 5) ditambahkan, belum dikerjakan.**
 
+> **STATUS 2026-11-13 — P13–P18 SELESAI** (39 commit, origin/main 9247be3;
+> bot live 29 command, store SQLite v4). **Batch 6 (P19–P31, bagian 6)
+> ditambahkan, belum dikerjakan.** Koreksi: file prompt ini SUDAH masuk repo
+> (commit fec2d1b) — bukan untracked; yang tetap lokal hanya KENDALA.md.
+> Perhatian: host memiliki 1 commit lokal belum di-push (9223649, redesign
+> /sinyal) — kerjakan dari origin/main, jangan force-push, jangan tulis
+> ulang histori.
+
 > Salin seluruh isi file ini ke agent kamu. Kalau mau dikerjakan sebagian,
 > hapus item yang tidak diinginkan dan biarkan sisanya — prioritas sudah diurutkan.
 
@@ -484,3 +492,269 @@ menyebut semua kode.
 - `/sektor bank` menampilkan tabel peringkat yang angkanya terverifikasi dari
   sumber yang sama dengan `/fundamental` dan `/analisis`.
 - `/sektor <nama-yang-tidak-ada>` dijawab ramah dengan daftar sektor.
+
+---
+
+## 6. Batch baru: menuju bot pencetak uang (2026-11-13)
+
+Pemilik bertanya apa yang diperlukan agar bot ini menjadi "bot pencetak
+uang". Jawaban jujurnya: bot sekarang adalah asisten belajar dan asisten
+beli yang baik, TETAPI sinyalnya belum terbukti menghasilkan uang. Batch
+ini membangun pembuktian itu secara berurutan — edge dulu, baru modal.
+Tidak ada item di batch ini yang boleh menjanjikan keuntungan.
+
+**Angka dasar yang sudah terverifikasi (13 Nov 2026, dari
+`data/validation.json`, digenerasi 12 Nov 2026):**
+- Universe: LQ45_2026 (45 emiten), 91.395 baris, 7 Sep 2017–9 Okt 2026,
+  horizon 20 hari, `embargo_days = 0`.
+- Skor: IC rata-rata 0,0115, IR 0,057, t naif 2,68, **t_hac 0,85** (tidak
+  signifikan; ambang ~2). IC per tahun negatif di 2017, 2020, 2023, 2025.
+- STRONG BUY: excess +0,461% (win rate 46,2%); BUY: excess +0,379%
+  (win rate 45,0%).
+- Walk-forward: IC model rata-rata 0,0304 vs bobot-sama −0,0061 (model
+  menang 4/5 tahun); IC skor beku rata-rata 0,0107.
+- Turnover 50,6% (ringkasan AGENTS.md); angka "alpha neto" yang pernah
+  disebut harus didokumentasikan asumsi biayanya (lihat P21) sebelum
+  dipakai lagi.
+- **Bias survivorship:** backtest memakai daftar LQ45 saat ini yang ditarik
+  mundur 10 tahun — emiten yang sudah delisted tidak masuk, jadi angka
+  cenderung terlihat lebih bagus dari kenyataan. PLAN.md §2.3 mencatat
+  perbaikan ini DI LUAR CAKUPAN (keputusan pemilik 12 Nov 2026) dengan
+  prasyarat tabel `universe_membership` + `delistings`. Batch ini
+  membatalkannya: pemilik sekarang meminta perbaikan itu dikerjakan.
+
+**Keputusan pemilik yang menjadi gerbang (jangan ditebak — aturan 8):**
+- **D0 — Sumber data universe/delisting** (gerbang P19–P20): (a) unduhan
+  manual IDX Stock List (gratis, manual, perlu refresh berkala), (b) EODHD
+  (berbayar, API, histori + delisting + fundamental), (c) sumber lain yang
+  diusulkan agent. Agent: sajikan opsi + biaya/usaha, lalu BERHENTI sampai
+  pemilik memilih.
+- **D1 — Asumsi biaya** (gerbang P21): komisi broker, pajak, spread/slippage
+  dari angka broker asli pemilik, atau asumsi eksplisit yang disetujui
+  pemilik. Jangan karang angka.
+- **D2 — Kriteria lolos/gagal paper trading** (gerbang P29): jumlah trade
+  minimum, profit factor minimum setelah biaya, drawdown maksimum —
+  ditetapkan SEBELUM periode dimulai dan DIBEKUKAN selama periode berjalan.
+- **D3 — Provider VPS** (gerbang P31): pemilik yang memilih dan menjalankan
+  migrasi; agent hanya memastikan dokumen deploy mutakhir.
+
+Semua aturan bagian 3 berlaku, ditambah aturan khusus batch ini:
+- **Klaim edge hanya bila t_hac ≥ ~2 pada data out-of-sample dengan
+  universe point-in-time.** Dilarang mengubah bobot karena t naif (aturan
+  AGENTS.md). Dilarang mengklaim "bebas survivorship bias" sebelum tabel
+  keanggotaan P19 lengkap.
+- **Setiap angka return riset berlabel kotor/neto + asumsi biaya yang
+  dipakai.** Jangan pernah menyajikan angka backtest sebagai ekspektasi
+  return masa depan.
+- **Tanpa auto-trading.** Tidak pernah login ke Stockbit, tidak pernah
+  menaruh order, tidak pernah menyimpan kredensial Stockbit, tidak ada
+  scraper Stockbit/IDX yang melanggar ToS. Aturan ini tidak bisa ditawar.
+- **Tanpa janji keuntungan; DYOR** di semua verdict/laporan baru. Bahasa
+  sederhana + legenda (aturan batch 5 berlaku).
+- Satu item per commit; `pytest -q` + `ruff check .` sebelum commit; tes
+  wajib offline; perbarui README/PLAN/CHANGELOG untuk perubahan perilaku
+  (konvensi AGENTS.md). Jangan force-push; jangan tulis ulang histori.
+
+### P19 — Tabel keanggotaan universe + delisting (prasyarat: D0)
+
+**Masalah:** tidak ada tabel yang mencatat kapan tiap emiten masuk/keluar
+universe, jadi backtest tidak bisa point-in-time.
+
+**Yang dibangun:**
+- Tabel `universe_membership` (emiten, tanggal masuk, tanggal keluar,
+  alasan keluar) + `delistings` dari sumber yang dipilih di D0, dengan
+  skrip pengisi + dokumen cara refresh berkala.
+- Tes fixture: emiten yang delisted tahun 2020 tidak muncul di universe
+  2021+; emiten yang IPO 2023 tidak muncul sebelum tanggal listing.
+
+**Kriteria selesai:**
+- Tabel mencakup seluruh jendela backtest (2017–sekarang) dari sumber D0.
+- Tes fixture di atas lulus; dokumen refresh tertulis.
+
+### P20 — Backtest universe point-in-time + regenerasi validation.json
+
+**Masalah:** `data/validation.json` memakai universe LQ45_2026 untuk semua
+tahun (bias survivorship); `embargo_days = 0` belum ditinjau.
+
+**Yang dibangun:**
+- Pipeline riset memakai universe point-in-time dari P19; regenerasi
+  `data/validation.json`; laporkan IC/t_hac per tahun + walk-forward
+  berdampingan angka lama vs angka baru.
+- Tinjau `embargo_days = 0`: tetapkan embargo/purge yang konsisten dengan
+  horizon 20 hari, dengan alasan yang didokumentasikan.
+
+**Kriteria selesai:**
+- `validation.json` baru tergenerasi dari universe point-in-time; angka
+  lama vs baru dilaporkan berdampingan di PLAN.md/CHANGELOG.md.
+- Tidak ada klaim "bebas survivorship bias" sebelum P19 lengkap.
+
+### P21 — Biaya dalam backtest (prasyarat: D1)
+
+**Masalah:** angka excess return belum jelas apakah sudah memperhitungkan
+biaya; turnover 50,6% membuat biaya sangat menentukan.
+
+**Yang dibangun:**
+- Model biaya berparameter eksplisit (komisi, pajak, spread/slippage) dari
+  D1; laporkan return neto per rating + turnover; setiap angka riset
+  berlabel kotor/neto; ubah asumsi → hitung ulang bersih.
+
+**Kriteria selesai:**
+- Laporan riset menampilkan angka neto + nilai asumsi biaya yang dipakai.
+- `/validasi` (atau laporan riset) menyebut angka neto, bukan hanya kotor.
+
+### P22 — Uji out-of-sample yang benar
+
+**Masalah:** bobot yang "menang" di data yang sama dengan data pencariannya
+belum membuktikan apa-apa.
+
+**Yang dibangun:**
+- Walk-forward tanpa kebocoran (purge + embargo konsisten); bobot beku
+  dievaluasi pada tahun yang tidak dipakai untuk fitting; hasil OOS
+  dilaporkan terpisah dari in-sample.
+
+**Kriteria selesai:**
+- Laporan OOS terpisah tersedia; tidak ada perubahan bobot yang dijustifikasi
+  t naif.
+
+### P23 — Manajemen risiko portofolio
+
+**Masalah:** SL/TP per saham sudah ada (P5/P13), tapi tidak ada batas di
+level portofolio: total eksposur, konsentrasi sektor, drawdown berjalan.
+
+**Yang dibangun:**
+- Batas portofolio: % modal maksimum per posisi, eksposur maksimum per
+  sektor, peringatan drawdown berjalan. `/rencana` dan `/cek` menolak
+  rencana yang melanggar batas — dengan penjelasan + apa yang membuatnya
+  lolos. Batas default didokumentasikan di kode; pemilik boleh mengubah
+  lewat perintah yang didokumentasikan.
+- Jangan ubah perilaku perintah lain.
+
+**Kriteria selesai:**
+- `/rencana` yang melanggar batas dijawab dengan penolakan beralasan, bukan
+  angka.
+- Batas terdokumentasi; perintah lama tidak berubah.
+
+### P24 — Laporan risiko portofolio
+
+**Masalah:** `/portofolio` menampilkan P/L per posisi tapi tidak menampilkan
+risiko keseluruhan.
+
+**Yang dibangun:**
+- `/portofolio` menampilkan: total eksposur, konsentrasi per sektor,
+  drawdown maksimum berjalan, dan korelasi sederhana antar posisi. Data
+  yang tidak tersedia ditulis jujur. Posisi paper tetap terpisah dan tidak
+  tercampur.
+
+**Kriteria selesai:**
+- Keempat angka risiko tampil untuk portofolio uji; paper tidak tercampur.
+
+### P25 — Ketahanan data: sumber cadangan + provenance
+
+**Masalah:** Yahoo Finance satu-satunya sumber harga dan sering 429/401;
+laporan tidak selalu menyebut sumber + tanggal data.
+
+**Yang dibangun:**
+- Sumber harga cadangan yang dievaluasi (mis. Stooq, atau EODHD bila sudah
+  dibeli di D0) — dipakai hanya saat Yahoo gagal, dengan label sumber di
+  laporan. Setiap laporan menyebut sumber data + "data per ...". Saat semua
+  sumber gagal: pesan jujur "data tidak tersedia", bukan diam, bukan karangan.
+
+**Kriteria selesai:**
+- Simulasi Yahoo gagal → bot menjawab dari cadangan/cache berlabel, atau
+  pesan jujur di semua perintah.
+- Semua laporan baru menyebut sumber + tanggal data.
+
+### P26 — Sentimen: evaluasi model ML vs lexicon
+
+**Masalah:** sentimen berita masih lexicon karena model transformers tidak
+terpasang (RAM); tidak ada evaluasi tertulis apakah model bisa jalan.
+
+**Yang dibangun:**
+- Evaluasi tertulis: bisakah model transformers jalan di RAM yang tersedia
+  (atau via API inference Hugging Face)? Bila tidak layak, tetap lexicon dan
+  tuliskan keterbatasannya di keluaran `/berita`. Jangan klaim akurasi
+  sentimen dengan cara apa pun.
+
+**Kriteria selesai:**
+- Evaluasi tertulis di KENDALA.md atau PLAN.md; `/berita` menyebut
+  keterbatasan metode sentimennya.
+
+### P27 — Foreign flow + aksi korporasi (lanjut P4)
+
+**Masalah:** idx.co.id 403 dari IP server; `/bandar` memakai cloudscraper
+yang belum dievaluasi untuk flow harian; kalender aksi korporasi belum lengkap.
+
+**Yang dibangun:**
+- Evaluasi sumber legal/terbuka untuk foreign flow harian (termasuk
+  pemakaian ulang cloudscraper `/bandar`); lengkapi kalender aksi korporasi
+  dari sumber yang sama. Bila tidak ada sumber andal: pertahankan pesan
+  jujur "tidak tersedia" — jangan karang angka, jangan tambah scraper yang
+  melanggar ToS.
+
+**Kriteria selesai:**
+- `/bandar` menampilkan data flow atau pesan blokir yang jujur; tidak ada
+  angka karangan.
+
+### P28 — Jurnal eksekusi manual + slippage nyata (tanpa auto-trading)
+
+**Masalah:** sinyal dan eksekusi tidak terhubung — tidak diketahui apakah
+harga eksekusi di Stockbit sama dengan harga sinyal, dan berapa win rate
+REALISASI (bukan backtest).
+
+**Yang dibangun:**
+- Setelah sinyal/verdict, tombol konfirmasi eksekusi manual ("Sudah beli di
+  Stockbit"); bot mencatat harga eksekusi vs harga sinyal (slippage nyata),
+  entry/exit, dan hasil. Laporan berkala: win rate + profit factor
+  REALISASI, paper dan asli dipisah dan diberi label jelas.
+- ATURAN KERAS: tidak ada auto-trading, tidak ada login Stockbit, tidak ada
+  penyimpanan kredensial. Pelanggaran aturan ini = item gagal.
+
+**Kriteria selesai:**
+- Eksekusi tercatat dengan slippage terhitung; laporan realisasi membedakan
+  paper vs asli.
+- Tidak ada kode login/order/kredensial Stockbit di repo.
+
+### P29 — Protokol paper trading disiplin 3–6 bulan (prasyarat: D2)
+
+**Masalah:** paper trading sekarang tanpa aturan tertulis dan tanpa kriteria
+lolos/gagal — hasilnya tidak bisa dipakai memutuskan apa-apa.
+
+**Yang dibangun:**
+- Dokumen aturan tertulis di repo (sinyal apa yang diambil, ukuran posisi,
+  aturan exit); bot menegakkan aturan (peringatan saat pemilik menyimpang);
+  laporan bulanan otomatis; kriteria lolos/gagal dari D2 dibekukan selama
+  periode berjalan dan tidak boleh diubah di tengah jalan.
+
+**Kriteria selesai:**
+- Dokumen aturan ada di repo; peringatan penyimpangan bekerja; laporan
+  bulanan tergenerasi.
+- Kriteria D2 tercatat + dibekukan sebelum periode dimulai.
+
+### P30 — Kriteria naik kelas + review berkala
+
+**Masalah:** tidak ada definisi kapan boleh memakai modal sungguhan, dan
+tidak ada jadwal review — keputusan jadi impulsif.
+
+**Yang dibangun:**
+- Kriteria "naik kelas" ke modal kecil sungguhan + templat review berkala
+  (di deploy.md atau PLAN.md). Bila paper trading gagal: kembali ke perbaikan
+  sinyal (Fase 5), bukan tambah modal. Tuliskan aturan ini eksplisit.
+
+**Kriteria selesai:**
+- Kriteria + templat review terdokumentasi; aturan "gagal → perbaiki sinyal,
+  bukan tambah modal" tertulis.
+
+### P31 — Dokumen deploy mutakhir untuk migrasi VPS (prasyarat: D3)
+
+**Masalah:** migrasi VPS diputuskan pemilik (D3); dokumen deploy harus siap
+dan akurat saat keputusan itu diambil.
+
+**Yang dibangun:**
+- Tinjau dan mutakhirkan `deploy.md` + Dockerfile + docker-compose terhadap
+  kode saat ini: langkah migrasi (clone + venv + `.env` mode 600 + `store.db`
+  + systemd), tanpa langkah basi. Pemilik yang memilih provider dan
+  menjalankan migrasi — agent tidak membeli/menyewa apa pun.
+
+**Kriteria selesai:**
+- `deploy.md` akurat terhadap kode saat ini; tidak ada langkah basi; tidak
+  ada kredensial di dokumen.
