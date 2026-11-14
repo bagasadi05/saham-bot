@@ -1,8 +1,8 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
-> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (pasca-Wave 2A, Wave 2B, hotfix `scipy`/EODHD/AV/`download_model`, audit tombol, & menu utama sederhana + panduan interaktif pemula)
-> **Baseline terukur saat ini:** **`678 passed`** (`0 skipped`, `0 failed`; naik dari 676 pasca-audit menu, 670 pasca-hotfix `scipy`, 666 di Wave 2B, 653 di Wave 2A, 586 pra-Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
-> coverage target CI (`core+handlers+bot+config`) **`TOTAL 84%`** (`84.01%`; gerbang CI `>= 75%`) · `bot.py` **1.736 baris** +
+> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (pasca-Wave 2A, Wave 2B, hotfix `scipy`/EODHD/AV/`download_model`, audit tombol, menu utama sederhana, Mode Pemula vs Expert, panduan linear 5-tahap, & alur tindak lanjut lintas handler)
+> **Baseline terukur saat ini:** **`764 passed`** (`0 skipped`, `0 failed`; naik dari 678 pasca-menu sederhana, 676 pasca-audit menu, 670 pasca-hotfix `scipy`, 666 di Wave 2B, 653 di Wave 2A, 586 pra-Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
+> coverage target CI (`core+handlers+bot+config`) **`TOTAL 86%`** (`86.05%`; gerbang CI `>= 75%`) · `bot.py` **1.757 baris** +
 > 12 modul `handlers/` (analisis, cek, info, jobs, jurnal, market, menu, portfolio, sektor,
 > sinyal, trading, watchlist) + 33 modul `core/` (`SCHEMA_VERSION = 6`).
 >
@@ -236,8 +236,8 @@ tersedia (keputusan pemilik, 2026-11-12).
   `/fundamental`), `handlers/jobs.py`
   (alert 30 menit, autoscan, screener 16:15, backup, heartbeat), dan
   `core/guards.py` (cooldown + PENDING). Semua memakai pola `deps`;
-  `bot.py` pada akhir Fase 4.1 diringkas ke ~1.458–1.630 baris (kini **1.737 baris**
-  setelah penambahan panduan exit portofolio-aware di Wave 2B) berisi **menu/aksi, markup, dan
+  `bot.py` pada akhir Fase 4.1 diringkas ke ~1.458–1.630 baris (1.737 baris di Wave 2B;
+  kini **1.757 baris** setelah penambahan `/mode` & integrasi handler) berisi **menu/aksi, markup, dan
   entrypoint** — seluruh perintah ada di 12 modul `handlers/*.py`
   (termasuk `handlers/menu.py` dan `handlers/jurnal.py`). Seam tes
   (`run_menu_action`, `build_chart`, `TMP_DIR`,
@@ -417,6 +417,40 @@ tersedia (keputusan pemilik, 2026-11-12).
   `deploy.md`, dan `requirements.txt`.
   Total tes pasca-merge Wave 2B: **`666 passed`** (`0 skipped`, `0 failed`, coverage
   `core+handlers` **`84%`**, 100% offline).
+
+---
+
+## Mode Pemula vs Expert, Panduan Linear 5-Tahap & Alur Tindak Lanjut Lintas Handler (2026-11-14)
+
+- [x] **Persistensi & UI Mode Pemula vs Expert (`core/store.py`, `handlers/info.py`, `handlers/menu.py`, `bot.py`)** —
+  penyimpanan `user_mode` (`"pemula"` bawaan / `"expert"`) & `onboard_state` di `chat_settings`
+  (`normalize_user_mode`, `get_user_mode`, `has_user_mode`, `set_user_mode`, `get_onboard_state`,
+  `set_onboard_state`, `clear_onboard_state`); perintah `/mode` (alias `/level`),
+  `/start [pemula|expert]`, dan pemilih inline `mode:menu` / `mode:set:pemula|expert`; menu utama
+  adaptif `main_menu_markup("pemula")` (≤8 tombol, slot #8 `mode:menu`) vs `main_menu_markup("expert")`
+  (grid akses cepat pro). Tes: `tests/test_store_mode.py`, `tests/test_menu_beginner.py`.
+- [x] **Panduan linear 5-tahap (`handlers/menu.py`)** —
+  alur `onboard:s1..s5` (`onboard:goal:*`, `onboard:modal:*`, `onboard:s4:<T>`, `onboard:s5:<T>`,
+  `onboard:done`, `manual:onboard_modal`, `manual:onboard_ticker`) lewat helper sinkron via
+  `asyncio.to_thread`; Tahap 2 menyediakan 6 preset modal termasuk **`Rp 500 Rb` & `Rp 1 Juta`**
+  (`_MODAL_PRESETS`); Tahap 3 mengevaluasi keterjangkauan **1 lot vs modal & slot 25%** serta
+  memprioritaskan cache `kualitas` sehat untuk `beli` dan `real_positions` (`lots > 0`) untuk `jual`;
+  Tahap 4–5 menyambungkan ke `tick:cek`/`fundamental`/`analisis`/`rencana`/`jual` serta `exec:buy`/`exec:sell`.
+- [x] **Tombol tindak lanjut sambung-menyambung lintas semua hasil (`handlers/sinyal.py`, `handlers/market.py`, `handlers/cek.py`, `handlers/trading.py`, `handlers/portfolio.py`, `handlers/jurnal.py`, `handlers/analisis.py`, `handlers/menu.py`)** —
+  info modal & estimasi biaya 1 lot + tombol kandidat pada `/sinyal` (`bagus_markup` maks 6 kandidat,
+  `section_markup`, `detail_markup`, `overview_markup`); tombol aksi & pemulihan modal kecil di `/paket`,
+  `/rencana` (`_rencana_small_budget_markup`, `_rencana_limit_reject_markup`), `/scan` (`_scan_followup_markup`),
+  `/bandar` (`_bandar_markup`); evaluasi modal user + guard `allow_buy` di `/cek` & `do_tanya`; tombol aksi
+  per pick/alert jual di `/saran` (`_saran_followup_markup`, `_saran_list_markup`) & `result_markup("backtest")`;
+  tombol tindak lanjut di `/portofolio` & `/jurnal` (`_empty_porto_markup`, `_batas_markup`, `_riwayat_markup`,
+  `_exec_followup_markup`, `exec_done_markup`, `journal_markup`, `_riwayat_jurnal_markup`, `confirm_exec_markup`);
+  serta `_safe_result_markup` (`allow_buy=False` saat `HINDARI`/`JUAL`/`SELL` atau skor `None`/non-numerik di
+  `/analisis` & `/skor`), `_banding_markup`, dan `result_markup("rencana")` yang selalu menyertakan `tick:analisis`
+  tanpa membocorkan `exec:buy` (`5d283fa`). Tes: `tests/test_sinyal_followup.py`,
+  `tests/test_market_cek_followup.py`, `tests/test_jurnal_port_followup.py`.
+  Total verifikasi penuh pada `5d283fa`: **`764 passed`** (`0 skipped`, `0 failed`, coverage target CI
+  `core+handlers+bot+config` **`86%`** / **`86.05%`**, `bot.py` **1.757 baris**, `ruff check .` bersih,
+  `tools/check_sync.py` PASS, `tools/record_fixtures.py --verify` PASS).
 
 ---
 

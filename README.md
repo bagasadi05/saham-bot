@@ -12,19 +12,8 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 
 ## Fitur
 
-- **Menu interaktif ramah pemula & panduan langkah demi langkah (`/start`, `/menu`, `/help`)** — layar awal
-  sangat ringkas (7 tombol dalam bahasa sehari-hari: *Pandu Aku Langkah demi Langkah*,
-  *Saham Cocok Dibeli*, *Cek Saham Jual*, *Cek Nilai Saham*, *Portofolio Saya*,
-  *Belajar Pemula*, dan *Menu Lengkap* yang memuat semua alat analisis & fitur
-  lanjutan). Alur panduan `guide:*` memandu pemula mencari kandidat beli dari
-  snapshot/watchlist, mengecek nilai & keamanan 6 poin, serta meninjau posisi yang
-  siap dijual, dilengkapi tombol langkah lanjutan kontekstual di bawah setiap
-  hasil (`Rincian Nilai`, `Hitung Lot`, `Cek 6 Poin`, tetap menyembunyikan tombol
-  beli pada status `HINDARI` & `jual`). `/help` menyajikan panduan *3 Langkah Mulai*
-  beserta tombol coba cepat BBCA, `/belajar` dilengkapi tombol istilah klik
-  langsung, pengatur modal punya pilihan cepat (`Rp 2/5/10/25 Juta`), dan
-  pertanyaan bebas seperti `"BBCA beli gak?"` langsung dijawab tanpa perintah `/`
-  (implementasi di `handlers/menu.py`).
+- **Menu adaptif (Pemula vs Expert), panduan 5-tahap & tombol tindak lanjut (`/start`, `/menu`, `/mode`, `/help`)** — dua tampilan menu yang tersimpan per chat (`chat_settings` `user_mode` & `onboard_state`): **Mode Pemula** (bawaan, ≤8 tombol berbahasa sehari-hari + slot `mode:menu`) dan **Mode Expert** (grid akses cepat ke semua alat pro `/cek`, `/analisis`, `/rencana`, `/paket`, `/sinyal`, `/saran`, `/portofolio`, `/jurnal`, dll.). **Panduan Bertahap 5-tahap (`onboard:s1..s5`)** bersama panduan cepat `guide:*` memandu dari pilih tujuan (`beli`/`cek`/`jual`), atur modal (preset mulai **`Rp 500 Rb` & `Rp 1 Juta`**), pilih saham dengan pengecekan keterjangkauan **biaya 1 lot vs modal/slot 25%**, cek kelayakan, hingga hitung lot & catat eksekusi manual Stockbit. Seluruh hasil perintah utama (`sinyal`, `market`, `cek`, `trading`, `portfolio`, `jurnal`, `analisis`) kini memiliki tombol tindak lanjut sambung-menyambung (tetap menyembunyikan tombol beli/`exec:buy` pada status `HINDARI`, `TIDAK CUKUP DATA`, `lots == 0`, dan mode `jual`). `/help` menyajikan panduan *3 Langkah Mulai* beserta tombol coba cepat BBCA, `/belajar` dilengkapi tombol istilah klik langsung, dan pertanyaan bebas seperti `"BBCA beli gak?"` langsung dijawab tanpa perintah `/` (implementasi di `handlers/menu.py`).
+- **/mode** (alias **/level**, atau **/start [pemula|expert]**) — ganti tampilan menu utama antara **Mode Pemula** (ringkas ≤8 tombol + panduan linear 5-tahap) dan **Mode Expert** (grid cepat seluruh alat analisis, saringan, portofolio & jurnal), atau ketuk tombol *Level* (`mode:menu`) di menu utama.
 - **/analisis BBCA** — PowerScore (gabungan 3 pin) + chart 4 panel + konfirmasi
    **tren mingguan (1wk vs MA20 + peringatan pantulan)** + pembanding **IHSG & emiten
    se-sektor** (20h & 1th) + indikator pro + 2 headline berita. Multi emiten hingga 5 kode.
@@ -57,7 +46,7 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 - **/jurnal** (alias **/journal**) — **jurnal eksekusi manual Stockbit** & realisasi nyata (terpisah antara **ASLI** vs **PAPER**): ketuk tombol **"Sudah beli di Stockbit"** setelah `/rencana`, `/cek`, `/beli`, atau `/sinyal KODE` (cukup ketik harga atau `<lot> <harga>`), atau catat lewat `/jurnal beli BBCA 5 9050 [sinyal]`, `/jurnal jual BBCA 5 9500 [sinyal]`, dan `/jurnal riwayat`. Bot menghitung **slippage nyata** terhadap harga sinyal, **win rate & profit factor realisasi** bersih setelah biaya BEI `0,40%` (`0,15%` beli + `0,25%` jual), diagnostik **MAE / MFE & R-multiple** neto (`core/jurnal.py`), serta ringkasan mingguan otomatis tiap Jumat `16:45 WIB` bagi akun `/auto on` yang sudah mencatat eksekusi. Data sinyal yang tidak tersedia tetap ditulis "tidak tersedia". Bot tidak pernah login ke Stockbit atau menaruh order.
 - **/validasi** — menampilkan hasil uji statistik yang tersimpan: IC skor lama (antar-emiten & dalam satu emiten), excess return per rating, IC walk-forward per tahun, kalibrasi kuintil OOS, dan hasil uji Kronos. Angkanya hasil `research/evaluate.py`, bukan klaim. Untuk hasil **sinyal yang benar-benar keluar** (bukan simulasi riset), pakai `/jejak`.
 - **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, **±1–2 menit** — 4 emiten diproses paralel, progres bertahap tiap 10 emiten).
-- **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
+- **/modal 10000000** — atur modal rencana & latihan (default Rp10 juta, preset cepat mulai **`Rp 500 Rb`, `Rp 1 Juta`, `Rp 2/5/10/25 Juta`**); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
 - **/sektor** — kekuatan relatif **sektor BEI** hari itu dari indeks resmi
   `GetIndexSummary`: sektor terkuat & terlemah, berapa yang naik/turun. Kalau
   idx.co.id diblokir Cloudflare atau payload-nya tidak memuat angka yang bisa
@@ -273,7 +262,7 @@ Konsekuensinya di kode:
 ```bash
 pip install -r requirements-dev.txt
 ruff check .                             # lint
-pytest -q                                # 678 tes offline (0 skipped, coverage 84% target CI; tanpa Yahoo/Google News/HF/EODHD/AV)
+pytest -q                                # 764 tes offline (0 skipped, coverage 86% / 86.05% target CI; tanpa Yahoo/Google News/HF/EODHD/AV)
 python tools/check_sync.py               # audit sinkronisasi relatif.py <-> validation.json, LQ45, umur data & backup DB
 python tools/record_fixtures.py --verify # audit struktur fixture offline
 make coverage                            # tes + gerbang coverage 75% (core, handlers, bot, config)

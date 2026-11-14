@@ -25,13 +25,32 @@ dokumentasi proyek), plus hotfix `yfinance` adaptif tanpa `scipy`, cooldown
 kuota/premium EODHD & Alpha Vantage, perbaikan unduhan chunk `download_model.py`,
 dan audit + perbaikan seluruh menu tombol & callback inline (`sg:scan`, `_safe_edit`
 pesan foto/media, input target/budget `manual:alert_add` & `manual:rencana`, serta
-dan ketahanan `do_paket`/`do_scan`/`exec:*`), serta penyederhanaan menu utama +
+dan ketahanan `do_paket`/`do_scan`/`exec:*`), penyederhanaan menu utama +
 panduan interaktif langkah demi langkah untuk pemula (`guide:start/beli/jual/cek/pemula`,
-`sub:more`, dan `result_markup` kontekstual). Total verifikasi akhir: **678 tes lulus** offline
-(`0 skipped`, `0 failed`, coverage target CI `core+handlers+bot+config` **84%** / `84.01%`, `bot.py` 1.736 baris),
+`sub:more`, dan `result_markup` kontekstual), **Mode Pemula vs Expert**
+(`user_mode` & `onboard_state` di `chat_settings`, `mode:menu`, `/mode`),
+**panduan linear 5-tahap** (`onboard:s1..s5` termasuk preset `Rp 500 Rb`/`Rp 1 Juta`
+& evaluasi keterjangkauan 1 lot), serta **tombol tindak lanjut sambung-menyambung**
+lintas seluruh hasil (`sinyal`, `market`, `cek`, `trading`, `portfolio`, `jurnal`,
+`analisis`) beserta perbaikan pasca-QA (`5d283fa`). Total verifikasi akhir:
+**764 tes lulus** offline (`0 skipped`, `0 failed`, coverage target CI
+`core+handlers+bot+config` **86%** / `86.05%`, `bot.py` 1.757 baris),
 `ruff check .` bersih.
 
 ### Ditambahkan
+
+- **Mode Pemula vs Expert (`core/store.py`, `handlers/info.py`, `handlers/menu.py`, `bot.py`)**:
+  - Persistensi `user_mode` (`"pemula"` bawaan / `"expert"`) & `onboard_state` pada tabel `chat_settings` (`normalize_user_mode`, `get_user_mode`, `has_user_mode`, `set_user_mode`, `get_onboard_state`, `set_onboard_state`, `clear_onboard_state`). Tes: `tests/test_store_mode.py`.
+  - Perintah `/mode` (alias `/level`), `/start [pemula|expert]`, serta pemilih inline `mode:menu`, `mode:set:pemula`, `mode:set:expert` (terdaftar di `bot.py` `main`, `_post_init`, dan `sub:allcmd`).
+  - Menu utama adaptif: `main_menu_markup("pemula")` (≤8 tombol ramah pemula, slot #8 `mode:menu`) dan `main_menu_markup("expert")` (grid akses cepat pro ke `/cek`, `/analisis`, `/rencana`, `/paket`, `/sinyal`, `/sinyal beli bagus`, `/saran`, `/sektor`, `/portofolio`, `/jurnal`, dll.).
+- **Panduan linear bertahap 5-tahap (`handlers/menu.py`)**:
+  - Alur `onboard:s1..s5` (`onboard:goal:*`, `onboard:modal:*`, `onboard:s4:<T>`, `onboard:s5:<T>`, `onboard:done`, `manual:onboard_modal`, `manual:onboard_ticker`) memakai helper sinkron tunggal via `asyncio.to_thread`.
+  - Tahap 1 pilih tujuan (`beli`/`cek`/`jual`); Tahap 2 atur modal dengan 6 preset termasuk modal kecil **`Rp 500 Rb` & `Rp 1 Juta`** (`_MODAL_PRESETS`), info batas slot 25% & 1 lot = 100 lembar; Tahap 3 pemilihan saham adaptif + evaluasi keterjangkauan **biaya 1 lot vs modal/slot 25%** (prioritas cache `kualitas` sehat untuk `beli`, posisi aktif `lots > 0` untuk `jual`, atau watchlist/populer untuk `cek`); Tahap 4 cek kelayakan (`tick:cek`/`fundamental`/`analisis` + `tick:jual`); Tahap 5 hitung lot & catat eksekusi (`tick:rencana`/`exec:buy` atau `tick:jual`/`exec:sell`), `sub:pantau`, dan `onboard:done`.
+- **Tombol tindak lanjut sambung-menyambung lintas semua hasil (`handlers/sinyal.py`, `handlers/market.py`, `handlers/cek.py`, `handlers/trading.py`, `handlers/portfolio.py`, `handlers/jurnal.py`, `handlers/analisis.py`, `handlers/menu.py`)**:
+  - `handlers/sinyal.py`: info modal tersimpan & estimasi biaya 1 lot vs slot 25%/modal pada `/sinyal beli bagus`, tombol kandidat (`bagus_markup` maks 6 kandidat & `section_markup("BELI")` maks 4 kandidat dengan `tick:cek`/`tick:rencana`; `section_markup("JUAL")` dengan `tick:jual`/`tick:analisis`), `detail_markup`, `overview_markup`, dan `🏠 Menu Utama` (`from_menu`). Tes: `tests/test_sinyal_followup.py`.
+  - `handlers/market.py`: `/paket` (`_paket_picks_markup` maks 4 pick `tick:cek`/`tick:rencana`/`exec:buy`, plus `_paket_empty_markup`/`_paket_no_snapshot_markup`), `/rencana` (`_rencana_small_budget_markup` saat 1 lot > slot 25% tapi muat modal penuh, `_rencana_limit_reject_markup` saat ditolak `check_limits` dengan CTA `/portofolio batas`/`sub:modal`/`run:sinyal_bagus`/`tick:cek`/`manual:rencana` tanpa membocorkan `exec:buy`), `/scan` (`_scan_followup_markup`), dan `/bandar` (`_bandar_markup`).
+  - `handlers/cek.py` & `handlers/trading.py`: evaluasi modal tersimpan user & biaya 1 lot di `_cek_text`, guard `allow_buy` di `/cek` (`HINDARI`/`TIDAK CUKUP DATA`), `_tanya_allows_buy` di `do_tanya`, `_saran_list_markup`, `_saran_followup_markup` (tombol alert jual & kandidat beli hanya jika `lots > 0`), perbaikan rumus modal minimum 1 lot di `saran_scan_text`, `result_markup("backtest", ...)`, serta `result_markup("rencana")` yang selalu menyertakan `tick:analisis` tanpa membocorkan `exec:buy`. Tes: `tests/test_market_cek_followup.py`.
+  - `handlers/portfolio.py`, `handlers/jurnal.py`, `handlers/analisis.py` & `handlers/menu.py`: `_empty_porto_markup`, `_batas_markup`, `_riwayat_markup`, `_exec_followup_markup`, `exec_done_markup`, `journal_markup`, `_riwayat_jurnal_markup`, `confirm_exec_markup`, `_banding_markup`, `_safe_result_markup` pada `/analisis` & `/skor` (termasuk guard `primary_allow_buy=False` saat `score["pct"]` `None`/non-numerik atau verdict `HINDARI`/`JUAL`/`SELL`), perluasan `result_markup` (`skor`, `berita`, `backtest`, `rencana`), `_modal_saved_markup`, serta `ticker_pick_markup(extra_tickers=...)`. Tes: `tests/test_jurnal_port_followup.py`, `tests/test_menu_beginner.py`.
 
 - **Filter rezim pasar kausal `core/regime.py`** — mendeteksi fase IHSG (`^JKSE`
   `SMA50` vs `SMA200`, murni kausal bar `<= t`). Bila `SMA50 < SMA200`,
