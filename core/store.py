@@ -1551,3 +1551,121 @@ def set_risk_limits(
                 (cid, key, val),
             )
     return pos, sec
+
+
+# ------------------------------------------- mode pengguna & onboarding -------
+DEFAULT_USER_MODE = "pemula"
+USER_MODES = ("pemula", "expert")
+_USER_MODE_KEY = "user_mode"
+_ONBOARD_STATE_KEY = "onboard_state"
+_USER_MODE_ALIASES = {
+    "pemula": "pemula",
+    "beginner": "pemula",
+    "newbie": "pemula",
+    "expert": "expert",
+    "pro": "expert",
+    "mahir": "expert",
+    "cepat": "expert",
+}
+
+
+def normalize_user_mode(raw: str | None) -> str:
+    """Normalkan alias mode tampilan ('pemula' vs 'expert')."""
+    if not isinstance(raw, str):
+        raise ValueError(f"Mode tidak valid: {raw!r}. Pilih 'pemula' atau 'expert'.")
+    token = raw.strip().lower()
+    mode = _USER_MODE_ALIASES.get(token)
+    if mode is None:
+        raise ValueError(f"Mode tidak valid: {raw!r}. Pilih 'pemula' atau 'expert'.")
+    return mode
+
+
+def _read_chat_setting(conn, cid: str, key: str) -> str | None:
+    row = conn.execute(
+        "SELECT value FROM chat_settings WHERE chat_id=? AND key=?",
+        (cid, key),
+    ).fetchone()
+    return row["value"] if row else None
+
+
+def _upsert_chat_setting(conn, cid: str, key: str, value: str) -> None:
+    _ensure_chat(conn, cid)
+    conn.execute(
+        "INSERT INTO chat_settings(chat_id, key, value) VALUES (?, ?, ?) "
+        "ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value",
+        (cid, key, value),
+    )
+
+
+def _stored_user_mode(chat_id: int | str) -> str | None:
+    with _db() as conn:
+        raw = _read_chat_setting(conn, str(chat_id), _USER_MODE_KEY)
+    if raw is None:
+        return None
+    try:
+        return normalize_user_mode(raw)
+    except ValueError:
+        return None
+
+
+def get_user_mode(chat_id: int | str) -> str:
+    """Ambil mode tampilan chat ('pemula' atau 'expert'); fallback aman ke 'pemula'."""
+    return _stored_user_mode(chat_id) or DEFAULT_USER_MODE
+
+
+def has_user_mode(chat_id: int | str) -> bool:
+    """True jika chat sudah menyimpan pilihan mode yang valid di chat_settings."""
+    return _stored_user_mode(chat_id) is not None
+
+
+def set_user_mode(chat_id: int | str, mode: str) -> str:
+    """Validasi, simpan mode tampilan chat ('pemula'|'expert'), lalu kembalikan nilai kanonik."""
+    norm = normalize_user_mode(mode)
+    with _db() as conn:
+        _upsert_chat_setting(conn, str(chat_id), _USER_MODE_KEY, norm)
+    return norm
+
+
+def _decode_onboard_state(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def get_onboard_state(chat_id: int | str) -> dict:
+    """Ambil state onboarding linear chat (dict kosong bila belum ada atau rusak)."""
+    with _db() as conn:
+        raw = _read_chat_setting(conn, str(chat_id), _ONBOARD_STATE_KEY)
+    return _decode_onboard_state(raw)
+
+
+def set_onboard_state(chat_id: int | str, **updates) -> dict:
+    """Gabungkan `updates` ke state onboarding chat; nilai None menghapus key."""
+    cid = str(chat_id)
+    with _db() as conn:
+        state = _decode_onboard_state(_read_chat_setting(conn, cid, _ONBOARD_STATE_KEY))
+        for k, v in updates.items():
+            if v is None:
+                state.pop(k, None)
+            else:
+                state[k] = v
+        _upsert_chat_setting(
+            conn,
+            cid,
+            _ONBOARD_STATE_KEY,
+            json.dumps(state, ensure_ascii=False, default=str),
+        )
+    return state
+
+
+def clear_onboard_state(chat_id: int | str) -> None:
+    """Hapus state onboarding linear chat tanpa menyentuh pengaturan lain."""
+    with _db() as conn:
+        conn.execute(
+            "DELETE FROM chat_settings WHERE chat_id=? AND key=?",
+            (str(chat_id), _ONBOARD_STATE_KEY),
+        )
