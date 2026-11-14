@@ -9,17 +9,147 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import pandas as pd
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import Application
 
 from core import (alerts, analysis, data, fundamental, jurnal as jurnalmod,
-                  marketcal, powerscore, saran as saranmod, store)
+                  marketcal, powerscore, regime, saran as saranmod, store)
 from core.reports import esc, fmt_rp
 from core.textutil import split_message
 
 log = logging.getLogger("sahambuddy")
+
+_ORIG_FETCH_REGIME = regime.fetch_ihsg_regime
+_ORIG_FETCH_HISTORY = data.fetch_history
+_TARGET_RE = re.compile(r"^target(>=|<=|>|<|:)(\d+(?:\.\d+)?)$", re.IGNORECASE)
+
+
+async def _fetch_regime_safe(deps) -> dict | None:
+    """Ambil rezim IHSG secara aman (hormati monkeypatch & hindari panggilan jaringan liar di unit test)."""
+    reg_mod = getattr(deps, "regime", regime)
+    fn = getattr(reg_mod, "fetch_ihsg_regime", None)
+    if not callable(fn):
+        return None
+    if fn is not _ORIG_FETCH_REGIME:
+        try:
+            return await asyncio.to_thread(fn)
+        except Exception:
+            return None
+    with regime._regime_lock:
+        cached = regime._regime_cache.get("val")
+    if cached is not None:
+        return dict(cached)
+    data_mod = getattr(deps, "data", data)
+    fh = getattr(data_mod, "fetch_history", data.fetch_history)
+    if fh is not _ORIG_FETCH_HISTORY:
+        try:
+            return await asyncio.to_thread(fn)
+        except Exception:
+            return regime.evaluate_ihsg(None)
+    try:
+        return await asyncio.to_thread(fn, offline_only=True)
+    except Exception:
+        return regime.evaluate_ihsg(None)
+
+
+def _call_fill_pending(chat_id: int | str, bars_map: dict[str, pd.DataFrame],
+                       modal: int, market_regime: dict | None = None) -> list[str]:
+    """Teruskan market_regime ke saran.fill_pending (kompatibel dgn mock 3-arg)."""
+    try:
+        return saranmod.fill_pending(
+            chat_id, bars_map, modal, market_regime=market_regime
+        )
+    except TypeError:
+        return saranmod.fill_pending(chat_id, bars_map, modal)
+
+
+def _match_target_kinds(ind: pd.DataFrame, kinds: set[str]) -> set[str]:
+    """Evaluasi pemicu target harga (`target>=9500` / `target<=9000`) dari baris terakhir."""
+    if ind is None or ind.empty or "close" not in ind:
+        return set()
+    last = ind.iloc[-1]
+    try:
+        close_px = float(last.get("close"))
+    except (TypeError, ValueError):
+        return set()
+    if pd.isna(close_px):
+        return set()
+    high_px = close_px
+    low_px = close_px
+    try:
+        if "high" in ind and pd.notna(last.get("high")):
+            high_px = float(last.get("high"))
+        if "low" in ind and pd.notna(last.get("low")):
+            low_px = float(last.get("low"))
+    except (TypeError, ValueError):
+        pass
+
+    matched: set[str] = set()
+    for k in kinds:
+        m = _TARGET_RE.match(str(k or "").strip())
+        if not m:
+            continue
+        op, raw_val = m.group(1), m.group(2)
+        try:
+            target_px = float(raw_val)
+        except ValueError:
+            continue
+        if op in (">=", ">", ":"):
+            if close_px >= target_px or high_px >= target_px:
+                matched.add(k)
+        elif op in ("<=", "<"):
+            if close_px <= target_px or low_px <= target_px:
+                matched.add(k)
+    return matched
+
+
+def _format_alert_trigger_label(kind: str) -> str:
+    """Ubah token target harga ke label ramah pengguna untuk build_alert_message."""
+    m = _TARGET_RE.match(str(kind or "").strip())
+    if not m:
+        return kind
+    op, raw_val = m.group(1), m.group(2)
+    try:
+        target_px = float(raw_val)
+    except ValueError:
+        return kind
+    sym_op = "<=" if op in ("<=", "<") else ">="
+    return f"🎯 Target harga {sym_op} {fmt_rp(target_px)} tercapai"
+
+
+def _real_position_chats() -> list[str]:
+    """Daftar chat_id yang punya posisi terbuka di real_positions."""
+    with store._db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT chat_id FROM real_positions WHERE lots > 0"
+        ).fetchall()
+        return [str(r["chat_id"]) for r in rows]
+
+
+def _exit_alert_should_send(
+    chat_id: int | str, ticker: str, trigger_key: str, day_iso: str
+) -> bool:
+    """Return True dan catat bila (chat_id, ticker, trigger_key) belum dikirim hari ini."""
+    cid = str(chat_id)
+    key = f"exit_alert:{str(ticker).upper()}:{trigger_key}"
+    with store._db() as conn:
+        store._ensure_chat(conn, cid)
+        row = conn.execute(
+            "SELECT value FROM chat_settings WHERE chat_id=? AND key=?",
+            (cid, key),
+        ).fetchone()
+        if row and str(row["value"]) == str(day_iso):
+            return False
+        conn.execute(
+            "INSERT INTO chat_settings(chat_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value",
+            (cid, key, str(day_iso)),
+        )
+        return True
 
 
 async def morning_scan(app: Application, deps):
@@ -117,6 +247,9 @@ async def fill_open(app: Application, deps):
             store.all_papers):
         if rec.get("status") == "pending":
             pending.setdefault(chat_id, set()).add(symbol)
+    if not pending:
+        return
+    reg = await _fetch_regime_safe(deps)
     for chat_id, symbols in pending.items():
         bars_map: dict[str, pd.DataFrame] = {}
         for symbol in symbols:
@@ -130,7 +263,7 @@ async def fill_open(app: Application, deps):
         try:
             modal = await asyncio.to_thread(store.get_modal, chat_id)
             msgs = await asyncio.to_thread(
-                saranmod.fill_pending, chat_id, bars_map, modal)
+                _call_fill_pending, chat_id, bars_map, modal, reg)
             for msg in msgs:
                 await app.bot.send_message(int(chat_id), msg, parse_mode=ParseMode.HTML)
         except Exception:
@@ -199,8 +332,207 @@ async def check_zone_alerts(app: Application, bars, deps) -> None:
                 log.exception("zona beli %s (chat %s) gagal", symbol, chat_id)
 
 
+async def _scan_real_position_exits(
+    app: Application, bars, deps, reg: dict | None
+) -> int:
+    """[Wave 2B] Peringatan keluar/manajemen risiko posisi asli (real_positions + open_executions).
+
+    Mencakup:
+    - SL tersentuh (`sl_hit`)
+    - Chandelier trailing SL tembus (`chandelier_hit`)
+    - TP1 scale-out 50% + geser SL ke BEP+0,40% fee BEI (`tp1_scale_out`)
+    - Horizontal time-stop >= 20 hari bursa (`time_stop`)
+    - Peringatan rezim IHSG defensif (`regime_defensive`)
+    Dedup harian per (chat_id, ticker, trigger_key, today_iso) agar tidak spam.
+    """
+    pos_chats = await asyncio.to_thread(_real_position_chats)
+    if not pos_chats:
+        return 0
+    today_d = marketcal.now_wib().date()
+    today_iso = today_d.isoformat()
+    sent_count = 0
+
+    for chat_id in pos_chats:
+        try:
+            positions = await asyncio.to_thread(store.real_positions, chat_id)
+            if not positions:
+                continue
+            open_execs = await asyncio.to_thread(
+                store.open_executions_by_ticker, chat_id
+            )
+        except Exception:
+            log.exception("gagal muat posisi asli chat %s", chat_id)
+            continue
+
+        for pos in positions:
+            sym = str(pos.get("ticker") or "").upper()
+            lots = int(pos.get("lots") or 0)
+            avg_px = float(pos.get("avg_price") or 0.0)
+            if not sym or lots <= 0 or avg_px <= 0:
+                continue
+            try:
+                df = await asyncio.to_thread(bars, sym)
+                if df is None or df.empty:
+                    continue
+                ind = await asyncio.to_thread(analysis.compute_indicators, df)
+                snap = analysis.last_snapshot(ind)
+                close_px = float(snap["close"])
+                prev_close = (
+                    float(ind["close"].iloc[-2])
+                    if len(ind) >= 2 and "close" in ind
+                    else None
+                )
+                low_px = (
+                    float(ind["low"].iloc[-1])
+                    if "low" in ind and len(ind) and pd.notna(ind["low"].iloc[-1])
+                    else close_px
+                )
+                high_px = (
+                    float(ind["high"].iloc[-1])
+                    if "high" in ind and len(ind) and pd.notna(ind["high"].iloc[-1])
+                    else close_px
+                )
+                atr_val = None
+                try:
+                    raw_atr = ind["atr14"].iloc[-1]
+                    if pd.notna(raw_atr) and float(raw_atr) > 0:
+                        atr_val = float(raw_atr)
+                except (KeyError, IndexError, TypeError, ValueError):
+                    atr_val = None
+
+                ex_info = open_execs.get(sym) or {}
+                sl_exec = ex_info.get("sl")
+                tp_exec = ex_info.get("tp")
+                entry_date = ex_info.get("trade_date") or (
+                    str(pos.get("updated_at") or "")[:10] or None
+                )
+
+                eg = saranmod.build_exit_guidance(
+                    sym,
+                    avg_px,
+                    lots=lots,
+                    atr=atr_val,
+                    sl=sl_exec,
+                    tp=tp_exec,
+                    close=close_px,
+                    prev_close=prev_close,
+                    df=ind,
+                    entry_date=entry_date,
+                    today=today_d,
+                )
+
+                candidates: list[tuple[str, str]] = []
+                sl_lvl = float(eg.get("sl_initial") or 0.0)
+                sl_src_lbl = "SL eksekusi" if sl_exec else "1×ATR"
+                if eg.get("action") == "CUT_LOSS" or (
+                    sl_lvl > 0 and (close_px <= sl_lvl or low_px <= sl_lvl)
+                ):
+                    candidates.append((
+                        "sl_hit",
+                        f"🛑 <b>SL Tersentuh ({sl_src_lbl})</b>: harga {fmt_rp(close_px)} "
+                        f"(low {fmt_rp(low_px)}) menembus batas SL <b>{fmt_rp(sl_lvl)}</b> "
+                        "— disiplin cut loss untuk lindungi modal.",
+                    ))
+
+                ch = eg.get("chandelier") or {}
+                if ch.get("hit") or eg.get("action") == "TRAILING_EXIT":
+                    candidates.append((
+                        "chandelier_hit",
+                        f"📉 <b>Chandelier Trailing SL Tembus</b>: harga {fmt_rp(close_px)} "
+                        f"di bawah trailing stop 22h−3×ATR (<b>{fmt_rp(ch.get('stop'))}</b>) "
+                        "— amankan profit / batasi pembalikan tren.",
+                    ))
+
+                sc_out = eg.get("scale_out") or {}
+                tp1_px = float(sc_out.get("tp1") or 0.0)
+                if (
+                    sc_out.get("tp1_reached")
+                    or (tp1_px > 0 and high_px >= tp1_px)
+                    or eg.get("action") in ("SCALE_OUT_TP1", "AMBIL_PROFIT")
+                ):
+                    candidates.append((
+                        "tp1_scale_out",
+                        f"🎯 <b>Scale-Out TP1 Tercapai</b>: {esc(sc_out.get('note') or '')} "
+                        f"(geser SL sisa lot ke BEP+0,40% fee BEI: <b>{fmt_rp(eg.get('bep_sl'))}</b>).",
+                    ))
+
+                ts = eg.get("time_stop") or {}
+                if ts.get("triggered"):
+                    candidates.append((
+                        "time_stop",
+                        f"⏳ <b>Time-Stop Horizontal ({ts.get('days_held')} hari bursa)</b>: "
+                        f"{esc(ts.get('reason') or '')}.",
+                    ))
+
+                if reg and reg.get("status") == "DEFENSIVE":
+                    candidates.append((
+                        "regime_defensive",
+                        f"🛡️ <b>Rezim IHSG Defensif (SMA50 &lt; SMA200)</b>: "
+                        f"perketat SL efektif ke <b>{fmt_rp(eg.get('effective_sl'))}</b> "
+                        "&amp; hindari tambah muatan baru.",
+                    ))
+
+                if not candidates:
+                    continue
+
+                fresh_lines: list[str] = []
+                for trig_key, trig_line in candidates:
+                    should_send = await asyncio.to_thread(
+                        _exit_alert_should_send, chat_id, sym, trig_key, today_iso
+                    )
+                    if should_send:
+                        fresh_lines.append("• " + trig_line)
+
+                if not fresh_lines:
+                    continue
+
+                pnl_net = eg.get("pnl_net_pct")
+                pnl_str = f" ({pnl_net:+.1f}% net)" if pnl_net is not None else ""
+                trail_px = eg.get("trailing_sl")
+                trail_str = (
+                    f" · Trailing 22h: <b>{fmt_rp(trail_px)}</b>" if trail_px else ""
+                )
+                msg_lines = [
+                    f"🚨 <b>ALERT POSISI PORTOFOLIO — {esc(sym)}</b>",
+                    f"Posisi: <b>{lots} lot</b> @ {fmt_rp(avg_px)} · "
+                    f"Harga: <b>{fmt_rp(close_px)}</b>{pnl_str}",
+                    f"SL efektif: <b>{fmt_rp(eg.get('effective_sl'))}</b> ({sl_src_lbl}){trail_str}",
+                    "",
+                    *fresh_lines,
+                ]
+                arb_warns = (eg.get("arb_risk") or {}).get("warnings") or []
+                if arb_warns:
+                    msg_lines.append(f"⚠️ <i>{esc(arb_warns[0])}</i>")
+                msg_lines += [
+                    "",
+                    f"<i>Panduan lengkap: <code>/jual {esc(sym)}</code> · "
+                    f"catat jual: <code>/portofolio jual {esc(sym)} LOT HARGA</code>. "
+                    "Bukan auto-trading.</i>",
+                ]
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        f"🤔 Cek layak jual {sym}?", callback_data=f"tick:jual:{sym}"
+                    ),
+                    InlineKeyboardButton(
+                        f"📝 Sudah jual {sym} di Stockbit",
+                        callback_data=f"exec:sell:{sym}",
+                    ),
+                ]])
+                await app.bot.send_message(
+                    int(chat_id),
+                    "\n".join(msg_lines),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                )
+                sent_count += 1
+                await asyncio.sleep(0.3)
+            except Exception:
+                log.exception("exit alert posisi %s (chat %s) gagal", sym, chat_id)
+    return sent_count
+
+
 async def scan_alerts(app: Application, deps):
-    """Job berkala: alert + posisi latihan, hanya saat bursa buka."""
+    """Job berkala: alert + posisi latihan + exit alert portofolio, hanya saat bursa buka."""
     if not marketcal.market_open():
         return  # hanya hari bursa 09:00–16:00 WIB
 
@@ -224,15 +556,17 @@ async def scan_alerts(app: Application, deps):
                 continue
             ind = await asyncio.to_thread(analysis.compute_indicators, df)
             hit = alerts.match_kinds(alerts.check_triggers(ind), kinds)
+            hit |= _match_target_kinds(ind, kinds)
             fresh = await asyncio.to_thread(
                 store.update_alert_state, chat_id, symbol, hit)
             if not fresh:
                 continue
             snap = analysis.last_snapshot(ind)
             sc = analysis.score_stock(ind)
+            labels = [_format_alert_trigger_label(k) for k in sorted(fresh)]
             await app.bot.send_message(
                 int(chat_id),
-                alerts.build_alert_message(symbol, sorted(fresh), snap, sc),
+                alerts.build_alert_message(symbol, labels, snap, sc),
                 parse_mode=ParseMode.HTML)
             await asyncio.sleep(.3)
         except Exception:
@@ -243,6 +577,13 @@ async def scan_alerts(app: Application, deps):
     for chat_id, symbol, rec in await asyncio.to_thread(
             store.all_papers):
         papers.setdefault(chat_id, {})[symbol] = rec
+    has_pending = any(
+        any(r.get("status") == "pending" for r in recs.values())
+        for recs in papers.values()
+    )
+    pos_chats = await asyncio.to_thread(_real_position_chats)
+    reg = await _fetch_regime_safe(deps) if (has_pending or pos_chats) else None
+
     for chat_id, recs in papers.items():
         need = [s for s, r in recs.items() if r.get("status") in ("pending", "open")]
         if not need:
@@ -259,7 +600,8 @@ async def scan_alerts(app: Application, deps):
         modal = await asyncio.to_thread(store.get_modal, chat_id)
         msgs: list[str] = []
         if any(r.get("status") == "pending" for r in recs.values()):
-            msgs += await asyncio.to_thread(saranmod.fill_pending, chat_id, bars_map, modal)
+            msgs += await asyncio.to_thread(
+                _call_fill_pending, chat_id, bars_map, modal, reg)
         latest = {s: df.iloc[-1] for s, df in bars_map.items() if len(df)}
         msgs += await asyncio.to_thread(saranmod.update_paper, chat_id, latest)
         for msg in msgs:
@@ -273,6 +615,10 @@ async def scan_alerts(app: Application, deps):
 
     # 4) [P16] zona beli watchlist — hanya saat MASUK zona, bukan tiap putaran
     await deps.check_zone_alerts(app, bars)
+
+    # 5) [Wave 2B] exit alert portofolio asli (SL, TP1 scale-out, Chandelier, time-stop, rezim)
+    if pos_chats:
+        await _scan_real_position_exits(app, bars, deps, reg)
 
 
 async def backup_job(app: Application, deps):
@@ -345,11 +691,13 @@ async def weekly_journal_report(app: Application, deps, *, force: bool = False):
                 continue
             paper = await asyncio.to_thread(store.get_paper, cid)
             positions = await asyncio.to_thread(store.real_positions, cid)
+            diag = jurnalmod.jurnal_diagnostics(execs)
             txt = jurnalmod.format_journal_report(
                 jurnalmod.summarize_executions(execs),
                 jurnalmod.summarize_paper_realized(paper),
                 open_real_count=len(positions),
                 periodic_title=title,
+                diagnostics=diag,
             )
             for part in split_message(txt):
                 await deps.send_with_retry(

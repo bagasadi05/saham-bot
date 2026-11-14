@@ -94,14 +94,15 @@ def menu_text() -> str:
 def main_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🛡️ Cek Layak Beli", callback_data="pick:cek"),
-         InlineKeyboardButton("📊 Analisis Lengkap", callback_data="pick:analisis")],
-        [InlineKeyboardButton("💡 Ide & Sinyal", callback_data="sub:ide"),
+         InlineKeyboardButton("💰 Cek Jual / Tinjau Posisi", callback_data="pick:jual")],
+        [InlineKeyboardButton("📊 Analisis Lengkap", callback_data="pick:analisis"),
          InlineKeyboardButton("🎯 Hitung Modal & Lot", callback_data="sub:rencana")],
-        [InlineKeyboardButton("👀 Watchlist & Alarm", callback_data="sub:pantau"),
+        [InlineKeyboardButton("💡 Ide & Sinyal", callback_data="sub:ide"),
          InlineKeyboardButton("💼 Portofolio Saya", callback_data="run:portofolio")],
-        [InlineKeyboardButton("🎓 Belajar Istilah", callback_data="run:belajar"),
-         InlineKeyboardButton("❓ Panduan Pemula", callback_data="run:help")],
-        [InlineKeyboardButton("⚙️ Fitur Lanjutan & Perintah", callback_data="sub:pro")],
+        [InlineKeyboardButton("👀 Watchlist & Alarm", callback_data="sub:pantau"),
+         InlineKeyboardButton("🎓 Belajar Istilah", callback_data="run:belajar")],
+        [InlineKeyboardButton("❓ Panduan Pemula", callback_data="run:help"),
+         InlineKeyboardButton("⚙️ Fitur Lanjutan & Perintah", callback_data="sub:pro")],
     ])
 
 
@@ -110,17 +111,34 @@ def home_markup() -> InlineKeyboardMarkup:
         [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")]])
 
 
-def result_markup(action: str, ticker: str) -> InlineKeyboardMarkup:
+def result_markup(
+    action: str, ticker: str, *, allow_buy: bool = True
+) -> InlineKeyboardMarkup:
     """Tombol di bawah hasil: konfirmasi Stockbit (bila relevan), perbarui, menu."""
     rows = []
     if action in ("cek", "rencana", "tanya_beli", "beli", "tanya_umum", "analisis"):
-        rows.append([InlineKeyboardButton(
-            "📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{ticker}",
-        )])
+        top_btns = []
+        if allow_buy:
+            top_btns.append(
+                InlineKeyboardButton(
+                    "📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{ticker}"
+                )
+            )
+        top_btns.append(
+            InlineKeyboardButton(
+                "🤔 Cek layak jual?", callback_data=f"tick:jual:{ticker}"
+            )
+        )
+        rows.append(top_btns)
     elif action in ("jual", "tanya_jual"):
-        rows.append([InlineKeyboardButton(
-            "📝 Sudah jual di Stockbit", callback_data=f"exec:sell:{ticker}",
-        )])
+        rows.append([
+            InlineKeyboardButton(
+                "📝 Sudah jual di Stockbit", callback_data=f"exec:sell:{ticker}"
+            ),
+            InlineKeyboardButton(
+                "💼 Portofolio", callback_data="run:portofolio"
+            ),
+        ])
     rows.append([InlineKeyboardButton("🔄 Perbarui", callback_data=f"refresh:{action}:{ticker}")])
     rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
@@ -213,7 +231,9 @@ def modal_text(cur_modal: int) -> str:
     return (
         f"💵 <b>Atur Modal Rencana &amp; Latihan</b>\n\n"
         f"Modal tersimpan saat ini: <b>{saranmod.fmt(cur_modal)}</b>\n\n"
-        "Angka ini dipakai untuk menghitung batas risiko aman per saham "
+        "Angka ini dipakai untuk <b>sizing posisi asli</b> (<code>/rencana</code>, "
+        "<code>/paket</code>, <code>/portofolio</code>) sekaligus <b>simulasi "
+        "paper trading</b> (<code>/saran</code>) dengan batas risiko aman "
         "(maks 1% modal per posisi, atau 0,5% saat pasar sedang defensif).\n\n"
         "Pilih nominal cepat di bawah atau ketik angka sendiri:"
     )
@@ -312,15 +332,17 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
             "• <code>/beli BBCA</code> / <code>/jual BBCA</code> — tanya layak beli/jual\n"
             "• <code>/belajar RSI</code> — kamus istilah saham\n\n"
             "<b>Ide Pasar, Modal &amp; Portofolio:</b>\n"
-            "• <code>/saran</code> — kandidat harian + sizing latihan\n"
+            "• <code>/saran</code> · <code>/saran lq45</code> · <code>/saran list</code> — kandidat harian &amp; posisi latihan\n"
             "• <code>/paket</code> — paket multi-saham siap Stockbit\n"
             "• <code>/sinyal</code> · <code>/sinyal beli bagus</code> — sinyal seluruh IDX\n"
             "• <code>/sektor</code> — rotasi kekuatan sektor BEI\n"
-            "• <code>/modal 5000000</code> — atur modal rencana/latihan\n"
-            "• <code>/portofolio</code> — catat posisi nyata (<code>/portofolio beli BBCA 5 9000</code>)\n"
-            "• <code>/jurnal</code> — catat slippage Stockbit &amp; win rate realisasi\n\n"
+            "• <code>/modal 5000000</code> — atur modal sizing posisi asli &amp; paper\n"
+            "• <code>/portofolio</code> — posisi nyata (<code>/portofolio beli BBCA 5 9000</code>, "
+            "<code>/portofolio jual BBCA 5 9200</code>, <code>/portofolio batas 20 35</code>)\n"
+            "• <code>/jurnal</code> — slippage Stockbit &amp; diagnostik realisasi "
+            "(<code>/jurnal beli</code>, <code>/jurnal jual</code>, <code>/jurnal riwayat</code>)\n\n"
             "<b>Pantau, Riset &amp; Lainnya:</b>\n"
-            "• <code>/watch</code> · <code>/alert</code> · <code>/auto on</code> — pantau otomatis\n"
+            "• <code>/watch</code> · <code>/alert BBCA 9500</code> · <code>/auto on</code> · <code>/auto off</code> — pantau otomatis\n"
             "• <code>/skor</code> · <code>/berita</code> · <code>/fundamental</code> · "
             "<code>/banding BBCA BBRI</code> · <code>/agenda BBCA</code>\n"
             "• <code>/scan</code> · <code>/backtest BBCA</code> · <code>/bandar</code> · "

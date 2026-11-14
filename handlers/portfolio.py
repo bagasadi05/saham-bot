@@ -45,9 +45,22 @@ def _quote_posisi(t: str) -> dict:
         close = float(df["close"].iloc[-1])
     except (KeyError, TypeError, ValueError):
         return {"close": None, "atr": None, "stale": True}
-    return {"close": close, "atr": portmod.atr14(df),
-            "stale": bool(df.attrs.get("stale_note")),
-            "rets": df["close"].pct_change().dropna()}
+    prev_close = float(df["close"].iloc[-2]) if len(df) >= 2 else None
+    as_of = str(df.attrs.get("last_bar_date") or "")
+    if not as_of and hasattr(df.index[-1], "strftime"):
+        try:
+            as_of = df.index[-1].strftime("%Y-%m-%d")
+        except Exception:
+            as_of = str(df.index[-1])[:10]
+    return {
+        "close": close,
+        "prev_close": prev_close,
+        "atr": portmod.atr14(df),
+        "stale": bool(df.attrs.get("stale") or df.attrs.get("stale_note")),
+        "as_of": as_of,
+        "df": df,
+        "rets": df["close"].pct_change().dropna(),
+    }
 
 
 async def _porto_quotes(tickers: list[str], deps) -> dict[str, dict]:
@@ -87,10 +100,12 @@ def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> st
               if summary.get("pnl_pct") is not None else ""),
            ""]
     for r in rows:
-        line = (f"• <b>{esc(r['ticker'])}</b> — {r['lots']} lot @ "
+        stale_badge = " ⚠️(cache)" if r.get("stale") else ""
+        days_badge = f" · {r['days_held']}h" if r.get("days_held") is not None else ""
+        line = (f"• <b>{esc(r['ticker'])}</b>{stale_badge} — {r['lots']} lot @ "
                 f"{deps._money(r['avg_price'])}")
         if r["priced"]:
-            line += f" → {deps._money(r['close'])}"
+            line += f" → {deps._money(r['close'])}{days_badge}"
         out.append(line)
         if r["priced"]:
             bits = [f"nilai {deps._money(r['value'])}",
@@ -101,9 +116,27 @@ def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> st
                 bits.append(f"{deps._plan_pct(r['weight_pct'], sign=False)} "
                             "portofolio")
             out.append("   " + " · ".join(bits))
-            if r["sl"] and r["risk"]:
-                out.append(f"   SL hari ini {deps._money(r['sl'])} (2×ATR) · "
+            if r.get("sl") and r.get("risk") is not None:
+                sl_src = esc(str(r.get("sl_source") or "1×ATR"))
+                trail_txt = ""
+                if r.get("trailing_sl"):
+                    hit_tag = " ⚠️JEBOL" if r.get("trailing_hit") else ""
+                    trail_txt = f" · Chandelier {deps._money(r['trailing_sl'])}{hit_tag}"
+                out.append(f"   SL hari ini {deps._money(r['sl'])} ({sl_src}){trail_txt} · "
                            f"risiko {deps._money(r['risk'])}")
+            sc_out = r.get("scale_out")
+            sc_note = r.get("scale_out_note") or (
+                sc_out.get("action")
+                if isinstance(sc_out, dict) and sc_out.get("tp1_hit")
+                else None
+            )
+            if sc_note:
+                out.append(f"   🎯 <i>{esc(str(sc_note))}</i>")
+            if (r.get("time_stop_flag") or r.get("time_stop_hit")) and r.get("days_held") is not None:
+                out.append(
+                    f"   ⏱️ <i>Time-stop: pegang {r['days_held']} hari bursa "
+                    "(>= 20 hari horizon model — evaluasi keluar/rotasi)</i>"
+                )
         else:
             out.append("   ❔ harga tidak tersedia — tidak dihitung di total")
     if summary.get("unpriced"):
@@ -162,8 +195,8 @@ def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> st
         "<code>/portofolio jual BBCA 2 9500</code> · "
         "<code>/portofolio riwayat</code>",
         "",
-        "<i>Harga Yahoo delayed; SL dihitung di harga sekarang (2×ATR), bukan "
-        "SL awal saat membeli. Fee transaksi belum masuk harga rata-rata.</i>",
+        "<i>Harga Yahoo delayed; SL memakai catatan eksekusi (/jurnal) atau "
+        "1×ATR harga berjalan + Chandelier trailing stop (20h high − 2×ATR).</i>",
         "",
         deps._SINYAL_DISCLAIMER,
     ]
@@ -270,17 +303,25 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                     sector = (fr or {}).get("sector")
                 except Exception:
                     log.warning("sektor %s tidak terbaca", t, exc_info=True)
+                ctx_b = await asyncio.to_thread(
+                    store.get_signal_context, chat_id, t, intent="beli"
+                )
                 res = await asyncio.to_thread(
                     store.add_real_position, chat_id, t, lots, price, today,
-                    sector)
+                    sector,
+                    sl=ctx_b.get("sl") if ctx_b else None,
+                    tp=ctx_b.get("tp") if ctx_b else None,
+                    signal_price=ctx_b.get("signal_price") if ctx_b else None,
+                    source="portofolio",
+                )
                 await msg.reply_text(
                     f"✅ Tercatat <b>BELI {esc(t)}</b> {lots} lot @ "
                     f"{deps._money(price)} = "
                     f"{deps._money(lots * 100 * price)}\n"
                     f"Posisi sekarang: <b>{res['lots']} lot</b> @ rata-rata "
                     f"{deps._money(res['avg_price'])}\n"
-                    f"<i>Fee beli ±0,15% belum masuk harga rata-rata.</i>\n\n"
-                    "Lihat: /portofolio",
+                    f"<i>Tercatat di /portofolio &amp; /jurnal (fee beli ±0,15% belum masuk harga rata-rata).</i>\n\n"
+                    "Lihat: /portofolio · /jurnal",
                     parse_mode=ParseMode.HTML)
             else:
                 tracked = await asyncio.to_thread(
@@ -289,19 +330,25 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                     res = await asyncio.to_thread(
                         store.record_execution_sell, chat_id, t, lots, price,
                         today, source="portofolio")
-                    extra = (
-                        f"Realisasi bruto: {deps._money_delta(res['gross_pnl'])}\n"
-                        f"Realisasi neto (fee BEI 0,40%): "
-                        f"<b>{deps._money_delta(res['net_pnl'])}</b> "
-                        f"<i>(tercatat di /jurnal)</i>\n"
-                    )
                 else:
                     res = await asyncio.to_thread(
                         store.reduce_real_position, chat_id, t, lots, price, today)
-                    extra = (
-                        f"Realisasi (harga − rata-rata): "
-                        f"<b>{deps._money_delta(res['realized'])}</b>\n"
-                    )
+                gross_val = res.get("gross_pnl", res.get("realized", 0.0))
+                net_val = res.get("net_pnl", res.get("net_realized", gross_val))
+                fee_val = res.get("fee_rp")
+                if fee_val is None and gross_val is not None and net_val is not None:
+                    fee_val = float(gross_val) - float(net_val)
+                fee_txt = (
+                    f" (fee BEI 0,40% ≈ {deps._money(fee_val)})"
+                    if fee_val
+                    else " (fee BEI 0,40%)"
+                )
+                extra = (
+                    f"Realisasi bruto (harga − rata-rata): {deps._money_delta(gross_val)}\n"
+                    f"Realisasi neto{fee_txt}: "
+                    f"<b>{deps._money_delta(net_val)}</b> "
+                    f"<i>(tercatat di /jurnal)</i>\n"
+                )
                 await msg.reply_text(
                     f"✅ Tercatat <b>JUAL {esc(t)}</b> {lots} lot @ "
                     f"{deps._money(price)}\n"
@@ -309,7 +356,7 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                     + (f"Sisa {res['lots_left']} lot @ "
                        f"{deps._money(res['avg_price'])}\n" if res["lots_left"]
                        else "Posisi tertutup.\n")
-                    + "\nLihat: /portofolio",
+                    + "\nLihat: /portofolio · /jurnal",
                     parse_mode=ParseMode.HTML)
         except ValueError as e:
             await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML)
@@ -332,7 +379,15 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
         return
 
     positions = await asyncio.to_thread(store.real_positions, chat_id)
-    j_rows = [[InlineKeyboardButton("📒 Jurnal Eksekusi", callback_data="run:jurnal")]]
+    j_rows: list[list[InlineKeyboardButton]] = []
+    for p in positions[:4]:
+        tk = str(p.get("ticker") or "").upper()
+        if tk and int(p.get("lots") or 0) > 0:
+            j_rows.append([
+                InlineKeyboardButton(f"🤔 Cek layak jual {tk}?", callback_data=f"tick:jual:{tk}"),
+                InlineKeyboardButton(f"📝 Sudah jual {tk} di Stockbit", callback_data=f"exec:sell:{tk}"),
+            ])
+    j_rows.append([InlineKeyboardButton("📒 Jurnal Eksekusi", callback_data="run:jurnal")])
     if from_menu:
         j_rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
     porto_kb = InlineKeyboardMarkup(j_rows)
@@ -344,7 +399,8 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
         return
     await update.effective_chat.send_action(ChatAction.TYPING)
     quotes = await _porto_quotes([p["ticker"] for p in positions], deps)
-    summary = portmod.summarize(positions, quotes)
+    open_execs = await asyncio.to_thread(store.open_executions_by_ticker, chat_id)
+    summary = portmod.summarize(positions, quotes, open_execs=open_execs)
     modal = await asyncio.to_thread(store.get_modal, chat_id)
     max_pos, max_sec = await asyncio.to_thread(store.get_risk_limits, chat_id)
     bench = await asyncio.to_thread(_bench_rets)

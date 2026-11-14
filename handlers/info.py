@@ -18,7 +18,7 @@ from telegram.ext import ContextTypes
 
 from core import (data, fundamental, learn, marketcal, news,
                   scorecard, store)
-from core.reports import _trend_line, esc
+from core.reports import _trend_line, esc, fmt_compact_amount
 
 log = logging.getLogger("sahambuddy")
 
@@ -76,11 +76,25 @@ async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     try:
         c = await asyncio.to_thread(store.counts)
         h = await asyncio.to_thread(store.scan_history_counts)
+        scan_meta = await asyncio.to_thread(store.market_scan_meta)
     except Exception:
         log.exception("status: store gagal dibaca")
-        c, h = {}, {}
+        c, h, scan_meta = {}, {}, {}
     cache = data.cache_stats()
     avg = deps.STATS["ms"] / deps.STATS["commands"] if deps.STATS["commands"] else 0.0
+    scan_ln = ""
+    if scan_meta:
+        td = scan_meta.get("trade_date") or "—"
+        td_min = scan_meta.get("trade_date_min")
+        td_txt = f"{td} (min {td_min})" if td_min and td_min != td else str(td)
+        ok_n = scan_meta.get("ok", 0)
+        st_n = scan_meta.get("skipped_stale", 0)
+        ql_n = scan_meta.get("skipped_quality", 0)
+        fl_n = scan_meta.get("quality_flagged", 0)
+        scan_ln = (
+            f"Snapshot /scan: bar {esc(td_txt)} | lolos {ok_n} "
+            f"(dilewati basi {st_n}, kualitas {ql_n}, perbaikan bar {fl_n})\n"
+        )
     await update.effective_message.reply_text(
         "🩺 <b>Status SahamBuddy</b>\n"
         f"Uptime: {jam}j {menit}m | perintah: {deps.STATS['commands']} | "
@@ -93,6 +107,7 @@ async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         f"dari {c.get('paper_total', 0)}\n"
         f"Histori sinyal: {h.get('total', 0)} baris "
         f"({h.get('pending', 0)} menunggu hasil)\n"
+        f"{scan_ln}"
         f"Bursa: {'BUKA' if marketcal.market_open() else 'tutup'} | "
         f"hari ini {'hari bursa' if marketcal.is_trading_day(marketcal.now_wib().date()) else 'libur'}",
         parse_mode=ParseMode.HTML)
@@ -191,9 +206,16 @@ async def do_fundamental(update: Update, ticker: str, deps):
         )
         return
     sc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
+    currency = str(fund.get("currency") or "IDR").strip()
+    ccy_upper = currency.upper()
     rows = [f"🏛️ <b>Fundamental {esc(t)}</b> — {esc(fund.get('name'))}"]
     if fund.get("sector"):
         rows.append(f"Sektor: {esc(fund['sector'])}")
+    if ccy_upper not in ("IDR", ""):
+        rows.append(
+            f"Mata uang laporan: <b>{esc(currency)}</b> "
+            "<i>(angka asli laporan, tidak dikonversi kurs)</i>"
+        )
     rows.append(f"Skor: <b>{sc['pct']:+d}%</b> {sc['emoji']} {esc(sc['label'])}\n")
 
     def _fmt(key, tpl, suffix=""):
@@ -203,7 +225,16 @@ async def do_fundamental(update: Update, ticker: str, deps):
     der_v = fundamental.normalize_der(fund.get("debt_eq"))
     der_txt = f"{der_v:.0f}%" if der_v is not None else "—"
     rows.append(f"  PER: {_fmt('per', '%.1f')}   PBV: {_fmt('pbv', '%.2f')}")
-    rows.append(f"  EPS: {_fmt('eps', '%d')}   DER: {der_txt}")
+    eps_v = fund.get("eps")
+    if eps_v is None:
+        eps_txt = "—"
+    elif ccy_upper in ("IDR", ""):
+        eps_txt = f"{eps_v:.0f}"
+    elif ccy_upper == "TIDAK TERSEDIA":
+        eps_txt = f"{eps_v:.2f}"
+    else:
+        eps_txt = f"{ccy_upper} {eps_v:.2f}" if abs(float(eps_v)) < 100 else f"{ccy_upper} {eps_v:.0f}"
+    rows.append(f"  EPS: {eps_txt}   DER: {der_txt}")
     roe = fundamental.normalize_roe(fund.get("roe"))
     margin = fundamental.normalize_margin(fund.get("margin"))
     roe_parts = []
@@ -217,9 +248,14 @@ async def do_fundamental(update: Update, ticker: str, deps):
     if dy is not None:
         rows.append(f"  Dividend yield: {dy:.1f}%")
     if fund.get("market_cap"):
-        rows.append(f"  Kap. pasar: Rp{fund['market_cap'] / 1e12:.1f} T")
+        if ccy_upper in ("IDR", ""):
+            rows.append(f"  Kap. pasar: Rp{fund['market_cap'] / 1e12:.1f} T")
+        else:
+            rows.append(f"  Kap. pasar: {esc(fmt_compact_amount(fund['market_cap'], currency=currency))}")
 
-    def _rp_singkat(v: float) -> str:
+    def _amt_singkat(v: float) -> str:
+        if ccy_upper not in ("IDR", ""):
+            return fmt_compact_amount(v, currency=currency)
         sign = "-" if v < 0 else ""
         av = abs(v)
         if av >= 1e12:
@@ -232,12 +268,12 @@ async def do_fundamental(update: Update, ticker: str, deps):
     if cf["available"]:
         cf_bits = []
         if cf["ocf"] is not None:
-            cf_bits.append(f"OCF {_rp_singkat(cf['ocf'])}")
+            cf_bits.append(f"OCF {esc(_amt_singkat(cf['ocf']))}")
         if cf["fcf"] is not None:
-            cf_bits.append(f"FCF {_rp_singkat(cf['fcf'])}")
+            cf_bits.append(f"FCF {esc(_amt_singkat(cf['fcf']))}")
         if cf["net_cash"] is not None:
             lbl_nc = "Kas bersih" if cf["net_cash"] >= 0 else "Utang bersih"
-            cf_bits.append(f"{lbl_nc} {_rp_singkat(abs(cf['net_cash']))}")
+            cf_bits.append(f"{lbl_nc} {esc(_amt_singkat(abs(cf['net_cash'])))}")
         if cf["current_ratio"] is not None:
             cf_bits.append(f"CR {cf['current_ratio']:.2f}×")
         if cf["payout_pct"] is not None:
@@ -246,13 +282,16 @@ async def do_fundamental(update: Update, ticker: str, deps):
             rows.append("  Arus kas &amp; neraca: " + " · ".join(cf_bits))
     else:
         rows.append("  Arus kas &amp; neraca: <i>tidak tersedia</i>")
+    filing_note = cf.get("filing_note") or fund.get("filing_note")
+    if filing_note:
+        rows.append(f"  <i>{esc(str(filing_note))}</i>")
 
     rows.append(
         f"\nData per: {esc(str(fund.get('as_of') or 'kuartal terakhir yang tercatat'))}"
         " <i>(laporan keuangan via Yahoo, bisa delay 1-2 kuartal)</i>"
     )
     for lbl, key in (("Pendapatan", "rev_trend"), ("Laba bersih", "profit_trend")):
-        line = _trend_line(fund.get(key))
+        line = _trend_line(fund.get(key), currency=currency)
         rows.append(f"  {lbl} 4K: {line if line else '<i>tren tidak tersedia</i>'}")
 
     rows.append("\nCatatan skor:")

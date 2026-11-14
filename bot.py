@@ -40,7 +40,7 @@ import config
 from core import (analysis, btcache, data,
                   logsetup,
                   data_quality, fundamental, marketcal, news,
-                  powerscore,
+                  powerscore, pricing, reports as core_reports,
                   scorecard, screener, saran as saranmod, store)  # noqa: F401 (dipatch tes)
 from core import bandar  # noqa: F401 - dipatch tes
 from core import banding  # noqa: F401 - dipatch tes
@@ -126,7 +126,10 @@ _TANYA_STOP = {"atau", "gak", "nggak", "ngga", "apa", "apakah", "kah",
                "yang", "ini", "itu", "sih", "aja", "saja", "kalau", "gimana",
                "bagaimana", "harus", "bisa", "boleh", "mending", "sebaiknya",
                "worth", "nya", "nih", "tolong", "coba", "cek", "saham",
-               "emiten", "loss", "profit"}
+               "emiten", "loss", "profit", "lot", "sudah", "belum", "masih",
+               "punya", "pegang", "aman", "cuan", "modal", "naik", "turun",
+               "koreksi", "untung", "rugi", "hold", "cut", "tp", "sl", "rp",
+               "juta", "rb", "ribu", "jt", "lembar"}
 
 
 def parse_tanya(text: str) -> tuple[str, str | None] | None:
@@ -278,9 +281,12 @@ def build_quick(res: dict) -> str:
     snap, sc = res["snap"], res["score"]
     # [kendala 1] tanda singkat kalau data dari cache, bukan live
     note = " ⚠️(cache)" if res.get("stale_note") else ""
+    trend = sc.get("trend_label") or analysis.describe_rating(sc.get("rating"))
+    as_of = res.get("as_of")
+    as_of_txt = f" · data per {esc(str(as_of))}" if as_of else ""
     return (
         f"{sc['emoji']} <b>{esc(res['ticker'])}</b> {fmt_rp(snap['close'])} "
-        f"({snap['ret1d']:+.2f}%) — {sc['pct']:+.0f}% {esc(sc['rating'])}{note}"
+        f"({snap['ret1d']:+.2f}%) — {sc['pct']:+.0f}% {esc(str(trend))}{as_of_txt}{note}"
     )
 
 
@@ -313,24 +319,114 @@ def _verdict_beli(pw_pct: float) -> tuple[str, str]:
             "berbalik.")
 
 
-def _verdict_jual(ts_pct: float, close: float, support: float) -> tuple[str, str]:
-    """(judul, alasan singkat) untuk yang sudah pegang."""
-    if ts_pct >= 50:
-        return ("🟢 TAHAN",
-                "Tren naik — biarkan profit jalan, pasang stop loss di bawah "
-                "support.")
-    if ts_pct > -20:
-        return ("🟡 TAHAN dengan SL ketat",
-                "Tren belum jelas — tahan, tapi pasang stop loss supaya profit "
-                "tidak berubah jadi rugi.")
-    if ts_pct > -50:
+def _verdict_jual(
+    ts_pct: float,
+    close: float,
+    support: float,
+    *,
+    held_pos: dict | None = None,
+    exit_guidance: dict | None = None,
+    rel_pct: float | None = None,
+    forensic_penalty: float = 0.0,
+    forensic_flags: list[str] | None = None,
+    market_regime: dict | None = None,
+) -> tuple[str, str]:
+    """(judul, alasan singkat) untuk yang sudah pegang atau meninjau keluar posisi."""
+    extra_notes: list[str] = []
+
+    if isinstance(exit_guidance, dict):
+        eff_sl = exit_guidance.get("effective_sl") or exit_guidance.get("sl_initial")
+        trail = exit_guidance.get("chandelier") or {}
+        scale_out = exit_guidance.get("scale_out") or {}
+        time_stop = exit_guidance.get("time_stop") or {}
+
+        if held_pos and eff_sl and close <= float(eff_sl):
+            return (
+                "🔴 SAATNYA JUAL / CUT LOSS (SL TERSENTUH)",
+                f"Harga berjalan {fmt_rp(close)} sudah menyentuh/menembus batas SL efektif "
+                f"{fmt_rp(float(eff_sl))}. Disiplin batasi kerugian.",
+            )
+        if held_pos and trail.get("hit") and trail.get("stop"):
+            return (
+                "🟠 Pertimbangkan JUAL / amankan profit (Trailing Stop jebol)",
+                f"Harga {fmt_rp(close)} turun menembus Chandelier trailing stop "
+                f"{fmt_rp(float(trail['stop']))} (puncak 22h "
+                f"{fmt_rp(float(trail.get('high_22') or close))} − 3×ATR).",
+            )
+        if held_pos and scale_out.get("tp1_reached") and scale_out.get("tp1"):
+            bep_sl = scale_out.get("bep_sl") or exit_guidance.get("bep_sl")
+            bep_txt = (
+                f" dan geser SL sisa lot ke BEP+0,40% fee ({fmt_rp(float(bep_sl))})"
+                if bep_sl
+                else ""
+            )
+            extra_notes.append(
+                f"Target TP1 ({fmt_rp(float(scale_out['tp1']))}) sudah tercapai — "
+                f"pertimbangkan scale-out jual 50% lot{bep_txt}."
+            )
+        if held_pos and time_stop.get("triggered"):
+            days_h = time_stop.get("days_held")
+            extra_notes.append(
+                f"Time-stop aktif: posisi sudah dipegang {days_h} hari bursa "
+                f"(>= {time_stop.get('max_hold_days', 20)} hari horizon model)."
+            )
+
+    if rel_pct is not None:
+        if float(rel_pct) < saranmod.HOLD_BAND_PCT:
+            extra_notes.append(
+                f"Skor relatif lintas-pasar ({float(rel_pct):.0f}%) turun di bawah "
+                f"pita tahan {saranmod.HOLD_BAND_PCT:.0f}% (keluar hold-band)."
+            )
+        else:
+            extra_notes.append(
+                f"Skor relatif ({float(rel_pct):.0f}%) masih di dalam pita tahan "
+                f">= {saranmod.HOLD_BAND_PCT:.0f}%."
+            )
+
+    if forensic_penalty < 0 or forensic_flags:
+        fl = "; ".join(str(x) for x in (forensic_flags or [])[:2])
+        extra_notes.append(
+            f"Waspada kualitas kas/forensik ({forensic_penalty:+.0f} poin"
+            + (f": {fl}" if fl else "")
+            + ")."
+        )
+
+    if isinstance(market_regime, dict) and market_regime.get("status") == "DEFENSIVE":
+        extra_notes.append("Rezim IHSG defensif (SMA50 < SMA200) — perketat trailing stop.")
+
+    tail = (" " + " ".join(extra_notes)) if extra_notes else ""
+    out_of_band = rel_pct is not None and float(rel_pct) < saranmod.HOLD_BAND_PCT
+    time_hit = bool(
+        held_pos
+        and isinstance(exit_guidance, dict)
+        and (exit_guidance.get("time_stop") or {}).get("triggered")
+    )
+    tp1_hit = bool(
+        held_pos
+        and isinstance(exit_guidance, dict)
+        and (exit_guidance.get("scale_out") or {}).get("tp1_reached")
+    )
+
+    if ts_pct <= -50:
+        extra = (" Harga sudah di bawah support "
+                 f"{fmt_rp(support)}." if close < support else "")
+        return ("🔴 Pertimbangkan JUAL / cut loss",
+                "Downtrend kuat. Jangan ditahan dengan harapan." + extra + tail)
+    if ts_pct <= -20 or out_of_band or time_hit:
         return ("🟠 Pertimbangkan JUAL SEBAGIAN",
                 "Tren melemah — amankan sebagian profit/modal, sisanya pasang "
-                "stop loss.")
-    extra = (" Harga sudah di bawah support "
-             f"{fmt_rp(support)}." if close < support else "")
-    return ("🔴 Pertimbangkan JUAL / cut loss",
-            "Downtrend kuat. Jangan ditahan dengan harapan." + extra)
+                "stop loss." + tail)
+    if tp1_hit:
+        return ("🟡 AMBIL UNTUNG SEBAGIAN (Scale-out TP1)",
+                "Harga sudah mencapai area TP1 — amankan 50% posisi dan naikkan "
+                "stop loss ke titik impas bersih." + tail)
+    if ts_pct >= 50 and forensic_penalty > -15:
+        return ("🟢 TAHAN",
+                "Tren naik — biarkan profit jalan, pasang stop loss di bawah "
+                "support." + tail)
+    return ("🟡 TAHAN dengan SL ketat",
+            "Tren belum jelas — tahan, tapi pasang stop loss supaya profit "
+            "tidak berubah jadi rugi." + tail)
 
 
 def _weekly_from_daily(ind: pd.DataFrame, score_pct: float) -> dict | None:
@@ -343,28 +439,99 @@ def _weekly_from_daily(ind: pd.DataFrame, score_pct: float) -> dict | None:
     return analysis.weekly_trend(w_close.to_frame(name="close"), score_pct)
 
 
-def build_verdict(res: dict, fund: dict | None, news_sent: dict | None,
-                  focus: str, bt_summary: dict | None = None,
-                  weekly: dict | None = None) -> str:
+def build_verdict(
+    res: dict,
+    fund: dict | None,
+    news_sent: dict | None,
+    focus: str = "umum",
+    bt_summary: dict | None = None,
+    weekly: dict | None = None,
+    *,
+    positions: list[dict] | None = None,
+    open_execs: dict[str, dict] | None = None,
+    rel_pct: float | None = None,
+    market_regime: dict | None = None,
+) -> str:
     snap, sc, sr = res["snap"], res["score"], res["sr"]
     t = res["ticker"]
-    fund_pct = fund["pct"] if fund else None
+    forensic_pen = float((fund or {}).get("forensic_penalty") or 0.0)
+    forensic_flags = list((fund or {}).get("forensic_flags") or [])
+    fund_input = fund.get("base_pct", fund.get("pct")) if fund else None
     news_pct = news_sent["pct"] if news_sent else None
-    pw = powerscore.combine(sc["pct"], fund_pct, news_pct)
-    close = snap["close"]
+    pw = powerscore.combine(sc["pct"], fund_input, news_pct, forensic_penalty=forensic_pen)
+    pw_label = pw.get("trend_label") or analysis.describe_rating(pw.get("rating"))
+    sc_label = sc.get("trend_label") or analysis.describe_rating(sc.get("rating"))
+    close = float(snap["close"])
 
-    last = res["ind"].iloc[-1]
-    atr = float(last["atr14"]) if not pd.isna(last.get("atr14", float("nan"))) else None
-    sl_beli = close - atr if atr else sr["support"]
-    tp_beli = close + 2 * atr if atr else sr["resistance"]
+    ind = res.get("ind")
+    last = ind.iloc[-1] if ind is not None and not ind.empty else pd.Series(dtype=float)
+    raw_atr = float(last["atr14"]) if not pd.isna(last.get("atr14", float("nan"))) else None
+    atr = raw_atr if (raw_atr is not None and raw_atr > 0) else None
+    sl_beli = float(saranmod.stop_price(close, atr)) if atr else float(pricing.round_tick(sr["support"]))
+    tp_beli = float(saranmod.target_price(close, atr)) if atr else float(pricing.round_tick(sr["resistance"]))
+
+    t_up = str(t).upper()
+    held_pos = None
+    if positions:
+        for p in positions:
+            if str(p.get("ticker") or "").upper() == t_up and int(p.get("lots") or 0) > 0:
+                held_pos = p
+                break
+    exec_info = (open_execs or {}).get(t_up) if isinstance(open_execs, dict) else None
+
+    entry_ref = float(held_pos.get("avg_price") or close) if held_pos else close
+    lots_ref = int(held_pos.get("lots") or 0) if held_pos else 0
+    stored_sl = float(exec_info["sl"]) if exec_info and exec_info.get("sl") else None
+    stored_tp = float(exec_info["tp"]) if exec_info and exec_info.get("tp") else None
+    entry_date_raw = (
+        str((exec_info or {}).get("trade_date") or (held_pos or {}).get("updated_at") or "")[:10]
+        or None
+    )
+    as_of_raw = str(res.get("as_of") or "")[:10]
+    try:
+        ref_today = date.fromisoformat(as_of_raw) if as_of_raw else marketcal.now_wib().date()
+    except ValueError:
+        ref_today = marketcal.now_wib().date()
+
+    prev_close = (
+        float(ind["close"].iloc[-2])
+        if ind is not None and len(ind) >= 2 and "close" in ind.columns
+        else None
+    )
+    exit_g = saranmod.build_exit_guidance(
+        t_up,
+        entry_ref,
+        lots=lots_ref,
+        atr=atr,
+        sl=stored_sl,
+        tp=stored_tp,
+        close=close,
+        prev_close=prev_close,
+        df=ind,
+        entry_date=entry_date_raw,
+        today=ref_today,
+    )
+    days_held = (exit_g.get("time_stop") or {}).get("days_held")
 
     beli_judul, beli_alasan = _verdict_beli(pw["pct"])
-    jual_judul, jual_alasan = _verdict_jual(sc["pct"], close, sr["support"])
+    jual_judul, jual_alasan = _verdict_jual(
+        sc["pct"],
+        close,
+        sr["support"],
+        held_pos=held_pos,
+        exit_guidance=exit_g,
+        rel_pct=rel_pct,
+        forensic_penalty=forensic_pen,
+        forensic_flags=forensic_flags,
+        market_regime=market_regime,
+    )
 
     sym_html = esc(t)
     title = {"beli": f"🛒 <b>Beli {sym_html}?</b>",
              "jual": f"💰 <b>Jual {sym_html}?</b>",
-             "umum": f"⚖️ <b>Beli atau jual {sym_html}?</b>"}[focus]
+             "umum": f"⚖️ <b>Beli atau jual {sym_html}?</b>"}.get(
+                 focus, f"⚖️ <b>Beli atau jual {sym_html}?</b>"
+             )
 
     if focus == "beli":
         headline = f"<b>Jawaban singkat: {beli_judul}</b>\n{beli_alasan}"
@@ -380,20 +547,35 @@ def build_verdict(res: dict, fund: dict | None, news_sent: dict | None,
     reasons = []
     if sc["pct"] < 0 and sc["bear"]:
         top = "; ".join(esc(s) for s in sc["bear"][:2])
-        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(sc['rating'])}): {top}")
+        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(str(sc_label))}): {top}")
     elif sc["bull"]:
         top = "; ".join(esc(s) for s in sc["bull"][:2])
-        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(sc['rating'])}): {top}")
+        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(str(sc_label))}): {top}")
     else:
-        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(sc['rating'])})")
+        reasons.append(f"Teknikal {sc['pct']:+.0f}% ({esc(str(sc_label))})")
     if fund:
         notes = "; ".join(esc(n) for n in fund.get("notes", [])[:2])
         reasons.append(f"Fundamental {fund['pct']:+.0f}% ({esc(fund['label'])}): "
                        f"{notes}" if notes else
                        f"Fundamental {fund['pct']:+.0f}% ({esc(fund['label'])})")
+        if forensic_pen < 0 or forensic_flags:
+            fl_txt = "; ".join(esc(str(x)) for x in forensic_flags[:2])
+            reasons.append(
+                f"Forensik kas/dividen ({forensic_pen:+.0f} poin)"
+                + (f": {fl_txt}" if fl_txt else "")
+            )
     if news_sent:
         reasons.append(f"Berita {news_sent['pct']:+.0f}% "
                        f"({news_sent['n']} berita)")
+    if rel_pct is not None:
+        reasons.append(
+            f"Peringkat relatif lintas-pasar: persentil {float(rel_pct):.0f}% "
+            f"(pita tahan >= {saranmod.HOLD_BAND_PCT:.0f}%)"
+        )
+    if isinstance(market_regime, dict) and market_regime.get("status") in ("BULL", "DEFENSIVE"):
+        reasons.append(
+            f"Rezim IHSG: {esc(str(market_regime.get('label') or market_regime.get('status')))}"
+        )
     if weekly:
         arrow_w = ("📈" if weekly["direction"] == "naik"
                    else ("📉" if weekly["direction"] == "turun" else "➖"))
@@ -423,21 +605,96 @@ def build_verdict(res: dict, fund: dict | None, news_sent: dict | None,
                      "momentum naik.")
     conds_txt = "\n".join(f"  • {esc(c)}" for c in conds[:2])
 
+    arb_warns = list((exit_g.get("arb_risk") or {}).get("warnings") or [])
+    level_lines = [
+        f"  Support: {fmt_rp(sr['support'])} | Resistance: {fmt_rp(sr['resistance'])}"
+    ]
+    if focus == "jual":
+        if held_pos:
+            lots_h = int(held_pos.get("lots") or 0)
+            net_pct = float(exit_g.get("pnl_net_pct") or 0.0)
+            days_txt = f" · pegang {days_held} hari bursa" if days_held is not None else ""
+            level_lines.append(
+                f"  Posisi tercatat: <b>{lots_h} lot</b> @ {fmt_rp(entry_ref)} "
+                f"(PnL bersih {net_pct:+.2f}% setelah fee BEI 0,40%{days_txt})"
+            )
+        eff_sl = float(exit_g.get("effective_sl") or exit_g.get("sl_initial") or sl_beli)
+        init_sl = float(exit_g.get("sl_initial") or sl_beli)
+        sl_src_lbl = "SL eksekusi" if stored_sl else "1×ATR"
+        trail = exit_g.get("chandelier") or {}
+        trail_sl = trail.get("stop")
+        trail_txt = (
+            f" | Chandelier trailing SL: {fmt_rp(float(trail_sl))} "
+            f"(puncak 22h {fmt_rp(float(trail.get('high_22') or close))} − 3×ATR)"
+            if trail_sl
+            else ""
+        )
+        level_lines.append(
+            f"  Batas keluar (SL efektif): <b>{fmt_rp(eff_sl)}</b> "
+            f"(SL awal {fmt_rp(init_sl)} [{sl_src_lbl}]{trail_txt})"
+        )
+        so = exit_g.get("scale_out") or {}
+        if so.get("tp1"):
+            bep_sl = float(so.get("bep_sl") or exit_g.get("bep_sl") or entry_ref)
+            tp2_px = float(so.get("tp_full") or exit_g.get("tp_target") or tp_beli)
+            level_lines.append(
+                f"  Scale-out TP1 (jual 50% lot): <b>{fmt_rp(float(so['tp1']))}</b> "
+                f"→ geser SL sisa ke BEP+0,40% fee BEI <b>{fmt_rp(bep_sl)}</b> | "
+                f"TP penuh: <b>{fmt_rp(tp2_px)}</b>"
+            )
+        ts = exit_g.get("time_stop") or {}
+        level_lines.append(
+            f"  Time-stop: evaluasi keluar bila pegang >= {ts.get('max_hold_days', 20)} hari bursa "
+            f"({esc(str(ts.get('reason') or ''))})"
+        )
+        for w in arb_warns:
+            level_lines.append(f"  ⚠️ {esc(str(w))}")
+    elif focus == "beli":
+        level_lines.append(
+            f"  Kalau beli — SL: {fmt_rp(sl_beli)} (1×ATR) | "
+            f"TP: {fmt_rp(tp_beli)} (2×ATR)"
+        )
+        for w in arb_warns:
+            level_lines.append(f"  ⚠️ {esc(str(w))}")
+    else:
+        level_lines.append(
+            f"  Kalau beli — SL: {fmt_rp(sl_beli)} (1×ATR) | "
+            f"TP: {fmt_rp(tp_beli)} (2×ATR)"
+        )
+        eff_sl = float(exit_g.get("effective_sl") or exit_g.get("sl_initial") or sl_beli)
+        so = exit_g.get("scale_out") or {}
+        tp1_px = float(so.get("tp1") or tp_beli)
+        bep_sl = float(so.get("bep_sl") or exit_g.get("bep_sl") or entry_ref)
+        level_lines.append(
+            f"  Kalau sudah pegang — SL efektif: {fmt_rp(eff_sl)} | "
+            f"Scale-out TP1 (50%): {fmt_rp(tp1_px)} → SL BEP+fee {fmt_rp(bep_sl)}"
+        )
+        for w in arb_warns:
+            level_lines.append(f"  ⚠️ {esc(str(w))}")
+    levels_txt = "\n".join(level_lines)
+
+    prov_line = core_reports.provenance_line(res)
+    if not prov_line and res.get("as_of"):
+        prov_line = f"🔎 <i>Data per {esc(str(res['as_of']))} WIB</i>\n"
+    qual_note = (
+        f"⚠️ <i>{esc(str(res['quality_note']))}</i>\n"
+        if res.get("quality_note")
+        else ""
+    )
+
     bt_line = btcache.format_verdict_backtest(bt_summary, t)
     trap = powerscore.trap_warning(snap.get("ret20d"), snap.get("ret1d"))
     trap_txt = f"\n{trap}" if trap else ""
 
     return (
-        f"{res.get('stale_note', '')}{title}\n"
+        f"{res.get('stale_note', '')}{prov_line}{qual_note}{title}\n"
         f"Harga: <b>{fmt_rp(close)}</b> "
         f"({snap['ret1d']:+.2f}% 1d, {snap['ret20d']:+.2f}% 20d) | "
-        f"PowerScore <b>{pw['pct']:+d}% {pw['emoji']} {esc(pw['rating'])}</b>\n\n"
+        f"PowerScore <b>{pw['pct']:+d}% {pw['emoji']} {esc(str(pw_label))}</b>\n\n"
         f"{headline}{other}\n\n"
         f"<b>Kenapa:</b>\n{reasons_txt}\n\n"
         f"<b>Level penting:</b>\n"
-        f"  Support: {fmt_rp(sr['support'])} | Resistance: {fmt_rp(sr['resistance'])}\n"
-        f"  Kalau beli — SL: {fmt_rp(sl_beli)} (1×ATR) | "
-        f"TP: {fmt_rp(tp_beli)} (2×ATR)\n"
+        f"{levels_txt}\n"
         f"{bt_line}\n"
         f"{('<b>Yang bisa mengubah jawaban:</b>\n' + conds_txt + chr(10)) if conds_txt else ''}"
         f"{trap_txt}\n"
@@ -467,8 +724,10 @@ def home_markup() -> InlineKeyboardMarkup:
     return menu_handler.home_markup()
 
 
-def result_markup(action: str, ticker: str) -> InlineKeyboardMarkup:
-    return menu_handler.result_markup(action, ticker)
+def result_markup(
+    action: str, ticker: str, *, allow_buy: bool = True
+) -> InlineKeyboardMarkup:
+    return menu_handler.result_markup(action, ticker, allow_buy=allow_buy)
 
 
 def ticker_pick_markup(action: str, watchlist: list[str] | None = None) -> InlineKeyboardMarkup:
@@ -1008,9 +1267,11 @@ def _sinyal_emoji(sig: str) -> str:
 
 def _scan_when(meta: dict) -> str:
     trade = meta.get("trade_date") or "?"
+    trade_min = meta.get("trade_date_min")
     scanned = (meta.get("scanned_at") or "").replace("T", " ")[:16]
     ok = meta.get("ok") or "?"
-    txt = (f"Data per {trade} · scan {scanned} WIB · {ok} emiten "
+    span = f" (bar terlama {trade_min})" if trade_min and trade_min != trade else ""
+    txt = (f"Data per {trade}{span} · scan {scanned} WIB · {ok} emiten "
            f"lolos data")
     if marketcal.market_open():
         txt += " · ⚠️ bursa masih buka, bar hari ini belum final"
@@ -1243,10 +1504,20 @@ async def _scan_summary_text(res: dict, intro: str,
                 f"🔴 JUAL <b>{counts.get('JUAL', 0)}</b> · "
                 f"⚪ TAHAN <b>{counts.get('TAHAN', 0)}</b>\n\n"
                 "Lihat: <code>/sinyal</code>")
-    buys = (await asyncio.to_thread(store.load_market_scan, "BELI"))[:5]
+    buys_all = await asyncio.to_thread(store.load_market_scan, "BELI")
+    buys_all.sort(
+        key=lambda r: (
+            -(r.get("rel_pct") if r.get("rel_pct") is not None else -1),
+            r.get("ticker", ""),
+        )
+    )
+    buys = buys_all[:5]
     sells = (await asyncio.to_thread(store.load_market_scan, "JUAL"))[:5]
     skipped = int(m.get("skipped") or 0)
     failed = int(m.get("failed") or 0)
+    skipped_stale = int(m.get("skipped_stale") or 0)
+    skipped_quality = int(m.get("skipped_quality") or 0)
+    quality_flagged = int(m.get("quality_flagged") or 0)
     out = [intro, "",
            f"✅ <b>{m.get('ok', '?')}</b> emiten dianalisis dari "
            f"{m.get('universe', '?')} kode universe "
@@ -1255,8 +1526,16 @@ async def _scan_summary_text(res: dict, intro: str,
            f"🔴 JUAL <b>{counts.get('JUAL', 0)}</b> · "
            f"⚪ TAHAN <b>{counts.get('TAHAN', 0)}</b>"]
     if skipped or failed:
-        out.append(f"ℹ️ {skipped or failed} kode dilewati — tanpa data harga "
+        detail_skip = []
+        if skipped_stale:
+            detail_skip.append(f"{skipped_stale} data basi")
+        if skipped_quality:
+            detail_skip.append(f"{skipped_quality} gagal cek kualitas")
+        detail_str = f" ({', '.join(detail_skip)})" if detail_skip else ""
+        out.append(f"ℹ️ {skipped or failed} kode dilewati{detail_str} — tanpa data harga "
                    "cukup (delisted/suspensi baru), bukan diisi data palsu.")
+    if quality_flagged:
+        out.append(f"⚠️ {quality_flagged} emiten lolos dengan catatan perbaikan anomali bar.")
     if buys:
         out += ["", "🟢 <b>Top BELI</b>"]
         out += [_sinyal_row(i + 1, r, (kval or {}).get(r["ticker"]))

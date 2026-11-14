@@ -15,7 +15,7 @@ from telegram.ext import ContextTypes
 
 import backtest as btmod
 from core import (analysis, btcache, data, fundamental, marketcal, news,
-                  regime, reports, saran as saranmod, store)
+                  pricing, regime, reports, saran as saranmod, store)
 
 log = logging.getLogger("sahambuddy")
 
@@ -26,7 +26,7 @@ async def do_saran(update: Update, deps, sub: str = "",
     msg = update.effective_message
     chat_id = update.effective_chat.id
     if list_only or sub in ("list", "posisi"):
-        lines = saranmod.paper_summary(chat_id)
+        lines = await asyncio.to_thread(saranmod.paper_summary, chat_id)
         await deps.reply_long(
             msg,
             "\n".join(lines) or "Belum ada posisi latihan.",
@@ -91,9 +91,17 @@ async def saran_scan_text(chat_id: int, deps,
     Emiten dianalisis paralel berbatas (`deps.SCAN_CONCURRENCY`) — hasil tetap urut
     sesuai universe, dan satu emiten gagal tidak membatalkan sisanya.
     Return teks ringkasan, atau None kalau semua sumber gagal."""
+    real_pos = await asyncio.to_thread(store.real_positions, chat_id)
+    open_execs = await asyncio.to_thread(store.open_executions_by_ticker, chat_id)
     if universe is None:
         wl = await asyncio.to_thread(store.get_watchlist, chat_id)
-        universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
+        held_syms = [
+            str(p.get("ticker") or "").upper()
+            for p in real_pos
+            if int(p.get("lots") or 0) > 0 and p.get("ticker")
+        ]
+        seed = list(dict.fromkeys(held_syms + list(wl) + list(saranmod.DEFAULT_UNIVERSE)))
+        universe = seed[:saranmod.MAX_SCAN]
     modal = await asyncio.to_thread(store.get_modal, chat_id)
     total = len(universe)
     done = 0
@@ -133,22 +141,57 @@ async def saran_scan_text(chat_id: int, deps,
     open_recs = {t: r for t, r in paper.items()
                  if r.get("status") in ("open", "pending")}
     reg = await asyncio.to_thread(getattr(deps, "regime", regime).fetch_ihsg_regime)
-    result = saranmod.pick(analyzed, modal, open_recs, market_regime=reg)
-    paper_msgs = saranmod.update_paper(chat_id, latest)  # notifikasi TP/SL posisi lama
+    result = await asyncio.to_thread(
+        saranmod.pick, analyzed, modal, open_recs, market_regime=reg
+    )
+    paper_msgs = await asyncio.to_thread(
+        saranmod.update_paper, chat_id, latest
+    )  # notifikasi TP/SL posisi lama
 
-    scale = result.get("exposure_scale", 1.0)
-    risk_txt = f"{scale:g}"
+    scale = float(result.get("exposure_scale", 1.0))
+    exp_pct_txt = f"{scale * 100:g}%"
+    eff_risk_pct = saranmod.BASE_RISK_PCT * scale * 100.0
+    risk_txt = f"{eff_risk_pct:g}"
     today = marketcal.now_wib().date()
+
+    bar_dates: list[str] = []
+    stale_count = 0
+    for a in analyzed:
+        r_a = a.get("res") or {}
+        if r_a.get("stale") or r_a.get("stale_note"):
+            stale_count += 1
+        b_d = r_a.get("as_of")
+        if not b_d:
+            ind_a = r_a.get("ind")
+            if ind_a is not None and not ind_a.empty and hasattr(ind_a.index[-1], "strftime"):
+                try:
+                    b_d = ind_a.index[-1].strftime("%Y-%m-%d")
+                except Exception:
+                    b_d = str(ind_a.index[-1])[:10]
+        if b_d:
+            bar_dates.append(str(b_d)[:10])
+    uniq_bars = sorted(set(bar_dates))
+    bar_lbl = (
+        uniq_bars[-1]
+        if len(uniq_bars) == 1
+        else (f"{uniq_bars[0]} s.d. {uniq_bars[-1]}" if uniq_bars else today.isoformat())
+    )
+    stale_lbl = f" · ⚠️ {stale_count} dari cache" if stale_count else ""
+
     lines = [f"🧭 <b>RINGKASAN SARAN HARIAN — {pd.Timestamp.now(tz=deps.WIB):%d %b %Y}</b>",
+             f"🔎 <i>Data bar terakhir: {deps.esc(bar_lbl)} WIB{deps.esc(stale_lbl)}</i>",
              "Skema: entry di open sesi berikutnya | SL 1×ATR | TP 2×ATR | "
              f"biaya beli {saranmod.BUY_FEE * 100:.2f}% & jual "
              f"{saranmod.SELL_FEE * 100:.2f}% | modal latihan {saranmod.fmt(modal)} "
              "(ubah: /modal 10000000)",
              reports.regime_banner(reg),
              f"\nPosisi latihan terbuka: {result['open_count']}/{result['max_open']} "
-             f"(maks {saranmod.MAX_PER_SECTOR} per sektor · risiko {risk_txt}%/posisi)\n"]
+             f"(maks {saranmod.MAX_PER_SECTOR} per sektor · eksposur {exp_pct_txt} · "
+             f"risiko {risk_txt}%/posisi)\n"]
     if result["picks"]:
-        saranmod.queue_paper(chat_id, result["picks"], today)
+        await asyncio.to_thread(
+            saranmod.queue_paper, chat_id, result["picks"], today, risk_scale=scale
+        )
         label = ("Kandidat (urut skor relatif antar-emiten — IC OOS +0,03, "
                  "tipis; setelah biaya ≈ 0)"
                  if result.get("mode") == "relatif"
@@ -172,8 +215,8 @@ async def saran_scan_text(chat_id: int, deps,
             if "lots" in c:
                 if c["lots"] > 0:
                     lines.append(
-                        f"      💼 Ukuran (risiko {risk_txt}% modal): {c['lots']} lot "
-                        f"({c['shares']} lembar) ≈ {saranmod.fmt(c['value'])} | "
+                        f"      💼 Ukuran (risiko {risk_txt}% modal, eksposur {exp_pct_txt}): "
+                        f"{c['lots']} lot ({c['shares']} lembar) ≈ {saranmod.fmt(c['value'])} | "
                         f"risiko nyata {saranmod.fmt(c['real_risk'])}")
                 else:
                     lines.append(
@@ -184,9 +227,100 @@ async def saran_scan_text(chat_id: int, deps,
     else:
         lines.append("Tidak ada kandidat layak BUY hari ini "
                      "(semua skor tak mencukupi / terkena filter jebakan momentum).")
-    hold_notes = result.get("hold_notes") or []
-    if hold_notes:
+
+    hold_notes = list(result.get("hold_notes") or [])
+    # Tinjau juga posisi asli (real_positions + open_executions_by_ticker)
+    analyzed_map = {str((a.get("res") or {}).get("ticker") or "").upper(): a for a in analyzed}
+    cand_rel_map: dict[str, float] = {}
+    for c_item in (result.get("picks") or []) + (result.get("avoid") or []):
+        if c_item.get("ticker") and c_item.get("rel_pct") is not None:
+            cand_rel_map[str(c_item["ticker"]).upper()] = float(c_item["rel_pct"])
+    for h_item in hold_notes:
+        if h_item.get("ticker") and h_item.get("rel_pct") is not None:
+            cand_rel_map[str(h_item["ticker"]).upper()] = float(h_item["rel_pct"])
+
+    real_hold_lines: list[str] = []
+    for pos in real_pos:
+        t_pos = str(pos.get("ticker") or "").upper()
+        lots_pos = int(pos.get("lots") or 0)
+        if not t_pos or lots_pos <= 0:
+            continue
+        avg_px = float(pos.get("avg_price") or 0.0)
+        a_pos = analyzed_map.get(t_pos)
+        r_pos = (a_pos or {}).get("res") or {}
+        snap_pos = r_pos.get("snap") or {}
+        ind_pos = r_pos.get("ind")
+        cur_px = float(snap_pos.get("close") or avg_px)
+        atr_pos = None
+        try:
+            if ind_pos is not None and "atr14" in ind_pos and len(ind_pos) >= 1:
+                v_a = float(ind_pos["atr14"].iloc[-1])
+                if v_a > 0:
+                    atr_pos = v_a
+        except Exception:
+            atr_pos = None
+        ex_rec = (open_execs or {}).get(t_pos)
+        sl_st = float(ex_rec["sl"]) if ex_rec and ex_rec.get("sl") else None
+        tp_st = float(ex_rec["tp"]) if ex_rec and ex_rec.get("tp") else None
+        d_raw = str((ex_rec or {}).get("trade_date") or pos.get("updated_at") or "")[:10] or None
+        exit_g = saranmod.build_exit_guidance(
+            t_pos,
+            avg_px if avg_px > 0 else cur_px,
+            lots=lots_pos,
+            atr=atr_pos,
+            sl=sl_st,
+            tp=tp_st,
+            close=cur_px,
+            df=ind_pos,
+            entry_date=d_raw,
+            today=today,
+        )
+        rel_val = cand_rel_map.get(t_pos)
+        if rel_val is None and hasattr(deps, "_snapshot_row"):
+            try:
+                s_row = await asyncio.to_thread(deps._snapshot_row, t_pos)
+                if s_row and s_row.get("rel_pct") is not None:
+                    rel_val = float(s_row["rel_pct"])
+            except Exception:
+                rel_val = None
+        eff_sl = float(exit_g.get("effective_sl") or exit_g.get("sl_initial") or 0.0)
+        trail = exit_g.get("chandelier") or {}
+        so = exit_g.get("scale_out") or {}
+        ts = exit_g.get("time_stop") or {}
+        days_h = ts.get("days_held")
+        net_pct = float(exit_g.get("pnl_net_pct") or 0.0)
+        if eff_sl > 0 and cur_px <= eff_sl:
+            act_icon, act_lbl = "🔴", "JUAL / CUT LOSS"
+            act_note = f"harga {saranmod.fmt(cur_px)} <= SL efektif {saranmod.fmt(eff_sl)}"
+        elif trail.get("hit") and trail.get("stop"):
+            act_icon, act_lbl = "🟠", "PERTIMBANGKAN JUAL"
+            act_note = f"Chandelier trailing SL {saranmod.fmt(trail['stop'])} ditembus"
+        elif so.get("tp1_reached") and so.get("tp1"):
+            act_icon, act_lbl = "🟡", "SCALE-OUT 50% (TP1)"
+            act_note = (
+                f"TP1 {saranmod.fmt(so['tp1'])} tercapai → geser SL sisa ke "
+                f"BEP+fee {saranmod.fmt(so.get('bep_sl') or exit_g.get('bep_sl') or avg_px)}"
+            )
+        elif ts.get("triggered"):
+            act_icon, act_lbl = "🟠", "EVALUASI TIME-STOP"
+            act_note = f"pegang {days_h} hari bursa (>= {ts.get('max_hold_days', 20)}h)"
+        elif rel_val is not None and rel_val < saranmod.HOLD_BAND_PCT:
+            act_icon, act_lbl = "🔁", "EVALUASI ROTASI"
+            act_note = f"relatif {rel_val:.0f}/100 di bawah band tahan {saranmod.HOLD_BAND_PCT:.0f}"
+        else:
+            act_icon, act_lbl = "🟢", "TAHAN"
+            rel_bit = f"relatif {rel_val:.0f}/100 · " if rel_val is not None else ""
+            act_note = f"{rel_bit}SL efektif {saranmod.fmt(eff_sl)}"
+        real_hold_lines.append(
+            f"  {act_icon} <b>{deps.esc(t_pos)}</b> [Portofolio {lots_pos} lot @ "
+            f"{saranmod.fmt(avg_px)}, net {net_pct:+.1f}%] → <b>{act_lbl}</b> "
+            f"({deps.esc(act_note)})"
+        )
+
+    if hold_notes or real_hold_lines:
         lines.append("\n📌 <b>TINJAU POSISI TERBUKA (band tahan top 60%):</b>")
+        for rl in real_hold_lines:
+            lines.append(rl)
         for h in hold_notes:
             icon = "🟢" if h["action"] == "TAHAN" else "🔁"
             lines.append(
@@ -343,19 +477,50 @@ async def do_tanya(update: Update, deps, ticker: str, focus: str):
             atr = val if val > 0 else None
     except Exception:
         atr = None
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    positions = (
+        await asyncio.to_thread(store.real_positions, chat_id) if chat_id else []
+    )
+    open_execs = (
+        await asyncio.to_thread(store.open_executions_by_ticker, chat_id)
+        if chat_id
+        else {}
+    )
+    snap_row = {}
+    if hasattr(deps, "_snapshot_row"):
+        try:
+            snap_row = await asyncio.to_thread(deps._snapshot_row, t)
+        except Exception:
+            snap_row = {}
+    rel_pct = snap_row.get("rel_pct") if isinstance(snap_row, dict) else None
     if sig_px and float(sig_px) > 0:
-        px = float(sig_px)
-        step = atr if atr else px * 0.03
-        sl_lvl = max(px - step, 1.0)
-        tp_lvl = px + 2.0 * step
+        px = float(pricing.round_tick(float(sig_px)))
+        sl_lvl = float(saranmod.stop_price(px, atr))
+        tp_lvl = float(saranmod.target_price(px, atr))
+        intent = "jual" if focus == "jual" else "beli"
         await asyncio.to_thread(
             store.save_signal_context,
-            update.effective_chat.id, t, f"tanya_{focus}", px,
+            chat_id, t, f"tanya_{focus}", px,
             sl_lvl, tp_lvl, None, marketcal.now_wib().date().isoformat(),
+            intent=intent,
         )
+    try:
+        verdict_txt = deps.build_verdict(
+            res,
+            fsc,
+            nsent,
+            focus,
+            bt_sum,
+            weekly=weekly,
+            positions=positions,
+            open_execs=open_execs,
+            rel_pct=rel_pct,
+        )
+    except TypeError:
+        verdict_txt = deps.build_verdict(res, fsc, nsent, focus, bt_sum, weekly=weekly)
     await deps.reply_long(
         msg,
-        deps.build_verdict(res, fsc, nsent, focus, bt_sum, weekly=weekly),
+        verdict_txt,
         reply_markup=deps.result_markup(f"tanya_{focus}", t),
     )
 

@@ -7,14 +7,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from core import alerts, data, saran as saranmod, store
+from core import alerts, data, pricing, saran as saranmod, store
 
 log = logging.getLogger("sahambuddy")
+
+_TARGET_INPUT_RE = re.compile(
+    r"^(?:target)?(>=|<=|>|<|:)?\s*(?:rp\.?\s*)?([\d.,]+)$",
+    re.IGNORECASE,
+)
+
+
+def _parse_target_kind(token: str) -> str | None:
+    """Normalkan input target harga (`9500`, `>=9500`, `<9000`) ke `target>=9500`/`target<=9000`."""
+    raw = (token or "").strip().lower()
+    if not raw:
+        return None
+    m = _TARGET_INPUT_RE.match(raw)
+    if not m:
+        return None
+    op_raw, num_raw = m.group(1) or ">=", m.group(2)
+    cleaned = num_raw.replace(".", "").replace(",", ".")
+    try:
+        val = float(cleaned)
+    except ValueError:
+        return None
+    if val <= 0:
+        return None
+    tick_val = pricing.round_tick(val)
+    op = "<=" if op_raw in ("<", "<=") else ">="
+    px_str = str(int(round(tick_val))) if tick_val == int(tick_val) else f"{tick_val:g}"
+    return f"target{op}{px_str}"
 
 
 async def do_watch_list(update: Update, deps):
@@ -152,17 +180,31 @@ async def do_alert_add(update: Update, deps, ticker: str,
         return
     if kinds is None:
         # Sumber kebenaran tunggal: jangan hardcode daftar yang bisa tertinggal.
-        kinds = set(alerts.ALL_KINDS)
-    invalid = kinds - alerts.ALL_KINDS
+        normalized_kinds = set(alerts.ALL_KINDS)
+        invalid: set[str] = set()
+    else:
+        normalized_kinds = set()
+        invalid = set()
+        for k in kinds:
+            kl = str(k).strip().lower()
+            if kl in alerts.ALL_KINDS:
+                normalized_kinds.add(kl)
+            else:
+                target_k = _parse_target_kind(kl)
+                if target_k is not None:
+                    normalized_kinds.add(target_k)
+                else:
+                    invalid.add(kl)
     if invalid:
         await msg.reply_text(
             f"❌ Jenis tidak dikenal: {deps.esc(', '.join(sorted(invalid)))}. "
-            "Coba /alert untuk lihat daftar.",
+            "Coba /alert untuk lihat daftar atau tulis target harga "
+            "(mis. <code>/alert BBCA 9500</code> atau <code>/alert BBCA &lt;9000</code>).",
             parse_mode=ParseMode.HTML,
             reply_markup=deps.alert_menu_markup() if from_menu else None,
         )
         return
-    saved = await asyncio.to_thread(store.set_alert, chat_id, symbol, kinds)
+    saved = await asyncio.to_thread(store.set_alert, chat_id, symbol, normalized_kinds)
     wl_now = await asyncio.to_thread(store.get_watchlist, chat_id)
     if symbol in wl_now or len(wl_now) < deps.MAX_WATCH:
         await asyncio.to_thread(store.watchlist_add, chat_id, symbol)
@@ -182,16 +224,17 @@ async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         await update.effective_message.reply_text(
             "🔔 Alert — pilih di bawah.\n"
             "Jenis: jump, drop, breakout, breakdown, oversold, overbought, "
-            "ma_golden, ma_death, vol_spike.",
+            "ma_golden, ma_death, vol_spike, atau target harga "
+            "(mis. /alert BBCA 9500 atau /alert BBCA <9000).",
             reply_markup=deps.alert_menu_markup())
         return
 
     sub, *rest = args
-    sub = sub.lower()
-    if sub in ("add", "buat") and rest:
+    sub_l = sub.lower()
+    if sub_l in ("add", "buat") and rest:
         kinds = {k.lower() for k in rest[1:]} or None
         await do_alert_add(update, deps, rest[0], kinds=kinds, from_menu=False)
-    elif sub in ("remove", "hapus") and rest:
+    elif sub_l in ("remove", "hapus") and rest:
         try:
             symbol = data.normalize_ticker(rest[0]).replace(".JK", "")
         except ValueError:
@@ -199,24 +242,31 @@ async def cmd_alert(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         ok = await asyncio.to_thread(store.remove_alert, chat_id, symbol)
         await update.effective_message.reply_text(
             "🗑️ Alert dihapus." if ok else "❓ Alert untuk emiten itu tidak ada.")
-    elif sub in ("list",):
+    elif sub_l in ("list",):
         await do_alert_list(update, deps, from_menu=False)
+    elif rest and re.fullmatch(r"[a-z]{4}(?:\.jk)?", sub_l):
+        kinds = {k.lower() for k in rest} or None
+        await do_alert_add(update, deps, sub, kinds=kinds, from_menu=False)
     else:
         await update.effective_message.reply_text(
             "Format salah. Coba <code>/alert</code>.", parse_mode=ParseMode.HTML)
 
 
 async def cmd_modal(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
-    """[P5] Set/ubah modal latihan paper trading (default Rp10 juta)."""
+    """[P5] Set/ubah modal rencana posisi asli & simulasi paper trading (default Rp10 juta)."""
     args = deps.tokens(update)
     chat_id = update.effective_chat.id
     cur = await asyncio.to_thread(store.get_modal, chat_id)
     if not args:
         await update.effective_message.reply_text(
-            f"💼 Modal latihan kamu: <b>{saranmod.fmt(cur)}</b>\n"
+            f"💼 Modal rencana &amp; latihan kamu: <b>{saranmod.fmt(cur)}</b>\n"
+            "Dipakai untuk <b>sizing posisi asli</b> (<code>/rencana</code>, "
+            "<code>/paket</code>, <code>/cek</code>, <code>/portofolio</code>) "
+            "dan <b>simulasi paper trading</b> (<code>/saran</code>).\n"
             "Ubah: <code>/modal 5000000</code> (atau tulis 5.000.000)\n\n"
-            "Sizing /saran memakai risiko <b>1% modal per trade</b>: "
-            f"berarti pas-pasan {saranmod.fmt(cur * 0.01)} per posisi.",
+            "Aturan risiko: <b>1% modal per trade</b> saat pasar normal "
+            f"({saranmod.fmt(cur * 0.01)} per posisi) atau <b>0,5%</b> saat "
+            f"IHSG defensif ({saranmod.fmt(cur * 0.005)}).",
             parse_mode=ParseMode.HTML)
         return
     raw = args[0].replace(".", "").replace(",", "")
@@ -229,13 +279,16 @@ async def cmd_modal(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         return
     if not (100_000 <= val <= 10_000_000_000):
         await update.effective_message.reply_text(
-            "❌ Modal wajar antara Rp100 ribu dan Rp10 miliar (latihan, kan?)")
+            "❌ Modal wajar antara Rp100 ribu dan Rp10 miliar (sizing posisi & latihan).")
         return
     await asyncio.to_thread(store.set_modal, chat_id, val)
     await update.effective_message.reply_text(
-        f"💼 Modal latihan diubah: <b>{saranmod.fmt(cur)}</b> → "
+        f"💼 Modal rencana &amp; latihan diubah: <b>{saranmod.fmt(cur)}</b> → "
         f"<b>{saranmod.fmt(val)}</b>\n"
-        f"Risiko per trade /saran berikutnya: {saranmod.fmt(val * 0.01)} (1%)",
+        "Dipakai untuk sizing posisi asli (<code>/rencana</code>, <code>/paket</code>, "
+        "<code>/portofolio</code>) &amp; simulasi paper trading (<code>/saran</code>).\n"
+        f"Risiko per trade: {saranmod.fmt(val * 0.01)} (1% normal) / "
+        f"{saranmod.fmt(val * 0.005)} (0,5% defensif).",
         parse_mode=ParseMode.HTML)
 
 

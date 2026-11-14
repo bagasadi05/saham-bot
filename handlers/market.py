@@ -91,12 +91,14 @@ def _rencana_text(result: dict, payload: dict, meta: dict, deps) -> str:
     scale = regime.effective_scale(reg)
     risk_lim = result.get("risk_pct_limit") or round(1.0 * scale, 2)
     pos_lim = result.get("max_pos_pct") or round(rencana.MAX_POS_PCT * scale * 100, 1)
+    sec_lim = result.get("max_sector_pct")
     tot_lim = result.get("max_total_pct") or round(rencana.MAX_TOTAL_PCT * scale * 100, 1)
+    sec_txt = f" · sektor maks <b>{sec_lim:g}%</b>" if sec_lim else ""
     out = [
         "🎯 <b>RENCANA BELI — SIAP STOCKBIT</b>",
         f"<i>{esc(deps._scan_when(meta))}</i>",
         f"Modal rencana <b>{deps._money(modal)}</b> · risiko maks <b>{risk_lim:g}%</b>/posisi · "
-        f"nilai posisi maks <b>{pos_lim:g}%</b>/emiten · "
+        f"nilai posisi maks <b>{pos_lim:g}%</b>/emiten{sec_txt} · "
         f"total maks <b>{tot_lim:g}%</b> modal",
     ]
     if reg is not None:
@@ -156,10 +158,39 @@ def _rencana_text(result: dict, payload: dict, meta: dict, deps) -> str:
     return "\n".join(out)
 
 
+_ORIG_FETCH_REGIME = regime.fetch_ihsg_regime
+
+
+async def _fetch_regime_safe(deps) -> dict | None:
+    """Ambil rezim IHSG secara aman (hormati monkeypatch & jangan panggil jaringan saat unit test)."""
+    reg_mod = getattr(deps, "regime", regime)
+    fn = getattr(reg_mod, "fetch_ihsg_regime", None)
+    if not callable(fn):
+        return None
+    if fn is not _ORIG_FETCH_REGIME:
+        try:
+            return await asyncio.to_thread(fn)
+        except Exception:
+            return None
+    with regime._regime_lock:
+        cached = regime._regime_cache.get("val")
+    if cached is not None:
+        return dict(cached)
+    gather_fn = getattr(deps, "gather_candidate", None)
+    inputs_fn = getattr(deps, "_rencana_inputs", None)
+    if (
+        (gather_fn is not None and getattr(gather_fn, "__module__", "") != "bot")
+        or (inputs_fn is not None and getattr(inputs_fn, "__module__", "") != "bot")
+    ):
+        return regime.evaluate_ihsg(None)
+    try:
+        return await asyncio.to_thread(fn)
+    except Exception:
+        return regime.evaluate_ihsg(None)
+
+
 async def build_plan_payload(rows: list[dict], meta: dict, deps) -> dict:
     """Perkaya kandidat teratas dengan fundamental + berita (paralel dibatasi)."""
-    import datetime as _dt
-
     cands, rejected = rencana.prefilter(rows)
     sem = asyncio.Semaphore(PLAN_CONCURRENCY)
 
@@ -180,7 +211,7 @@ async def build_plan_payload(rows: list[dict], meta: dict, deps) -> dict:
                 if x]
     return {"enriched": enriched, "rejected": dict(rejected),
             "meta": meta, "pool": len(cands),
-            "built_at": _dt.datetime.now().isoformat(timespec="seconds")}
+            "built_at": marketcal.now_wib().isoformat(timespec="seconds")}
 
 
 async def do_paket(update: Update, args: list[str], deps,
@@ -244,10 +275,23 @@ async def do_paket(update: Update, args: list[str], deps,
         await asyncio.to_thread(store.save_plan_cache, key, payload,
                                 meta.get("trade_date", ""))
 
-    modal = await asyncio.to_thread(store.get_modal,
-                                    update.effective_chat.id)
-    result = rencana.finalize(
-        payload.get("enriched") or [], modal, top, market_regime=reg
+    chat_id = update.effective_chat.id
+    modal = await asyncio.to_thread(store.get_modal, chat_id)
+    positions = await asyncio.to_thread(store.real_positions, chat_id)
+    max_pos, max_sec = await asyncio.to_thread(riskmod.get_risk_limits, chat_id)
+    # Pertahankan default paket 20% bila batas risiko belum diubah user,
+    # namun hormati batas kustom (/portofolio batas) bila sudah diatur.
+    eff_pos = max_pos if (max_pos, max_sec) != (riskmod.MAX_POS_PCT, riskmod.MAX_SECTOR_PCT) else None
+    result = await asyncio.to_thread(
+        rencana.finalize,
+        payload.get("enriched") or [],
+        modal,
+        top,
+        market_regime=reg,
+        chat_id=chat_id,
+        positions=positions,
+        max_pos_pct=eff_pos,
+        max_sector_pct=max_sec,
     )
     await deps.reply_long(update.effective_message,
                      _rencana_text(result, payload, meta, deps),
@@ -291,7 +335,19 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
             if x]
     head = f"🎯 <b>RENCANA BELI — {t}</b>"
     sub = " · ".join(bits + [f"grade {esc(plan.get('grade') or '—')}"])
-    out = [head, f"<i>{sub}</i>", ""]
+    out = [head, f"<i>{sub}</i>"]
+    as_of = c.get("as_of") or plan.get("as_of")
+    stale_flag = bool(c.get("stale") or plan.get("stale"))
+    if as_of or stale_flag:
+        date_bit = f"Data per {esc(str(as_of))} WIB" if as_of else "Data harga"
+        stale_bit = " · ⚠️ cache lama" if stale_flag else ""
+        out.append(f"🔎 <i>{date_bit}{stale_bit}</i>")
+    if c.get("quality_note"):
+        out.append(f"⚠️ <i>{esc(str(c['quality_note']))}</i>")
+    reg = plan.get("regime")
+    if isinstance(reg, dict) and reg.get("status") == "DEFENSIVE":
+        out.append(reports.regime_banner(reg))
+    out.append("")
     out += [
         f"Entry ≤ <b>{deps._money(plan['entry'])}</b> · SL "
         f"<b>{deps._money(plan['sl'])}</b> · TP <b>{deps._money(plan['tp'])}</b> "
@@ -316,7 +372,10 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
             "yang saya karang.",
         ]
     else:
-        src = ("Modal tersimpan (dibatasi 25%/posisi)"
+        raw_pos_cap = float(plan.get("max_pos_pct") or riskmod.MAX_POS_PCT)
+        pos_cap_pct = raw_pos_cap * 100.0 if raw_pos_cap <= 1.0 else raw_pos_cap
+        pos_cap_txt = f"{pos_cap_pct:g}".replace(".", ",")
+        src = (f"Modal tersimpan (dibatasi {pos_cap_txt}%/posisi)"
                if budget_from_modal else "Anggaran")
         shares = f"{plan['shares']:,}".replace(",", ".")
         out += [
@@ -335,10 +394,13 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
             f"Kalau kena TP: untung bersih <b>{deps._money(plan['profit_tp'])}</b>",
         ]
         if plan.get("modal") and plan.get("lots_risk") is not None:
+            raw_eff_r = plan.get("risk_pct_limit") or plan.get("effective_risk_pct") or 1.0
+            eff_r = float(raw_eff_r) * 100.0 if float(raw_eff_r) <= 0.1 else float(raw_eff_r)
+            eff_r_txt = f"{eff_r:g}".replace(".", ",")
             out.append(
-                f"Aturan risiko 1% modal: maks <b>{plan['lots_risk']} lot</b> "
+                f"Aturan risiko {eff_r_txt}% modal: maks <b>{plan['lots_risk']} lot</b> "
                 f"(risiko {deps._money(plan['risk_budget'])}).")
-    warns = list(plan.get("warnings") or [])[:3]
+    warns = list(plan.get("warnings") or [])[:4]
     if warns:
         out.append("")
         out += ["⚠️ " + esc(w.replace(".", ",")) for w in warns]
@@ -394,7 +456,7 @@ async def do_rencana(update: Update, args: list[str], deps,
             return
 
     modal = await asyncio.to_thread(store.get_modal, chat_id)
-    max_pos, max_sec = await asyncio.to_thread(store.get_risk_limits, chat_id)
+    max_pos, max_sec = await asyncio.to_thread(riskmod.get_risk_limits, chat_id)
     from_modal = budget is None
     if budget is None:
         # Tanpa anggaran eksplisit, jangan otomatis memakai seluruh modal:
@@ -430,13 +492,22 @@ async def do_rencana(update: Update, args: list[str], deps,
         return
 
     row = await asyncio.to_thread(_snapshot_row, head)
+    res_a = analyzed.get("res") or {}
+    ind_a = res_a.get("ind")
+    prev_cl = None
+    try:
+        if ind_a is not None and len(ind_a) >= 2 and "close" in ind_a:
+            prev_cl = float(ind_a["close"].iloc[-2])
+    except Exception:
+        prev_cl = None
     cand = {
         "ticker": head,
         "rel_pct": row.get("rel_pct"),
         "tech_score": row.get("tech_score"),
         "sector": row.get("sector"),
         "board": row.get("board"),
-        "price": (analyzed.get("res") or {}).get("snap", {}).get("close"),
+        "price": res_a.get("snap", {}).get("close"),
+        "prev_close": prev_cl,
     }
     enriched = rencana.enrich(cand, analyzed,
                               require_rel=row.get("rel_pct") is not None)
@@ -447,9 +518,24 @@ async def do_rencana(update: Update, args: list[str], deps,
             parse_mode=ParseMode.HTML,
             reply_markup=rm)
         return
-    plan = rencana.budget_plan(enriched, budget, modal)
+    if prev_cl is not None:
+        enriched["prev_close"] = prev_cl
+    enriched["as_of"] = res_a.get("as_of") or row.get("trade_date")
+    enriched["stale"] = bool(res_a.get("stale") or res_a.get("stale_note"))
+    enriched["quality_note"] = res_a.get("quality_note") or ""
+
+    reg = await _fetch_regime_safe(deps)
+    positions = await asyncio.to_thread(store.real_positions, chat_id)
+    plan = await asyncio.to_thread(
+        rencana.budget_plan,
+        enriched,
+        budget,
+        modal,
+        market_regime=reg,
+    )
+    plan["max_pos_pct"] = max_pos
+    plan["max_sector_pct"] = max_sec
     if plan.get("ok") and modal:
-        positions = await asyncio.to_thread(store.real_positions, chat_id)
         limits = await asyncio.to_thread(
             riskmod.check_limits, plan, positions, modal,
             max_pos_pct=max_pos, max_sector_pct=max_sec)

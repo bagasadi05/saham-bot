@@ -14,7 +14,8 @@ from telegram import Update
 from telegram.constants import ParseMode
 
 from core import (analysis, bandar, banding, cek as cekmod, data, fundamental,
-                  marketcal, news, rencana, risk as riskmod, store, universe)
+                  marketcal, news, rencana, reports as core_reports,
+                  risk as riskmod, saran as saranmod, store, universe)
 from core.reports import esc
 from handlers import jurnal as jurnal_handler
 
@@ -142,6 +143,13 @@ def _cek_text(out: dict, res: dict, deps) -> str:
     stale = res.get("stale_note") or ""
     if stale:
         out_lines.append(stale.strip())
+    prov_line = core_reports.provenance_line(res).strip()
+    if not prov_line and res.get("as_of"):
+        prov_line = f"🔎 <i>Data per {esc(str(res['as_of']))} WIB</i>"
+    if prov_line:
+        out_lines.append(prov_line)
+    if res.get("quality_note"):
+        out_lines.append(f"⚠️ <i>{esc(str(res['quality_note']))}</i>")
     out_lines.append("")
 
     num = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣")
@@ -158,6 +166,11 @@ def _cek_text(out: dict, res: dict, deps) -> str:
                      + _CEK_VERDICT.get(out["verdict"], esc(out["verdict"])))
     for r in out.get("reasons") or []:
         out_lines.append(f"• {esc(r)}")
+    if out.get("verdict") == "HINDARI":
+        out_lines.append(
+            "⛔ <b>Peringatan:</b> Saham ini berstatus <b>HINDARI</b> — "
+            "jangan dipaksakan beli; tombol konfirmasi beli disembunyikan."
+        )
     bull_pts = out.get("bull_points") or []
     bear_pts = out.get("bear_points") or []
     if out["verdict"] != "TIDAK CUKUP DATA" and (bull_pts or bear_pts):
@@ -228,7 +241,26 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
             reply_markup=rm)
         return
 
-    out = cekmod.build(res=bahan["res"], fund=bahan["fund"],
+    res_d = bahan["res"]
+    ind = res_d.get("ind")
+    close_px = (res_d.get("snap") or {}).get("close")
+    atr_val = None
+    try:
+        if ind is not None and "atr14" in ind and len(ind) >= 1:
+            v_atr = float(ind["atr14"].iloc[-1])
+            if v_atr > 0:
+                atr_val = v_atr
+    except Exception:
+        atr_val = None
+    if close_px and float(close_px) > 0 and not res_d.get("sl"):
+        res_d["sl"] = float(saranmod.stop_price(float(close_px), atr_val))
+    if ind is not None and len(ind) >= 2 and "close" in ind and res_d.get("prev_close") is None:
+        try:
+            res_d["prev_close"] = float(ind["close"].iloc[-2])
+        except Exception:
+            pass
+
+    out = cekmod.build(res=res_d, fund=bahan["fund"],
                        fund_raw=bahan["fund_raw"], nsent=bahan["nsent"],
                        bandar_row=bahan["bandar_row"], agenda=bahan["agenda"],
                        agenda_days=bahan["agenda_days"], peers=bahan["peers"],
@@ -245,13 +277,6 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
         t, positions, modal,
         max_pos_pct=max_pos, max_sector_pct=max_sec))
     if out.get("price") and float(out["price"]) > 0:
-        atr_val = None
-        try:
-            ind = bahan["res"].get("ind")
-            if ind is not None and "atr14" in ind:
-                atr_val = float(ind["atr14"].iloc[-1])
-        except Exception:
-            atr_val = None
         lv = rencana.price_levels({"price": float(out["price"]), "atr": atr_val})
         today_iso = marketcal.now_wib().date().isoformat()
         await asyncio.to_thread(
@@ -259,9 +284,12 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
             update.effective_chat.id, t, "cek", float(out["price"]),
             lv.get("sl"), lv.get("tp"), None, today_iso,
         )
-    kb = jurnal_handler.confirm_exec_markup("cek", t, deps, from_menu=from_menu)
+    allow_buy = out.get("verdict") != "HINDARI"
+    kb = jurnal_handler.confirm_exec_markup(
+        "cek", t, deps, from_menu=from_menu, allow_buy=allow_buy
+    )
     await deps.reply_long(
         msg,
-        _cek_text(out, bahan["res"], deps),
+        _cek_text(out, res_d, deps),
         reply_markup=kb,
     )

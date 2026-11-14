@@ -153,6 +153,9 @@ def data_age_line(res: dict) -> str:
     return f" — <i>data per {esc(as_of)}</i>" if as_of else ""
 
 
+_SHORT_PROV_TOKENS = {"live", "cache", "cache-legacy", "fallback"}
+
+
 def provenance_line(res: dict) -> str:
     """Baris metadata sumber/perbaikan/kesegaran bila tersedia pada `res`."""
     explicit_note = res.get("provenance_note")
@@ -160,8 +163,9 @@ def provenance_line(res: dict) -> str:
         txt = str(explicit_note)
         return txt if txt.endswith("\n") else f"{txt}\n"
     prov = res.get("provenance")
-    if isinstance(prov, str) and prov.strip():
-        return f"🔎 <i>{esc(prov.strip())}</i>\n"
+    prov_str = prov.strip() if isinstance(prov, str) else ""
+    if prov_str and prov_str.lower() not in _SHORT_PROV_TOKENS:
+        return f"🔎 <i>{esc(prov_str)}</i>\n"
     if isinstance(prov, dict) and prov:
         bits = []
         src = prov.get("provider") or prov.get("source")
@@ -182,13 +186,27 @@ def provenance_line(res: dict) -> str:
     ind = res.get("ind")
     if ind is not None and hasattr(ind, "attrs"):
         fmt_fn = getattr(data_quality, "format_provenance", None)
-        if callable(fmt_fn) and any(
-            k in ind.attrs
-            for k in ("provider", "last_bar_date", "repaired_count", "provenance")
+        if callable(fmt_fn) and (
+            any(
+                k in ind.attrs
+                for k in (
+                    "provider",
+                    "last_bar_date",
+                    "repaired_count",
+                    "provenance",
+                    "adjusted",
+                )
+            )
+            or bool(prov_str)
         ):
             txt = fmt_fn(ind)
             if txt:
                 return f"🔎 <i>{esc(txt)}</i>\n"
+    if prov_str:
+        as_of = res.get("as_of")
+        if as_of:
+            return f"🔎 <i>Sumber: {esc(prov_str)} · bar terakhir {esc(str(as_of))} WIB</i>\n"
+        return f"🔎 <i>{esc(prov_str)}</i>\n"
     return ""
 
 

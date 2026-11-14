@@ -134,15 +134,27 @@ async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         "dengan /fundamental & /analisis)")
 
     rows = []
+    as_ofs: list[str] = []
+    stale_syms: list[str] = []
+    fx_notes: list[str] = []
     for t in emiten:
         try:
             res = await deps.fetch_and_analyze(t)
         except ValueError:
             res = None
+        if isinstance(res, dict):
+            if res.get("as_of"):
+                as_ofs.append(str(res["as_of"]))
+            if res.get("stale") or res.get("stale_note"):
+                stale_syms.append(t)
         try:
             fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
         except Exception:
             fund = None
+        if isinstance(fund, dict):
+            ccy = str(fund.get("currency") or "").upper()
+            if ccy and ccy not in ("IDR", "TIDAK TERSEDIA"):
+                fx_notes.append(f"{t} ({ccy})")
         rows.append(banding.compare_row(t, res, fund))
         await asyncio.sleep(.2)
 
@@ -153,8 +165,17 @@ async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
 
     hdr = banding.format_table_header()
     body = "\n".join(banding.format_table_row(r) for r in rows)
-    lines = [f"⚖️ <b>PERBANDINGAN {', '.join(esc(t) for t in emiten)}</b>",
-             "<pre>" + esc(hdr) + "\n" + esc(body) + "</pre>"]
+    lines = [f"⚖️ <b>PERBANDINGAN {', '.join(esc(t) for t in emiten)}</b>"]
+    if as_ofs:
+        uniq_dates = sorted(set(as_ofs))
+        date_lbl = uniq_dates[-1] if len(uniq_dates) == 1 else f"{uniq_dates[0]} s.d. {uniq_dates[-1]}"
+        stale_lbl = f" · ⚠️ cache lama: {', '.join(stale_syms)}" if stale_syms else ""
+        lines.append(f"🔎 <i>Data per {esc(date_lbl)} WIB{esc(stale_lbl)}</i>")
+    elif stale_syms:
+        lines.append(f"⚠️ <i>Data dari cache lama: {esc(', '.join(stale_syms))}</i>")
+    lines.append("<pre>" + esc(hdr) + "\n" + esc(body) + "</pre>")
+    if fx_notes:
+        lines.append(f"💱 <i>Mata uang laporan non-IDR: {esc(', '.join(fx_notes))}</i>")
     verdict = banding.pbv_verdict(rows)
     if verdict:
         lines.append(f"\nℹ️ {esc(verdict)}")

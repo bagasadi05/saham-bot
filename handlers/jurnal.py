@@ -65,14 +65,29 @@ def journal_markup(*, from_menu: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def confirm_exec_markup(action: str, ticker: str, deps,
-                        *, from_menu: bool = False) -> InlineKeyboardMarkup:
+def confirm_exec_markup(
+    action: str,
+    ticker: str,
+    deps,
+    *,
+    from_menu: bool = False,
+    allow_buy: bool = True,
+) -> InlineKeyboardMarkup:
     """Tombol di bawah /rencana & /cek: konfirmasi Stockbit (+ menu bila from_menu)."""
     if from_menu:
-        return deps.result_markup(action, ticker)
-    return InlineKeyboardMarkup([[InlineKeyboardButton(
-        "📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{ticker}",
-    )]])
+        try:
+            return deps.result_markup(action, ticker, allow_buy=allow_buy)
+        except TypeError:
+            return deps.result_markup(action, ticker)
+    if not allow_buy:
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{ticker}"),
+            InlineKeyboardButton("📊 Analisis", callback_data=f"tick:analisis:{ticker}"),
+        ]])
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{ticker}"),
+        InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{ticker}"),
+    ]])
 
 
 async def _record_buy_and_reply(
@@ -222,8 +237,13 @@ async def do_jurnal(update: Update, args: list[str], deps,
             return
         source = "manual"
         sl = tp = None
+        intent_q = "beli" if sub in ("beli", "buy") else "jual"
         if sig_px is None:
-            ctx = await asyncio.to_thread(store.get_signal_context, chat_id, t)
+            ctx = await asyncio.to_thread(
+                store.get_signal_context, chat_id, t, intent=intent_q
+            )
+            if ctx is None and intent_q == "jual":
+                ctx = await asyncio.to_thread(store.get_signal_context, chat_id, t)
             today = marketcal.now_wib().date().isoformat()
             if ctx and ctx.get("trade_date") == today:
                 sig_px = ctx.get("signal_price")
@@ -261,8 +281,9 @@ async def do_jurnal(update: Update, args: list[str], deps,
     positions = await asyncio.to_thread(store.real_positions, chat_id)
     real_sum = jurnalmod.summarize_executions(execs)
     paper_sum = jurnalmod.summarize_paper_realized(paper)
+    diag = jurnalmod.jurnal_diagnostics(execs)
     txt = jurnalmod.format_journal_report(
-        real_sum, paper_sum, open_real_count=len(positions),
+        real_sum, paper_sum, open_real_count=len(positions), diagnostics=diag,
     )
     await deps.reply_long(msg, txt, reply_markup=journal_markup(from_menu=from_menu))
 
@@ -270,6 +291,20 @@ async def do_jurnal(update: Update, args: list[str], deps,
 async def cmd_jurnal(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps) -> None:
     """Jurnal eksekusi Stockbit & realisasi (asli vs paper)."""
     await do_jurnal(update, deps.tokens(update), deps)
+
+
+def _ctx_staleness_warning(ctx: dict | None) -> str:
+    """Peringatan bila konteks sinyal berasal dari tanggal bursa yang sudah lewat."""
+    if not ctx:
+        return ""
+    td = str(ctx.get("trade_date") or "")[:10]
+    today_iso = marketcal.now_wib().date().isoformat()
+    if not td or td == today_iso:
+        return ""
+    return (
+        f"⚠️ <b>Peringatan:</b> Konteks sinyal berasal dari <b>{esc(td)}</b> "
+        "(sudah kedaluwarsa) — harga acuan mungkin sudah jauh bergeser."
+    )
 
 
 async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
@@ -304,7 +339,13 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
         InlineKeyboardButton("❌ Batal", callback_data="exec:cancel"),
         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
     ]])
-    ctx = await asyncio.to_thread(store.get_signal_context, chat_id, ticker)
+    intent_k = "beli" if kind == "buy" else "jual"
+    ctx = await asyncio.to_thread(
+        store.get_signal_context, chat_id, ticker, intent=intent_k
+    )
+    if ctx is None and intent_k == "jual":
+        ctx = await asyncio.to_thread(store.get_signal_context, chat_id, ticker)
+    stale_warn = _ctx_staleness_warning(ctx)
 
     if kind == "buy":
         deps._pending_set(chat_id, f"exec_buy:{ticker}")
@@ -314,6 +355,8 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
             if ctx.get("source"):
                 bits[0] += f" <i>(dari /{esc(ctx['source'])})</i>"
             lines.extend(bits)
+            if stale_warn:
+                lines.append(stale_warn)
             if ctx.get("suggested_lots"):
                 lines.append(
                     f"Ukuran rencana: <b>{int(ctx['suggested_lots'])} lot</b> · "
@@ -357,6 +400,8 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
     ]
     if ctx:
         lines.append(f"Harga acuan terakhir: <b>{deps._money(ctx['signal_price'])}</b>")
+        if stale_warn:
+            lines.append(stale_warn)
     lines.append(
         f"Ketik <code>lot harga</code> (mis. <code>2 9500</code>), atau ketik "
         f"harganya saja (mis. <code>9500</code>) untuk jual semua {held_lots} lot:"
@@ -385,7 +430,12 @@ async def handle_pending_exec(
         await msg.reply_text("❌ Aksi eksekusi tidak valid; dibuka ulang dari menu.")
         return True
 
-    ctx = await asyncio.to_thread(store.get_signal_context, chat_id, ticker)
+    intent_p = "beli" if side == "exec_buy" else "jual"
+    ctx = await asyncio.to_thread(
+        store.get_signal_context, chat_id, ticker, intent=intent_p
+    )
+    if ctx is None and intent_p == "jual":
+        ctx = await asyncio.to_thread(store.get_signal_context, chat_id, ticker)
     default_lots: int | None = None
     if side == "exec_buy":
         default_lots = (ctx or {}).get("suggested_lots")
