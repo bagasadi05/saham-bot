@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 
 from telegram import Update
@@ -128,7 +129,14 @@ async def _cek_gather(t: str, chat_id: int, deps) -> dict:
             "board": row.get("board") or universe.board_of(sym)}
 
 
-def _cek_text(out: dict, res: dict, deps) -> str:
+def _cek_text(
+    out: dict,
+    res: dict,
+    deps,
+    *,
+    modal: int | float | None = None,
+    max_pos_pct: float | None = None,
+) -> str:
     """Satu layar: enam bagian + verdict + alasan."""
     t = esc(out.get("ticker") or res.get("ticker") or "?")
     price = out.get("price")
@@ -171,6 +179,11 @@ def _cek_text(out: dict, res: dict, deps) -> str:
             "⛔ <b>Peringatan:</b> Saham ini berstatus <b>HINDARI</b> — "
             "jangan dipaksakan beli; tombol konfirmasi beli disembunyikan."
         )
+    elif out.get("verdict") == "TIDAK CUKUP DATA":
+        out_lines.append(
+            "⚪ <b>Peringatan:</b> Data saham ini belum cukup — "
+            "tombol konfirmasi beli disembunyikan."
+        )
     bull_pts = out.get("bull_points") or []
     bear_pts = out.get("bear_points") or []
     if out["verdict"] != "TIDAK CUKUP DATA" and (bull_pts or bear_pts):
@@ -184,10 +197,44 @@ def _cek_text(out: dict, res: dict, deps) -> str:
     if out.get("missing"):
         out_lines.append("❔ Tidak tersedia: " + esc(", ".join(out["missing"]))
                          + " — bagian lain tetap ditampilkan apa adanya.")
+    lot_info_lines: list[str] = []
+    if price and float(price) > 0:
+        lv_px = rencana.price_levels({"price": float(price)})
+        entry_px = float(lv_px["entry"] or price)
+        lot_val = entry_px * 100.0
+        min_1lot = int(math.ceil(lot_val * (1.0 + saranmod.BUY_FEE)))
+        if modal and float(modal) > 0:
+            m_val = float(modal)
+            pos_pct = float(max_pos_pct or riskmod.MAX_POS_PCT)
+            slot_rp = m_val * pos_pct
+            pos_txt = f"{pos_pct * 100:g}".replace(".", ",")
+            if min_1lot > m_val:
+                fit_note = f"⚠️ 1 lot melebihi modalmu (kurang {deps._money(min_1lot - m_val)})"
+            elif min_1lot > slot_rp:
+                fit_note = (
+                    f"⚠️ 1 lot muat modal penuh, namun di atas slot "
+                    f"{pos_txt}% ({deps._money(slot_rp)})"
+                )
+            else:
+                est_lots = int(slot_rp // lot_val) if lot_val > 0 else 0
+                while est_lots > 0 and est_lots * lot_val * (1.0 + saranmod.BUY_FEE) > slot_rp:
+                    est_lots -= 1
+                fit_note = f"✅ muat ±{est_lots} lot di slot {pos_txt}%"
+            lot_info_lines.append(
+                f"💵 Biaya 1 lot ≈ <b>{deps._money(min_1lot)}</b> · "
+                f"modalmu <b>{deps._money(m_val)}</b> ({fit_note})"
+            )
+        else:
+            lot_info_lines.append(f"💵 Biaya 1 lot ≈ <b>{deps._money(min_1lot)}</b>")
+    rencana_cmd = (
+        f"<code>/rencana {t}</code> (atau <code>/rencana {t} {int(round(float(modal)))}</code>)"
+        if modal and float(modal) > 0
+        else f"<code>/rencana {t}</code>"
+    )
     out_lines += [
         "",
-        f"Rencana uangnya: <code>/rencana {t} 5000000</code> · analisis penuh: "
-        f"<code>/analisis {t}</code>",
+        *lot_info_lines,
+        f"Rencana lot: {rencana_cmd} · analisis penuh: <code>/analisis {t}</code>",
         "",
         "<i>Ambang bot: likuid ≥ Rp5 miliar/hari, kurang likuid &lt; Rp2 "
         "miliar/hari · murah: PER ≤ 20 atau PBV ≤ 2 · mahal: PER &gt; 40 atau "
@@ -252,7 +299,7 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
                 atr_val = v_atr
     except Exception:
         atr_val = None
-    if close_px and float(close_px) > 0 and not res_d.get("sl"):
+    if close_px and float(close_px) > 0 and atr_val and not res_d.get("sl"):
         res_d["sl"] = float(saranmod.stop_price(float(close_px), atr_val))
     if ind is not None and len(ind) >= 2 and "close" in ind and res_d.get("prev_close") is None:
         try:
@@ -276,20 +323,21 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
     out["warnings"].extend(riskmod.position_fit(
         t, positions, modal,
         max_pos_pct=max_pos, max_sector_pct=max_sec))
-    if out.get("price") and float(out["price"]) > 0:
+    allow_buy = out.get("verdict") in ("LAYAK", "TUNGGU")
+    if allow_buy and out.get("price") and float(out["price"]) > 0:
         lv = rencana.price_levels({"price": float(out["price"]), "atr": atr_val})
         today_iso = marketcal.now_wib().date().isoformat()
         await asyncio.to_thread(
             store.save_signal_context,
             update.effective_chat.id, t, "cek", float(out["price"]),
             lv.get("sl"), lv.get("tp"), None, today_iso,
+            intent="beli",
         )
-    allow_buy = out.get("verdict") != "HINDARI"
     kb = jurnal_handler.confirm_exec_markup(
-        "cek", t, deps, from_menu=from_menu, allow_buy=allow_buy
+        "cek", t, deps, from_menu=True, allow_buy=allow_buy
     )
     await deps.reply_long(
         msg,
-        _cek_text(out, res_d, deps),
+        _cek_text(out, res_d, deps, modal=modal, max_pos_pct=max_pos),
         reply_markup=kb,
     )

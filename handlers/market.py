@@ -11,12 +11,12 @@ import asyncio
 import logging
 import re
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction, ParseMode
 
 from core import (bandar, marketcal, regime, rencana, reports,
-                  risk as riskmod, screener, store, universe)
+                  risk as riskmod, saran as saranmod, screener, store, universe)
 from core.reports import esc
 from core.textutil import parse_rupiah, split_message
 from handlers import jurnal as jurnal_handler
@@ -25,6 +25,135 @@ log = logging.getLogger("sahambuddy")
 
 
 PLAN_CONCURRENCY = 3
+
+
+def _clean_cb_ticker(raw: str) -> str | None:
+    """Normalkan kode emiten untuk callback_data (<= 64 byte)."""
+    t = (raw or "").strip().upper()
+    if t.endswith(".JK"):
+        t = t[:-3]
+    return t if re.fullmatch(r"[A-Z0-9]{2,10}", t) else None
+
+
+def _paket_empty_markup() -> InlineKeyboardMarkup:
+    """Tombol pemulihan saat /paket kosong atau tidak ada kandidat yang muat modal."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✨ BELI Berkualitas", callback_data="run:sinyal_bagus"),
+            InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+        ],
+        [
+            InlineKeyboardButton("🎯 Hitung 1 Saham", callback_data="pick:rencana"),
+            InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+        ],
+    ])
+
+
+def _paket_no_snapshot_markup() -> InlineKeyboardMarkup:
+    """Tombol saat snapshot pasar belum tersedia untuk /paket."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📡 Scan Pasar", callback_data="run:scan"),
+            InlineKeyboardButton("🎯 Hitung 1 Saham", callback_data="pick:rencana"),
+        ],
+        [
+            InlineKeyboardButton("✨ BELI Berkualitas", callback_data="run:sinyal_bagus"),
+            InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+        ],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def _paket_picks_markup(picks: list[dict]) -> InlineKeyboardMarkup:
+    """Tombol aksi 1-ketuk per pick /paket (maks 4 emiten)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    seen: set[str] = set()
+    for p in picks:
+        t = _clean_cb_ticker(str(p.get("ticker") or ""))
+        if not t or t in seen:
+            continue
+        lots = int(p.get("lots") or 0)
+        entry = float(p.get("entry") or p.get("price") or 0.0)
+        if lots <= 0 or entry <= 0 or p.get("vetoes"):
+            continue
+        seen.add(t)
+        rows.append([
+            InlineKeyboardButton(f"🔍 Cek {t}", callback_data=f"tick:cek:{t}"),
+            InlineKeyboardButton(f"🎯 Hitung Lot {t}", callback_data=f"tick:rencana:{t}"),
+            InlineKeyboardButton(f"📝 Beli {t}", callback_data=f"exec:buy:{t}"),
+        ])
+        if len(rows) >= 4:
+            break
+    if not rows:
+        return _paket_empty_markup()
+    rows.append([
+        InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _rencana_small_budget_markup(ticker: str) -> InlineKeyboardMarkup:
+    """Tombol lanjutan saat slot 25% modal kurang dari 1 lot namun modal penuh cukup."""
+    t = _clean_cb_ticker(ticker)
+    rows: list[list[InlineKeyboardButton]] = [[
+        InlineKeyboardButton("✏️ Hitung Budget Penuh", callback_data="manual:rencana"),
+        InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+    ]]
+    row2: list[InlineKeyboardButton] = []
+    if t:
+        row2.append(InlineKeyboardButton(f"🛡️ Cek {t}", callback_data=f"tick:cek:{t}"))
+    row2.append(InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"))
+    rows.append(row2)
+    return InlineKeyboardMarkup(rows)
+
+
+def _rencana_limit_reject_markup(ticker: str) -> InlineKeyboardMarkup:
+    """Tombol saat /rencana ditolak batas risiko portofolio."""
+    t = _clean_cb_ticker(ticker)
+    row1 = [InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio")]
+    if t:
+        row1.append(InlineKeyboardButton(f"🛡️ Cek {t}", callback_data=f"tick:cek:{t}"))
+    row2 = [
+        InlineKeyboardButton("✏️ Hitung Manual", callback_data="manual:rencana"),
+        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+    ]
+    return InlineKeyboardMarkup([row1, row2])
+
+
+def _scan_followup_markup() -> InlineKeyboardMarkup:
+    """Tombol tindak lanjut sesudah /scan selesai atau memakai snapshot hari ini."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✨ BELI Berkualitas", callback_data="sg:good"),
+            InlineKeyboardButton("📋 Ringkasan Sinyal", callback_data="sg:ov"),
+        ],
+        [
+            InlineKeyboardButton("🟢 Cocok Dibeli", callback_data="guide:beli"),
+            InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+        ],
+    ])
+
+
+def _bandar_markup(ticker: str | None = None) -> InlineKeyboardMarkup:
+    """Tombol tindak lanjut dari ringkasan BEI (/bandar)."""
+    t = _clean_cb_ticker(ticker or "")
+    rows: list[list[InlineKeyboardButton]] = []
+    if t:
+        rows.append([
+            InlineKeyboardButton(f"🛡️ Cek {t}", callback_data=f"tick:cek:{t}"),
+            InlineKeyboardButton(f"📊 Analisis {t}", callback_data=f"tick:analisis:{t}"),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton("🛡️ Cek Saham", callback_data="pick:cek"),
+            InlineKeyboardButton("📊 Analisis Saham", callback_data="pick:analisis"),
+        ])
+    rows.append([
+        InlineKeyboardButton("🏭 Rotasi Sektor", callback_data="run:sektor"),
+        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+    ])
+    return InlineKeyboardMarkup(rows)
 
 
 def _plan_card(p: dict, idx: int, deps) -> str:
@@ -116,6 +245,18 @@ def _rencana_text(result: dict, payload: dict, meta: dict, deps) -> str:
             out += ["", f"Alasan terbanyak: {rejected}"]
         else:
             out += ["", "Alasan: tidak ada sinyal BELI yang lolos saringan."]
+        has_modal_reject = any(
+            (src or {}).get("modal kurang untuk 1 lot")
+            for src in (payload.get("rejected"), result.get("rejected"))
+        )
+        if has_modal_reject and modal:
+            pos_lim_txt = f"{pos_lim:g}".replace(".", ",")
+            out += [
+                "",
+                f"💡 <i>Catatan modal: paket membatasi tiap saham maks {pos_lim_txt}% modal "
+                f"({deps._money(modal * pos_lim / 100)}). Untuk modal kecil, hitung 1 saham "
+                "via <code>/rencana KODE</code> atau cek <code>/sinyal beli bagus</code>.</i>",
+            ]
         out += ["", "Cek kandidat yang lebih longgar: <code>/sinyal beli</code>",
                 "Perbarui data: <code>/scan</code>",
                 "Ubah modal: <code>/modal 10000000</code>",
@@ -217,7 +358,6 @@ async def build_plan_payload(rows: list[dict], meta: dict, deps) -> dict:
 async def do_paket(update: Update, args: list[str], deps,
                    *, from_menu: bool = False):
     """Paket beli MULTI-emiten dari snapshot /scan: /paket [1-5|refresh]."""
-    rm = deps.home_markup() if from_menu else None
     rows = await asyncio.to_thread(store.load_market_scan)
     meta = await asyncio.to_thread(store.market_scan_meta)
     if not rows:
@@ -228,7 +368,7 @@ async def do_paket(update: Update, args: list[str], deps,
             "Untuk satu emiten tanpa menunggu scan: "
             "<code>/rencana BBCA 5000000</code>.",
             parse_mode=ParseMode.HTML,
-            reply_markup=rm)
+            reply_markup=_paket_no_snapshot_markup())
         return
 
     if not await deps.cooldown_ok(update, "rencana"):
@@ -258,7 +398,7 @@ async def do_paket(update: Update, args: list[str], deps,
                  "modal": await asyncio.to_thread(
                      store.get_modal, update.effective_chat.id)},
                 {"rejected": dict(pre_rejected)}, meta, deps),
-                reply_markup=rm)
+                reply_markup=_paket_empty_markup())
             return
         await update.effective_message.reply_text(
             f"⏳ Menyusun rencana dari <b>{len(cands)} kandidat</b> teratas "
@@ -270,7 +410,7 @@ async def do_paket(update: Update, args: list[str], deps,
                 "❌ Gagal mengambil data fundamental/berita untuk kandidat. "
                 "Coba lagi nanti atau <code>/paket refresh</code>.",
                 parse_mode=ParseMode.HTML,
-                reply_markup=rm)
+                reply_markup=_paket_empty_markup())
             return
         await asyncio.to_thread(store.save_plan_cache, key, payload,
                                 meta.get("trade_date", ""))
@@ -293,9 +433,29 @@ async def do_paket(update: Update, args: list[str], deps,
         max_pos_pct=eff_pos,
         max_sector_pct=max_sec,
     )
+    picks = result.get("picks") or []
+    today_iso = marketcal.now_wib().date().isoformat()
+    for p in picks:
+        t_pick = _clean_cb_ticker(str(p.get("ticker") or ""))
+        entry_v = float(p.get("entry") or p.get("price") or 0.0)
+        lots_v = int(p.get("lots") or 0)
+        if t_pick and entry_v > 0 and lots_v > 0 and not p.get("vetoes"):
+            await asyncio.to_thread(
+                store.save_signal_context,
+                chat_id,
+                t_pick,
+                "paket",
+                entry_v,
+                p.get("sl"),
+                p.get("tp"),
+                lots_v,
+                today_iso,
+                intent="beli",
+            )
+    kb = _paket_picks_markup(picks) if picks else _paket_empty_markup()
     await deps.reply_long(update.effective_message,
                      _rencana_text(result, payload, meta, deps),
-                     reply_markup=rm)
+                     reply_markup=kb)
 
 
 _RENCANA_USAGE = (
@@ -363,18 +523,47 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
             "Pakai dengan sadar risikonya.</i>",
             "",
         ]
+    raw_pos_cap = float(plan.get("max_pos_pct") or riskmod.MAX_POS_PCT)
+    pos_cap_pct = raw_pos_cap * 100.0 if raw_pos_cap <= 1.0 else raw_pos_cap
+    pos_cap_txt = f"{pos_cap_pct:g}".replace(".", ",")
+    if budget_from_modal and plan.get("modal"):
+        raw_b = plan.get("raw_budget")
+        raw_b_val = (
+            float(raw_b)
+            if raw_b is not None
+            else float(plan["modal"]) * (pos_cap_pct / 100.0)
+        )
+        out.append(
+            f"📐 Alokasi 1 saham: <b>{pos_cap_txt}% × modal "
+            f"{deps._money(plan['modal'])}</b> = <b>{deps._money(raw_b_val)}</b>"
+        )
     if not plan.get("ok"):
         out += [
             f"💵 Anggaran <b>{deps._money(plan['budget'])}</b> belum cukup untuk "
             f"1 lot: harga 1 lot {deps._money(plan['lot_value'])} + fee ≈ "
             f"<b>{deps._money(plan['min_budget'])}</b>.",
-            "Tambah anggaran atau pilih emiten lain — tidak ada jumlah lot "
-            "yang saya karang.",
         ]
+        modal_val = float(plan.get("modal") or 0)
+        min_b = float(plan.get("min_budget") or 0)
+        lot_val = float(plan.get("lot_value") or 0)
+        if min_b > 0 and modal_val >= min_b and lot_val > 0:
+            full_lots = int(modal_val // lot_val)
+            while full_lots > 0 and full_lots * lot_val * (1 + saranmod.BUY_FEE) > modal_val:
+                full_lots -= 1
+            one_lot_pct_txt = f"{(min_b / modal_val * 100.0):.1f}".replace(".", ",")
+            out += [
+                f"💡 Dengan <b>modal penuh {deps._money(modal_val)}</b>, 1 lot "
+                f"({deps._money(min_b)}) masih muat (≈ <b>{full_lots} lot</b> maks, "
+                f"1 lot = <b>{one_lot_pct_txt}%</b> modal — melewati batas "
+                f"diversifikasi {pos_cap_txt}%/posisi).",
+                f"Uji anggaran manual: <code>/rencana {t} {int(round(modal_val))}</code>.",
+            ]
+        else:
+            out.append(
+                "Tambah anggaran atau pilih emiten lain — tidak ada jumlah lot "
+                "yang saya karang."
+            )
     else:
-        raw_pos_cap = float(plan.get("max_pos_pct") or riskmod.MAX_POS_PCT)
-        pos_cap_pct = raw_pos_cap * 100.0 if raw_pos_cap <= 1.0 else raw_pos_cap
-        pos_cap_txt = f"{pos_cap_pct:g}".replace(".", ",")
         src = (f"Modal tersimpan (dibatasi {pos_cap_txt}%/posisi)"
                if budget_from_modal else "Anggaran")
         shares = f"{plan['shares']:,}".replace(",", ".")
@@ -423,10 +612,18 @@ async def do_rencana(update: Update, args: list[str], deps,
                      *, from_menu: bool = False):
     """Rencana beli SATU emiten: /rencana <KODE> [anggaran]."""
     msg = update.effective_message
-    chat_id = update.effective_chat.id
+    chat_id = update.effective_chat.id if update.effective_chat else 0
     rm = deps.home_markup() if from_menu else None
     if not args:
-        await deps.reply_long(msg, _RENCANA_USAGE, reply_markup=rm)
+        wl = (
+            await asyncio.to_thread(store.get_watchlist, chat_id)
+            if update.effective_chat else []
+        )
+        await deps.reply_long(
+            msg,
+            _RENCANA_USAGE + "\n\n<i>Atau pilih saham di bawah:</i>",
+            reply_markup=deps.ticker_pick_markup("rencana", wl),
+        )
         return
     head = args[0].upper()
     head = head[:-3] if head.endswith(".JK") else head
@@ -559,19 +756,38 @@ async def do_rencana(update: Update, args: list[str], deps,
                 "",
                 deps._SINYAL_DISCLAIMER,
             ]
-            await deps.reply_long(msg, "\n".join(lines), reply_markup=rm)
+            await deps.reply_long(
+                msg, "\n".join(lines),
+                reply_markup=_rencana_limit_reject_markup(head),
+            )
             return
+    allow_buy = bool(plan.get("ok") and not plan.get("vetoes"))
     today_iso = marketcal.now_wib().date().isoformat()
-    if plan.get("entry") and float(plan["entry"]) > 0:
+    if (
+        allow_buy
+        and plan.get("entry")
+        and float(plan["entry"]) > 0
+        and int(plan.get("lots") or 0) > 0
+    ):
         await asyncio.to_thread(
             store.save_signal_context,
             chat_id, head, "rencana", float(plan["entry"]),
             plan.get("sl"), plan.get("tp"),
-            plan.get("lots") or None, today_iso,
+            int(plan["lots"]), today_iso,
+            intent="beli",
         )
-    kb = jurnal_handler.confirm_exec_markup(
-        "rencana", head, deps, from_menu=from_menu,
+    small_but_fits_full = (
+        not plan.get("ok")
+        and bool(modal)
+        and float(plan.get("min_budget") or 0) > 0
+        and float(modal) >= float(plan["min_budget"])
     )
+    if small_but_fits_full:
+        kb = _rencana_small_budget_markup(head)
+    else:
+        kb = jurnal_handler.confirm_exec_markup(
+            "rencana", head, deps, from_menu=from_menu, allow_buy=allow_buy,
+        )
     await deps.reply_long(
         msg,
         _rencana_single_text(plan, enriched, budget_from_modal=from_modal,
@@ -582,6 +798,7 @@ async def do_rencana(update: Update, args: list[str], deps,
 
 async def run_scan_job(ctx: ContextTypes.DEFAULT_TYPE, deps):
     chat_id = int(ctx.job.data["chat_id"])
+    res = None
     try:
         res = await scan_with_guard(True, deps, owns_flag=True)
         kval = {}
@@ -597,12 +814,16 @@ async def run_scan_job(ctx: ContextTypes.DEFAULT_TYPE, deps):
         log.exception("scan pasar gagal")
         txt = (f"❌ Scan gagal: <code>{esc(str(exc)[:300])}</code>\n"
                "Coba lagi nanti. Kalau berulang, cek log VPS.")
-    for part in split_message(txt):
+    parts = split_message(txt)
+    kb = _scan_followup_markup() if res is not None else deps.home_markup()
+    for i, part in enumerate(parts):
         try:
+            rm_part = kb if i == len(parts) - 1 else None
             await deps.send_with_retry(
-                lambda p=part: ctx.bot.send_message(
+                lambda p=part, r=rm_part: ctx.bot.send_message(
                     chat_id, p, parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True),
+                    disable_web_page_preview=True,
+                    reply_markup=r),
                 what="kirim hasil scan")
         except Exception:
             log.exception("gagal mengirim hasil scan ke %s", chat_id)
@@ -648,7 +869,7 @@ async def do_scan(update: Update, args: list[str], job_queue, deps,
                                              "meta": meta,
                                              "counts": counts},
                                             "📡 <b>Screener pasar</b>"),
-                         reply_markup=rm)
+                         reply_markup=_scan_followup_markup())
         return
     if deps._screener_running:
         await update.effective_message.reply_text(
@@ -731,6 +952,7 @@ async def do_bandar(update: Update, deps,
                              ("Tinggi", "IndexHigh"), ("Rendah", "IndexLow"),
                              ("Perubahan", "IndexChange")]:
             lines.append(f"  {key_lbl}: {_num(key)}")
+    kb_ticker = _clean_cb_ticker(ticker or "")
     if ticker:
         row = bandar.find_row(rows, ticker)
         if row:
@@ -757,6 +979,10 @@ async def do_bandar(update: Update, deps,
     else:
         up = bandar.top_movers(rows, n=4)
         dn = bandar.top_movers(rows, n=4, asc=True)
+        kb_ticker = next(
+            (t_m for t_m in (_clean_cb_ticker(str(r.get("StockCode") or "")) for r in (up + dn)) if t_m),
+            None,
+        )
 
         def _mv(rs):
             return "\n".join(
@@ -772,7 +998,7 @@ async def do_bandar(update: Update, deps,
         msg,
         "\n".join(lines),
         disable_web_page_preview=True,
-        reply_markup=deps.home_markup(),
+        reply_markup=_bandar_markup(kb_ticker),
     )
 
 

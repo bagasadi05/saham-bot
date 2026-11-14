@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import re
 
 import pandas as pd
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -18,6 +20,82 @@ from core import (analysis, btcache, data, fundamental, marketcal, news,
                   pricing, regime, reports, saran as saranmod, store)
 
 log = logging.getLogger("sahambuddy")
+
+# Metadata hasil pemindaian terbaru per chat_id untuk tombol tindak lanjut /saran
+# tanpa mengubah kontrak return `str | None` pada `saran_scan_text`.
+_LAST_SARAN_META: dict[int, dict] = {}
+
+
+def _clean_cb_ticker(raw: str) -> str | None:
+    """Normalkan kode emiten untuk callback_data (<= 64 byte)."""
+    t = (raw or "").strip().upper()
+    if t.endswith(".JK"):
+        t = t[:-3]
+    return t if re.fullmatch(r"[A-Z0-9]{2,10}", t) else None
+
+
+def _saran_list_markup() -> InlineKeyboardMarkup:
+    """Tombol tindak lanjut pada daftar posisi paper (/saran list)."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🎯 Scan Kandidat", callback_data="run:saran"),
+            InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+        ],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def _saran_followup_markup(
+    picks: list[dict] | None = None,
+    exit_alerts: list[dict] | None = None,
+) -> InlineKeyboardMarkup:
+    """Tombol aksi per kandidat beli, alert jual, dan footer navigasi /saran."""
+    rows: list[list[InlineKeyboardButton]] = []
+    seen_exit: set[str] = set()
+    for ex in (exit_alerts or []):
+        t = _clean_cb_ticker(str(ex.get("ticker") or ""))
+        if not t or t in seen_exit:
+            continue
+        seen_exit.add(t)
+        row = [InlineKeyboardButton(f"🤔 Cek Jual {t}", callback_data=f"tick:jual:{t}")]
+        if ex.get("is_real"):
+            row.append(InlineKeyboardButton(f"📝 Catat Jual {t}", callback_data=f"exec:sell:{t}"))
+        rows.append(row)
+        if len(seen_exit) >= 4:
+            break
+    seen_pick: set[str] = set()
+    for p in (picks or []):
+        t = _clean_cb_ticker(str(p.get("ticker") or ""))
+        if not t or t in seen_pick:
+            continue
+        seen_pick.add(t)
+        row = [
+            InlineKeyboardButton(f"🔍 Cek {t}", callback_data=f"tick:cek:{t}"),
+            InlineKeyboardButton(f"🎯 Hitung Lot {t}", callback_data=f"tick:rencana:{t}"),
+        ]
+        if int(p.get("lots") or 0) > 0 and float(p.get("entry") or 0.0) > 0:
+            row.append(InlineKeyboardButton(f"📝 Beli {t}", callback_data=f"exec:buy:{t}"))
+        rows.append(row)
+        if len(seen_pick) >= 4:
+            break
+    rows.append([
+        InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+        InlineKeyboardButton("✨ BELI Berkualitas", callback_data="run:sinyal_bagus"),
+    ])
+    rows.append([
+        InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
+        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _tanya_allows_buy(verdict_txt: str, focus: str) -> bool:
+    """True hanya jika fokus bukan jual dan kesimpulan beli bukan HINDARI/JANGAN BELI."""
+    if focus == "jual":
+        return False
+    buy_part = (verdict_txt or "").split("Kalau sudah pegang:", 1)[0].upper()
+    blocked = ("HINDARI", "JANGAN BELI", "TIDAK CUKUP DATA", "TIDAK LAYAK")
+    return not any(tok in buy_part for tok in blocked)
 
 
 async def do_saran(update: Update, deps, sub: str = "",
@@ -31,14 +109,15 @@ async def do_saran(update: Update, deps, sub: str = "",
             msg,
             "\n".join(lines) or "Belum ada posisi latihan.",
             disable_web_page_preview=True,
-            reply_markup=deps.home_markup() if from_menu else None,
+            reply_markup=_saran_list_markup(),
         )
         return
     if not await deps.cooldown_ok(update, "saran"):
         return
+    _LAST_SARAN_META.pop(int(chat_id), None)
     if sub == "lq45":
         if len(saranmod.LQ45) < 30:
-            await msg.reply_text("❌ Daftar LQ45 kosong.")
+            await msg.reply_text("❌ Daftar LQ45 kosong.", reply_markup=deps.home_markup())
             return
         ok = await msg.reply_text(
             f"⏳ Memindai seluruh LQ45 ({len(saranmod.LQ45)} emiten) — "
@@ -53,24 +132,34 @@ async def do_saran(update: Update, deps, sub: str = "",
 
         txt = await deps.saran_scan_text(chat_id, saranmod.LQ45, _prog)
     else:
+        _LAST_SARAN_META.pop(int(chat_id), None)
+        real_pos = await asyncio.to_thread(store.real_positions, chat_id)
+        held_syms = [
+            str(p.get("ticker") or "").upper()
+            for p in real_pos
+            if int(p.get("lots") or 0) > 0 and p.get("ticker")
+        ]
         wl = await asyncio.to_thread(store.get_watchlist, chat_id)
-        universe = (wl + [t for t in saranmod.DEFAULT_UNIVERSE if t not in wl])[:saranmod.MAX_SCAN]
+        seed = list(dict.fromkeys(held_syms + list(wl) + list(saranmod.DEFAULT_UNIVERSE)))
+        universe = seed[:saranmod.MAX_SCAN]
         if not from_menu:
             await msg.reply_text(
                 f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 1-2 menit..."
             )
         txt = await deps.saran_scan_text(chat_id, universe)
+    scan_meta = _LAST_SARAN_META.pop(int(chat_id), None) or {}
     if txt is None:
         await msg.reply_text(
             "❌ Data sumber error, coba lagi nanti.",
-            reply_markup=deps.home_markup() if from_menu else None,
+            reply_markup=deps.home_markup(),
         )
         return
+    kb = _saran_followup_markup(scan_meta.get("picks"), scan_meta.get("exit_alerts"))
     await deps.reply_long(
         msg,
         txt,
         disable_web_page_preview=True,
-        reply_markup=deps.home_markup() if from_menu else None,
+        reply_markup=kb,
     )
 
 
@@ -91,6 +180,7 @@ async def saran_scan_text(chat_id: int, deps,
     Emiten dianalisis paralel berbatas (`deps.SCAN_CONCURRENCY`) — hasil tetap urut
     sesuai universe, dan satu emiten gagal tidak membatalkan sisanya.
     Return teks ringkasan, atau None kalau semua sumber gagal."""
+    _LAST_SARAN_META.pop(int(chat_id), None)
     real_pos = await asyncio.to_thread(store.real_positions, chat_id)
     open_execs = await asyncio.to_thread(store.open_executions_by_ticker, chat_id)
     if universe is None:
@@ -192,6 +282,24 @@ async def saran_scan_text(chat_id: int, deps,
         await asyncio.to_thread(
             saranmod.queue_paper, chat_id, result["picks"], today, risk_scale=scale
         )
+        today_iso = today.isoformat()
+        for c in result["picks"]:
+            t_c = _clean_cb_ticker(str(c.get("ticker") or ""))
+            entry_c = float(c.get("entry") or 0.0)
+            lots_c = int(c.get("lots") or 0)
+            if t_c and lots_c > 0 and entry_c > 0:
+                await asyncio.to_thread(
+                    store.save_signal_context,
+                    chat_id,
+                    t_c,
+                    "saran",
+                    entry_c,
+                    c.get("sl"),
+                    c.get("tp"),
+                    lots_c,
+                    today_iso,
+                    intent="beli",
+                )
         label = ("Kandidat (urut skor relatif antar-emiten — IC OOS +0,03, "
                  "tipis; setelah biaya ≈ 0)"
                  if result.get("mode") == "relatif"
@@ -219,11 +327,23 @@ async def saran_scan_text(chat_id: int, deps,
                         f"{c['lots']} lot ({c['shares']} lembar) ≈ {saranmod.fmt(c['value'])} | "
                         f"risiko nyata {saranmod.fmt(c['real_risk'])}")
                 else:
+                    eff_risk_frac = max(saranmod.BASE_RISK_PCT * scale, 1e-6)
+                    entry_px = float(c.get("entry") or 0.0)
+                    sl_px = float(c.get("sl") or 0.0)
+                    real_risk_1_lot = max(entry_px - sl_px, 0.0) * 100.0
+                    min_modal_needed = int(
+                        math.ceil(max(real_risk_1_lot / eff_risk_frac, entry_px * 100.0))
+                    )
+                    reason_zero = (
+                        f"1 lot ({saranmod.fmt(entry_px * 100)}) & risiko/lembar melebihi aturan {risk_txt}% modal"
+                        if entry_px * 100.0 > float(modal or 0)
+                        else f"risiko/lembar melebihi {risk_txt}% modal"
+                    )
                     lines.append(
-                        f"      💼 Ukuran: <i>risiko/lembar melebihi {risk_txt}% modal — "
-                        "butuh minimal 1 lot; naikkan modal (mis. "
-                        f"{saranmod.fmt(min(int(modal) * 3, 100_000_000))}) "
-                        "atau lewati ini</i>")
+                        f"      💼 Ukuran: <i>{reason_zero} — "
+                        f"butuh modal minimal {saranmod.fmt(min_modal_needed)} untuk 1 lot "
+                        "(atau lewati ini)</i>"
+                    )
     else:
         lines.append("Tidak ada kandidat layak BUY hari ini "
                      "(semua skor tak mencukupi / terkena filter jebakan momentum).")
@@ -240,6 +360,7 @@ async def saran_scan_text(chat_id: int, deps,
             cand_rel_map[str(h_item["ticker"]).upper()] = float(h_item["rel_pct"])
 
     real_hold_lines: list[str] = []
+    exit_alerts: list[dict] = []
     for pos in real_pos:
         t_pos = str(pos.get("ticker") or "").upper()
         lots_pos = int(pos.get("lots") or 0)
@@ -316,6 +437,23 @@ async def saran_scan_text(chat_id: int, deps,
             f"{saranmod.fmt(avg_px)}, net {net_pct:+.1f}%] → <b>{act_lbl}</b> "
             f"({deps.esc(act_note)})"
         )
+        if act_lbl != "TAHAN":
+            t_clean = _clean_cb_ticker(t_pos)
+            if t_clean:
+                exit_alerts.append({"ticker": t_clean, "action": act_lbl, "is_real": True})
+                if cur_px > 0:
+                    await asyncio.to_thread(
+                        store.save_signal_context,
+                        chat_id,
+                        t_clean,
+                        "saran",
+                        float(pricing.round_tick(cur_px)),
+                        eff_sl if eff_sl > 0 else None,
+                        None,
+                        lots_pos,
+                        today.isoformat(),
+                        intent="jual",
+                    )
 
     if hold_notes or real_hold_lines:
         lines.append("\n📌 <b>TINJAU POSISI TERBUKA (band tahan top 60%):</b>")
@@ -347,6 +485,19 @@ async def saran_scan_text(chat_id: int, deps,
     lines.append("\n⏱️ Evaluasi rotasi tiap ±20–40 hari bursa; tahan posisi selama "
                  "skor relatif ≥40/100 (top 60%) agar biaya 0,40% tidak menggerus hasil.")
     lines.append("⚠️ Alat bantu latihan, bukan saran formal. DYOR!")
+    seen_exit = {x["ticker"] for x in exit_alerts}
+    for h in hold_notes:
+        if h.get("action") == "ROTASI":
+            t_h = _clean_cb_ticker(str(h.get("ticker") or ""))
+            if t_h and t_h not in seen_exit:
+                seen_exit.add(t_h)
+                exit_alerts.append({"ticker": t_h, "action": "ROTASI", "is_real": False})
+    if len(_LAST_SARAN_META) >= 128:
+        _LAST_SARAN_META.pop(next(iter(_LAST_SARAN_META)))
+    _LAST_SARAN_META[int(chat_id)] = {
+        "picks": list(result.get("picks") or []),
+        "exit_alerts": exit_alerts,
+    }
     return "\n".join(lines)
 
 
@@ -493,17 +644,6 @@ async def do_tanya(update: Update, deps, ticker: str, focus: str):
         except Exception:
             snap_row = {}
     rel_pct = snap_row.get("rel_pct") if isinstance(snap_row, dict) else None
-    if sig_px and float(sig_px) > 0:
-        px = float(pricing.round_tick(float(sig_px)))
-        sl_lvl = float(saranmod.stop_price(px, atr))
-        tp_lvl = float(saranmod.target_price(px, atr))
-        intent = "jual" if focus == "jual" else "beli"
-        await asyncio.to_thread(
-            store.save_signal_context,
-            chat_id, t, f"tanya_{focus}", px,
-            sl_lvl, tp_lvl, None, marketcal.now_wib().date().isoformat(),
-            intent=intent,
-        )
     try:
         verdict_txt = deps.build_verdict(
             res,
@@ -518,10 +658,27 @@ async def do_tanya(update: Update, deps, ticker: str, focus: str):
         )
     except TypeError:
         verdict_txt = deps.build_verdict(res, fsc, nsent, focus, bt_sum, weekly=weekly)
+    allow_buy = _tanya_allows_buy(verdict_txt, focus)
+    if sig_px and float(sig_px) > 0 and (focus == "jual" or allow_buy):
+        px = float(pricing.round_tick(float(sig_px)))
+        sl_lvl = float(saranmod.stop_price(px, atr))
+        tp_lvl = float(saranmod.target_price(px, atr))
+        intent = "jual" if focus == "jual" else "beli"
+        await asyncio.to_thread(
+            store.save_signal_context,
+            chat_id, t, f"tanya_{focus}", px,
+            sl_lvl, tp_lvl, None, marketcal.now_wib().date().isoformat(),
+            intent=intent,
+        )
+    cb_t = _clean_cb_ticker(t) or t
+    try:
+        kb = deps.result_markup(f"tanya_{focus}", cb_t, allow_buy=allow_buy)
+    except TypeError:
+        kb = deps.result_markup(f"tanya_{focus}", cb_t)
     await deps.reply_long(
         msg,
         verdict_txt,
-        reply_markup=deps.result_markup(f"tanya_{focus}", t),
+        reply_markup=kb,
     )
 
 
