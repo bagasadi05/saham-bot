@@ -19,15 +19,65 @@ from telegram.ext import ContextTypes
 from core import (data, fundamental, learn, marketcal, news,
                   scorecard, store)
 from core.reports import _trend_line, esc, fmt_compact_amount
+from handlers import menu as menu_handler
 
 log = logging.getLogger("sahambuddy")
 
 
 async def do_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+    chat_id = update.effective_chat.id
+    args = getattr(ctx, "args", None) or []
+    if args:
+        raw = " ".join(args).strip()
+        try:
+            target = store.normalize_user_mode(raw)
+        except ValueError:
+            cur = await asyncio.to_thread(store.get_user_mode, chat_id)
+            await update.effective_message.reply_text(
+                "❌ Pilihan mode tidak dikenal. Pakai <code>/start pemula</code> "
+                "atau <code>/start expert</code> (atau <code>/start</code> saja).",
+                parse_mode=ParseMode.HTML,
+                reply_markup=menu_handler.mode_menu_markup(cur),
+            )
+            return
+        mode = await asyncio.to_thread(store.set_user_mode, chat_id, target)
+    else:
+        mode = await asyncio.to_thread(store.get_user_mode, chat_id)
     await update.effective_message.reply_text(
-        deps._menu_text(),
+        menu_handler._render_menu_text(deps, mode),
         parse_mode=ParseMode.HTML,
-        reply_markup=deps.main_menu_markup())
+        reply_markup=menu_handler._render_main_menu_markup(deps, mode),
+    )
+
+
+async def do_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+    """Lihat atau ganti level tampilan menu: /mode [pemula|expert]."""
+    chat_id = update.effective_chat.id
+    args = getattr(ctx, "args", None) or []
+    if not args:
+        cur = await asyncio.to_thread(store.get_user_mode, chat_id)
+        await update.effective_message.reply_text(
+            menu_handler.mode_text(cur),
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_handler.mode_menu_markup(cur),
+        )
+        return
+    try:
+        target = store.normalize_user_mode(" ".join(args).strip())
+    except ValueError:
+        cur = await asyncio.to_thread(store.get_user_mode, chat_id)
+        await update.effective_message.reply_text(
+            "❌ Pilihan level menu tidak dikenal.\n"
+            "Gunakan <code>/mode pemula</code> atau <code>/mode expert</code>.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_handler.mode_menu_markup(cur),
+        )
+        return
+    saved = await asyncio.to_thread(store.set_user_mode, chat_id, target)
+    txt, rm = menu_handler._mode_switched_view(saved, deps)
+    await update.effective_message.reply_text(
+        txt, parse_mode=ParseMode.HTML, reply_markup=rm,
+    )
 
 
 async def do_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):

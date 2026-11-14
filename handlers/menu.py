@@ -14,7 +14,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from core import alerts, learn, saran as saranmod, store
+import config
+from core import alerts, kualitas as kvalmod, learn, marketcal, saran as saranmod, store, textutil
 from core.reports import esc
 
 POPULAR_TICKERS = ["BBCA", "BBRI", "TLKM", "BMRI", "ANTM", "ASII"]
@@ -67,9 +68,16 @@ _MANUAL_PROMPT = {
         "<code>BBCA oversold</code>).\n"
         "<i>Jenis default: " + ", ".join(sorted(alerts.ALL_KINDS)) + "</i>:"
     ),
+    "onboard_modal": (
+        "Ketik nominal modal dalam Rupiah untuk Tahap 2 "
+        "(contoh: <code>500000</code>, <code>1jt</code>, atau <code>5jt</code>):"
+    ),
+    "onboard_ticker": (
+        "Ketik kode saham untuk Tahap 4 (contoh: <code>BBCA</code>):"
+    ),
 }
 
-_MODAL_PRESETS = (2_000_000, 5_000_000, 10_000_000, 25_000_000)
+_MODAL_PRESETS = (500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000, 25_000_000)
 
 _BELAJAR_BUTTONS = (
     ("PER (Mahal/Murah)", "per", "PBV (Nilai Buku)", "pbv"),
@@ -80,7 +88,38 @@ _BELAJAR_BUTTONS = (
 )
 
 
-def menu_text() -> str:
+def _safe_mode(mode: str | None) -> str:
+    try:
+        return store.normalize_user_mode(mode or store.DEFAULT_USER_MODE)
+    except ValueError:
+        return store.DEFAULT_USER_MODE
+
+
+def _render_menu_text(deps, mode: str) -> str:
+    try:
+        return deps._menu_text(mode=mode)
+    except TypeError:
+        return deps._menu_text()
+
+
+def _render_main_menu_markup(deps, mode: str) -> InlineKeyboardMarkup:
+    try:
+        return deps.main_menu_markup(mode=mode)
+    except TypeError:
+        return deps.main_menu_markup()
+
+
+def menu_text(mode: str = "pemula") -> str:
+    if _safe_mode(mode) == "expert":
+        return (
+            "⚡ <b>SahamBuddy — Mode Expert</b>\n\n"
+            "Akses cepat alat analisis, saringan kualitas, sizing risiko, "
+            "portofolio &amp; jurnal eksekusi. Ketuk tombol di bawah atau "
+            "ketik perintah langsung (<code>/cek</code>, <code>/rencana</code>, "
+            "<code>/sinyal</code>, <code>/saran</code>, <code>/jurnal</code>).\n\n"
+            "⚠️ <i>Alat bantu analisis, bukan ajakan beli/jual &amp; tidak terhubung "
+            "ke akun sekuritasmu. Selalu DYOR!</i>"
+        )
     return (
         "👋 Halo! Aku <b>SahamBuddy</b> — asisten pemula untuk mengecek "
         "nilai saham, mencari kandidat beli, dan mengecek saham yang "
@@ -96,7 +135,24 @@ def menu_text() -> str:
     )
 
 
-def main_menu_markup() -> InlineKeyboardMarkup:
+def main_menu_markup(mode: str = "pemula") -> InlineKeyboardMarkup:
+    if _safe_mode(mode) == "expert":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛡️ Cek 6 Poin", callback_data="pick:cek"),
+             InlineKeyboardButton("📊 Analisis", callback_data="pick:analisis")],
+            [InlineKeyboardButton("🎯 Hitung Lot", callback_data="sub:rencana"),
+             InlineKeyboardButton("📦 Paket Beli", callback_data="run:paket")],
+            [InlineKeyboardButton("📡 Sinyal IDX", callback_data="run:sinyal"),
+             InlineKeyboardButton("✨ BELI Bagus", callback_data="run:sinyal_bagus")],
+            [InlineKeyboardButton("💡 Ide Harian", callback_data="run:saran"),
+             InlineKeyboardButton("🏭 Sektor BEI", callback_data="run:sektor")],
+            [InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
+             InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal")],
+            [InlineKeyboardButton("👀 Pantau", callback_data="sub:pantau"),
+             InlineKeyboardButton("🧪 Riset & Pro", callback_data="sub:pro")],
+            [InlineKeyboardButton("📋 Semua Perintah", callback_data="sub:allcmd"),
+             InlineKeyboardButton("🎚️ Level: Expert (Ganti)", callback_data="mode:menu")],
+        ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🧭 Pandu Aku Langkah demi Langkah", callback_data="guide:start")],
         [InlineKeyboardButton("🟢 Saham Cocok Dibeli", callback_data="guide:beli"),
@@ -105,7 +161,54 @@ def main_menu_markup() -> InlineKeyboardMarkup:
          InlineKeyboardButton("💼 Portofolio Saya", callback_data="run:portofolio")],
         [InlineKeyboardButton("🎓 Belajar Pemula", callback_data="run:belajar"),
          InlineKeyboardButton("⚙️ Menu Lengkap", callback_data="sub:more")],
+        [InlineKeyboardButton("🎚️ Level: Pemula (Ganti)", callback_data="mode:menu")],
     ])
+
+
+def mode_text(cur_mode: str = "pemula") -> str:
+    cur = _safe_mode(cur_mode)
+    label = "🌱 Pemula" if cur == "pemula" else "⚡ Expert"
+    return (
+        f"🎚️ <b>Pilih Level Tampilan Menu</b>\n\n"
+        f"Level aktif saat ini: <b>{label}</b>\n\n"
+        "• <b>🌱 Pemula</b>: menu ringkas (≤8 tombol), bahasa sederhana, "
+        "plus panduan bertahap <b>Tahap 1→5</b>.\n"
+        "• <b>⚡ Expert</b>: grid akses cepat langsung ke semua alat pro "
+        "(<code>/sinyal</code>, <code>/paket</code>, <code>/saran</code>, "
+        "<code>/jurnal</code>, <code>/validasi</code>).\n\n"
+        "<i>Bisa diganti kapan saja via tombol di bawah atau "
+        "<code>/mode pemula</code> / <code>/mode expert</code>.</i>"
+    )
+
+
+def mode_menu_markup(cur_mode: str = "pemula") -> InlineKeyboardMarkup:
+    cur = _safe_mode(cur_mode)
+    lbl_pemula = "✅ Mode Pemula (Aktif)" if cur == "pemula" else "🌱 Mode Pemula"
+    lbl_expert = "✅ Mode Expert (Aktif)" if cur == "expert" else "⚡ Mode Expert"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(lbl_pemula, callback_data="mode:set:pemula"),
+         InlineKeyboardButton(lbl_expert, callback_data="mode:set:expert")],
+        [InlineKeyboardButton("🧭 Panduan Bertahap (Tahap 1→5)", callback_data="onboard:s1")],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def _mode_switched_view(mode: str, deps) -> tuple[str, InlineKeyboardMarkup]:
+    norm = _safe_mode(mode)
+    if norm == "pemula":
+        text = (
+            "🌱 <b>Mode Pemula diaktifkan!</b>\n\n"
+            "Menu utama disederhanakan dan kamu bisa mengikuti alur terpandu "
+            "langkah demi langkah (Tahap 1→5) dari pilih tujuan sampai hitung lot.\n\n"
+            "Pilih langkah selanjutnya di bawah:"
+        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 Mulai Panduan Bertahap (Tahap 1→5)", callback_data="onboard:s1")],
+            [InlineKeyboardButton("🏠 Buka Menu Pemula", callback_data="menu")],
+        ])
+        return text, markup
+    text = "⚡ <b>Mode Expert diaktifkan!</b>\n\n" + _render_menu_text(deps, "expert")
+    return text, _render_main_menu_markup(deps, "expert")
 
 
 def home_markup() -> InlineKeyboardMarkup:
@@ -113,58 +216,119 @@ def home_markup() -> InlineKeyboardMarkup:
         [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")]])
 
 
+def _clean_cb_ticker(ticker: str) -> str:
+    raw = (ticker or "").strip().upper()
+    clean = _clean_ticker_tok(raw)
+    if clean:
+        return clean
+    stripped = raw[:-3] if raw.endswith(".JK") else raw
+    alnum = "".join(ch for ch in stripped if ch.isalnum())
+    return alnum[:10] or "BBCA"
+
+
 def result_markup(
     action: str, ticker: str, *, allow_buy: bool = True
 ) -> InlineKeyboardMarkup:
     """Tombol langkah lanjutan kontekstual di bawah hasil analisis/cek."""
+    t = _clean_cb_ticker(ticker)
     rows: list[list[InlineKeyboardButton]] = []
     if action == "cek":
-        if allow_buy:
-            rows.append([
-                InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{ticker}"),
-                InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{ticker}"),
-            ])
-        else:
-            rows.append([
-                InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{ticker}"),
-                InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{ticker}"),
-            ])
-        rows.append(_action_trade_row(ticker, allow_buy=allow_buy))
-    elif action == "fundamental":
         rows.append([
-            InlineKeyboardButton("🛡️ Cek Layak Beli", callback_data=f"tick:cek:{ticker}"),
-            InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{ticker}"),
+            InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{t}"),
+            InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{t}"),
         ])
         if allow_buy:
             rows.append([
-                InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{ticker}"),
-                InlineKeyboardButton("📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{ticker}"),
+                InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{t}"),
+                InlineKeyboardButton("📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{t}"),
+            ])
+        rows.append([
+            InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{t}"),
+        ])
+    elif action == "fundamental":
+        rows.append([
+            InlineKeyboardButton("🛡️ Cek Layak Beli", callback_data=f"tick:cek:{t}"),
+            InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{t}"),
+        ])
+        if allow_buy:
+            rows.append([
+                InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{t}"),
+                InlineKeyboardButton("📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{t}"),
             ])
     elif action == "analisis":
         rows.append([
-            InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{ticker}"),
-            InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{ticker}"),
+            InlineKeyboardButton("🛡️ Cek Layak Beli", callback_data=f"tick:cek:{t}"),
+            InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{t}"),
         ])
-        rows.append(_action_trade_row(ticker, allow_buy=allow_buy))
+        if allow_buy:
+            rows.append([
+                InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{t}"),
+                InlineKeyboardButton("📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{t}"),
+            ])
+        rows.append([
+            InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{t}"),
+        ])
     elif action in ("tanya_beli", "beli", "tanya_umum"):
         rows.append([
-            InlineKeyboardButton("🛡️ Cek 6 Poin", callback_data=f"tick:cek:{ticker}"),
-            InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{ticker}"),
+            InlineKeyboardButton("🛡️ Cek 6 Poin", callback_data=f"tick:cek:{t}"),
+            InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{t}"),
         ])
-        rows.append(_action_trade_row(ticker, allow_buy=allow_buy))
+        row2 = [InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{t}")]
+        if allow_buy:
+            row2.append(InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{t}"))
+        rows.append(row2)
+        if action == "tanya_umum":
+            trade_btns: list[InlineKeyboardButton] = []
+            if allow_buy:
+                trade_btns.append(
+                    InlineKeyboardButton("📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{t}")
+                )
+            trade_btns.append(
+                InlineKeyboardButton("📝 Sudah jual di Stockbit", callback_data=f"exec:sell:{t}")
+            )
+            rows.append(trade_btns)
+            rows.append([
+                InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{t}"),
+            ])
+        else:
+            rows.append(_action_trade_row(t, allow_buy=allow_buy))
     elif action == "rencana":
-        rows.append(_action_trade_row(ticker, allow_buy=allow_buy))
+        rows.append([
+            InlineKeyboardButton("🛡️ Cek 6 Poin", callback_data=f"tick:cek:{t}"),
+            InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{t}"),
+        ])
+        rows.append([
+            InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+            InlineKeyboardButton("✏️ Hitung Budget Lain", callback_data="manual:rencana"),
+        ])
+        rows.append(_action_trade_row(t, allow_buy=allow_buy))
     elif action in ("jual", "tanya_jual"):
         rows.append([
-            InlineKeyboardButton("📝 Sudah jual di Stockbit", callback_data=f"exec:sell:{ticker}"),
+            InlineKeyboardButton("📝 Sudah jual di Stockbit", callback_data=f"exec:sell:{t}"),
             InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
         ])
         rows.append([
-            InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{ticker}"),
-            InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{ticker}"),
+            InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{t}"),
+            InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{t}"),
         ])
+    elif action in ("skor", "berita", "backtest"):
+        rows.append([
+            InlineKeyboardButton("🛡️ Cek 6 Poin", callback_data=f"tick:cek:{t}"),
+            InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{t}"),
+        ])
+        if allow_buy:
+            rows.append([
+                InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{t}"),
+                InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{t}"),
+            ])
+            rows.append(_action_trade_row(t, allow_buy=True))
+        else:
+            rows.append([
+                InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{t}"),
+                InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{t}"),
+            ])
     rows.append([
-        InlineKeyboardButton("🔄 Perbarui", callback_data=f"refresh:{action}:{ticker}"),
+        InlineKeyboardButton("🔄 Perbarui", callback_data=f"refresh:{action}:{t}"),
         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
     ])
     return InlineKeyboardMarkup(rows)
@@ -190,16 +354,35 @@ def ticker_pick_markup(
     watchlist: list[str] | None = None,
     *,
     show_guide_back: bool = False,
+    extra_tickers: list[str] | None = None,
 ) -> InlineKeyboardMarkup:
     rows = []
-    wl = [t for t in (watchlist or []) if t not in POPULAR_TICKERS][:6]
+    extra: list[str] = []
+    for raw in (extra_tickers or []):
+        clean = _clean_ticker_tok(str(raw).strip().upper())
+        if clean and clean not in extra:
+            extra.append(clean)
+    extra = extra[:6]
+    if extra:
+        for i in range(0, len(extra), 3):
+            rows.append([
+                InlineKeyboardButton(f"📡 {t}", callback_data=f"tick:{action}:{t}")
+                for t in extra[i:i + 3]
+            ])
+    wl: list[str] = []
+    for raw in (watchlist or []):
+        clean = _clean_ticker_tok(str(raw).strip().upper())
+        if clean and clean not in extra and clean not in POPULAR_TICKERS and clean not in wl:
+            wl.append(clean)
+    wl = wl[:6]
     if wl:
         for i in range(0, len(wl), 3):
             rows.append([InlineKeyboardButton(f"⭐ {t}", callback_data=f"tick:{action}:{t}")
                          for t in wl[i:i + 3]])
-    for i in range(0, len(POPULAR_TICKERS), 3):
+    pop = [t for t in POPULAR_TICKERS if t not in extra]
+    for i in range(0, len(pop), 3):
         rows.append([InlineKeyboardButton(t, callback_data=f"tick:{action}:{t}")
-                     for t in POPULAR_TICKERS[i:i + 3]])
+                     for t in pop[i:i + 3]])
     rows.append([InlineKeyboardButton("✏️ Ketik kode lain", callback_data=f"manual:{action}")])
     if show_guide_back:
         rows.append([
@@ -292,12 +475,34 @@ def modal_text(cur_modal: int) -> str:
 
 def modal_menu_markup() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Rp 2 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[0]}"),
-         InlineKeyboardButton("Rp 5 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[1]}")],
-        [InlineKeyboardButton("Rp 10 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[2]}"),
-         InlineKeyboardButton("Rp 25 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[3]}")],
+        [InlineKeyboardButton("Rp 500 Rb", callback_data=f"setmodal:{_MODAL_PRESETS[0]}"),
+         InlineKeyboardButton("Rp 1 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[1]}")],
+        [InlineKeyboardButton("Rp 2 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[2]}"),
+         InlineKeyboardButton("Rp 5 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[3]}")],
+        [InlineKeyboardButton("Rp 10 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[4]}"),
+         InlineKeyboardButton("Rp 25 Juta", callback_data=f"setmodal:{_MODAL_PRESETS[5]}")],
         [InlineKeyboardButton("✏️ Ketik Angka Sendiri", callback_data="manual:modal")],
         [InlineKeyboardButton("⬅️ Kembali", callback_data="sub:rencana"),
+         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def _modal_saved_text(cur_modal: int, new_modal: int) -> str:
+    """Ringkasan konfirmasi perubahan modal beserta batas risiko & slot."""
+    return (
+        f"💵 Modal diperbarui: {saranmod.fmt(cur_modal)} → <b>{saranmod.fmt(new_modal)}</b>\n"
+        f"<i>Risiko maks normal (1%): {saranmod.fmt(new_modal * 0.01)} per posisi · "
+        f"Batas slot 25%: {saranmod.fmt(new_modal * 0.25)}.</i>"
+    )
+
+
+def _modal_saved_markup() -> InlineKeyboardMarkup:
+    """Tombol lanjutan setelah modal disimpan agar pengguna langsung bertindak."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎯 Hitung 1 Saham Sekarang", callback_data="pick:rencana")],
+        [InlineKeyboardButton("🔎 Cari Kandidat Beli", callback_data="guide:beli"),
+         InlineKeyboardButton("📈 Beli Bagus (Fundamental)", callback_data="run:sinyal_bagus")],
+        [InlineKeyboardButton("⬅️ Atur Rencana & Risiko", callback_data="sub:rencana"),
          InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
     ])
 
@@ -376,6 +581,7 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
             "📋 <b>Daftar Lengkap Perintah (/)</b>\n\n"
             "<b>Untuk Pemula &amp; Cek Cepat:</b>\n"
             "• <code>/start</code>, <code>/menu</code> — buka menu tombol\n"
+            "• <code>/mode pemula</code> / <code>/mode expert</code> — ganti tampilan menu (simpel / pro)\n"
             "• <code>/help</code> — panduan 3 langkah mulai\n"
             "• <code>/cek BBCA</code> — ceklist 6 bagian + kesimpulan\n"
             "• <code>/analisis BBCA</code> — grafik &amp; analisis lengkap\n"
@@ -426,13 +632,15 @@ def _guide_start_view() -> tuple[str, InlineKeyboardMarkup]:
     """Langkah awal panduan interaktif untuk pemula."""
     text = (
         "🧭 <b>Panduan Pemula — Mulai dari Mana?</b>\n\n"
-        "Pilih situasi kamu sekarang, aku arahkan langkah demi langkah:\n\n"
+        "Pilih situasi kamu sekarang, atau ikuti <b>Panduan Bertahap (Tahap 1→5)</b> "
+        "dari pilih tujuan sampai hitung lot:\n\n"
         "1️⃣ <b>Cari saham cocok dibeli</b> — belum punya incaran, mau lihat kandidat dari data pasar\n"
         "2️⃣ <b>Cek nilai 1 saham</b> — sudah punya nama saham, mau cek mahal/murah &amp; layak beli\n"
         "3️⃣ <b>Cek saham untuk dijual</b> — sudah pegang saham, bingung tahan atau jual\n"
-        "4️⃣ <b>Panduan 3 langkah</b> — baru pertama kali pakai bot ini"
+        "4️⃣ <b>Panduan 3 langkah</b> — ringkasan singkat alur bot"
     )
     markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Mulai Panduan Bertahap (Tahap 1→5)", callback_data="onboard:s1")],
         [InlineKeyboardButton("1️⃣ Cari Saham Cocok Dibeli", callback_data="guide:beli")],
         [InlineKeyboardButton("2️⃣ Cek Nilai 1 Saham", callback_data="guide:cek")],
         [InlineKeyboardButton("3️⃣ Cek Saham Cocok Dijual", callback_data="guide:jual")],
@@ -442,8 +650,86 @@ def _guide_start_view() -> tuple[str, InlineKeyboardMarkup]:
     return text, markup
 
 
+def _evaluate_beli_candidates(
+    rows: list[dict],
+    modal: int,
+    *,
+    cache_dir: str | None = None,
+    max_pos_pct: float = 0.25,
+) -> tuple[list[dict], bool]:
+    """Urutkan sinyal BELI: cache kualitas sehat dulu, lalu kecukupan 1 lot & rel_pct."""
+    eff_dir = cache_dir if cache_dir is not None else config.TMP_DIR
+    day = marketcal.now_wib().date().isoformat()
+    seen: set[str] = set()
+    cands: list[dict] = []
+    has_cache = False
+    for r in rows:
+        if r.get("signal") != "BELI" or not r.get("ticker"):
+            continue
+        ticker = _clean_cb_ticker(str(r.get("ticker", "")))
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        raw_k = kvalmod.load_cached(eff_dir, ticker, day)
+        judged = kvalmod.judge(raw_k) if raw_k is not None else None
+        ok_val = judged.get("ok") if judged else None
+        if judged is not None:
+            has_cache = True
+        q_tier = 0 if ok_val is True else (1 if ok_val is None else 2)
+        price = float(r.get("price") or r.get("close") or 0)
+        lot_cost = price * 100.0 * (1.0 + saranmod.BUY_FEE) if price > 0 else None
+        afford_tier = (
+            0 if (lot_cost is not None and lot_cost <= modal)
+            else (1 if lot_cost is None else 2)
+        )
+        cands.append({
+            "ticker": ticker,
+            "rel_pct": float(r.get("rel_pct") or 0),
+            "price": price,
+            "lot_cost": lot_cost,
+            "ok": ok_val,
+            "q_tier": q_tier,
+            "afford_tier": afford_tier,
+            "judged": judged,
+            "max_pos_pct": max_pos_pct,
+        })
+    cands.sort(key=lambda c: (c["q_tier"], c["afford_tier"], -c["rel_pct"], c["ticker"]))
+    return cands, has_cache
+
+
+def _format_beli_candidate_line(c: dict, modal: int, max_pos_pct: float = 0.25) -> str:
+    """Bangun satu baris ringkas kandidat BELI berisi kualitas & biaya 1 lot vs modal."""
+    t = c["ticker"]
+    judged = c.get("judged")
+    ok_val = c.get("ok")
+    if ok_val is True:
+        q_lbl = "✅ Sehat"
+    elif ok_val is False:
+        q_lbl = f"⚠️ {judged.get('label') or 'Tidak lolos'}" if judged else "⚠️ Tidak lolos"
+    else:
+        q_lbl = "❔ Belum cek kualitas"
+    bits = (judged or {}).get("bits") or []
+    extra_bit = f" ({esc(str(bits[0]))})" if bits else ""
+    lot_cost = c.get("lot_cost")
+    slot_cap = float(modal) * float(max_pos_pct)
+    if lot_cost is None:
+        lot_lbl = "biaya 1 lot tidak tersedia"
+    elif lot_cost <= slot_cap:
+        lot_lbl = f"1 lot ~{saranmod.fmt(lot_cost)} ✅ pas slot {int(round(max_pos_pct * 100))}%"
+    elif lot_cost <= modal:
+        lot_lbl = f"1 lot ~{saranmod.fmt(lot_cost)} ⚠️ muat modal (&gt;slot {int(round(max_pos_pct * 100))}%)"
+    else:
+        lot_lbl = f"1 lot ~{saranmod.fmt(lot_cost)} ⛔ &gt; modal!"
+    return f"• <b>{esc(t)}</b> — {q_lbl}{extra_bit} · {lot_lbl}"
+
+
 def _guide_beli_view(
-    rows: list[dict], meta: dict, modal: int
+    rows: list[dict],
+    meta: dict,
+    modal: int,
+    *,
+    cache_dir: str | None = None,
+    max_pos_pct: float = 0.25,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Alur terpandu mencari kandidat beli tanpa memanggil jaringan."""
     if not rows:
@@ -454,7 +740,8 @@ def _guide_beli_view(
             "• <b>Ide Harian (Cepat)</b>: langsung cari dari watchlist/LQ45 + hitung lot\n"
             "• <b>Scan 944 Saham</b>: pindai semua saham BEI (±3–6 menit di latar belakang)\n"
             "• <b>Cek Saham Populer</b>: langsung cek BBCA, BBRI, TLKM, dll.\n\n"
-            f"Modal tersimpan: <b>{saranmod.fmt(modal)}</b>."
+            f"Modal tersimpan: <b>{saranmod.fmt(modal)}</b> "
+            f"(slot 25%: {saranmod.fmt(modal * max_pos_pct)})."
         )
         markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("💡 Ide Harian (Cepat)", callback_data="run:saran"),
@@ -466,22 +753,39 @@ def _guide_beli_view(
         ])
         return text, markup
 
-    buy_rows = [r for r in rows if r.get("signal") == "BELI"]
-    top_buy = sorted(
-        buy_rows, key=lambda r: float(r.get("rel_pct") or 0), reverse=True
-    )[:3]
-    top_tickers = [str(r.get("ticker", "")).upper() for r in top_buy if r.get("ticker")]
+    cands, has_cache = _evaluate_beli_candidates(
+        rows, modal, cache_dir=cache_dir, max_pos_pct=max_pos_pct
+    )
+    eligible = [c for c in cands if c["q_tier"] < 2]
+    top_cands = eligible[:3]
+    top_tickers = [c["ticker"] for c in top_cands]
     scanned = str(meta.get("scanned_at") or "").strip()[:16]
     scan_note = f" (scan: <code>{esc(scanned)}</code>)" if scanned else ""
+    if top_cands:
+        cand_lines = "\n".join(
+            _format_beli_candidate_line(c, modal, max_pos_pct) for c in top_cands
+        )
+        source_note = (
+            "<i>Prioritas dari cache kualitas hari ini &amp; kecukupan 1 lot:</i>"
+            if has_cache
+            else "<i>Cache kualitas hari ini belum ada — diurutkan berdasar skor relatif &amp; cek biaya 1 lot:</i>"
+        )
+        cand_block = f"\n\n{source_note}\n{cand_lines}"
+    else:
+        cand_block = (
+            "\n\n⚠️ <i>Semua kandidat BELI pada cache kualitas hari ini belum lolos "
+            "saringan fundamental. Tekan Pilihan BELI Berkualitas untuk verifikasi terbaru.</i>"
+        )
     text = (
         "🟢 <b>Cari Saham Cocok Dibeli</b>\n\n"
         f"Data scan terakhir memuat <b>{len(rows)}</b> emiten dengan "
-        f"<b>{len(buy_rows)}</b> sinyal BELI{scan_note}.\n\n"
+        f"<b>{len(cands)}</b> sinyal BELI{scan_note}.\n\n"
         "⚠️ <i>Sinyal BELI = peringkat skor relatif riset, bukan jaminan untung. "
-        "Selalu cek 6 poin keamanannya dulu sebelum beli.</i>\n\n"
-        "• <b>Pilihan BELI Berkualitas</b>: paling cocok untuk pemula (disaring laba &amp; arus kas)\n"
-        "• <b>Cek cepat kandidat teratas</b>: ketuk tombol saham di bawah untuk langsung cek kelayakan\n"
-        f"• Modal tersimpan saat ini: <b>{saranmod.fmt(modal)}</b>"
+        "Selalu cek 6 poin keamanannya dulu sebelum beli.</i>"
+        f"{cand_block}\n\n"
+        "• <b>Pilihan BELI Berkualitas</b>: saring laba positif &amp; valuasi wajar\n"
+        "• <b>Cek cepat kandidat teratas</b>: ketuk tombol saham di bawah\n"
+        f"• Modal: <b>{saranmod.fmt(modal)}</b> (slot 25%: {saranmod.fmt(modal * max_pos_pct)})"
     )
     kb: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton("✨ Pilihan BELI Berkualitas", callback_data="run:sinyal_bagus"),
@@ -495,7 +799,8 @@ def _guide_beli_view(
     kb.extend([
         [InlineKeyboardButton("📦 Paket Multi-Saham", callback_data="run:paket"),
          InlineKeyboardButton("📡 Ringkasan Scan", callback_data="run:sinyal")],
-        [InlineKeyboardButton("💵 Atur Modal", callback_data="sub:modal")],
+        [InlineKeyboardButton("💵 Atur Modal", callback_data="sub:modal"),
+         InlineKeyboardButton("🧭 Panduan Tahap 1→5", callback_data="onboard:s1")],
         [InlineKeyboardButton("⬅️ Kembali ke Panduan", callback_data="guide:start"),
          InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
     ])
@@ -506,20 +811,30 @@ def _guide_jual_view(
     positions: list[dict], wl: list[str], rows: list[dict]
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Alur terpandu meninjau saham yang layak ditahan atau dijual."""
-    held = [str(p["ticker"]).upper() for p in positions if p.get("ticker")][:4]
+    seen: set[str] = set()
+    held: list[str] = []
+    for p in positions:
+        if int(p.get("lots") or 0) <= 0 or not p.get("ticker"):
+            continue
+        t = _clean_cb_ticker(str(p["ticker"]))
+        if t and t not in seen:
+            seen.add(t)
+            held.append(t)
+        if len(held) >= 4:
+            break
     has_sell = any(r.get("signal") == "JUAL" for r in rows)
     extra = [t for t in dict.fromkeys([*wl, *POPULAR_TICKERS]) if t not in held][:4]
 
     if held:
         held_note = (
-            "Kamu punya posisi aktif tersimpan: <b>"
+            "Kamu punya posisi aktif tersimpan (lot &gt; 0): <b>"
             + ", ".join(esc(t) for t in held)
             + "</b>.\nKetuk salah satu di bawah untuk cek apakah sebaiknya "
             "ditahan, ambil untung sebagian, atau cut loss:"
         )
     else:
         held_note = (
-            "Belum ada posisi aktif tersimpan di portofoliomu. Pilih saham di "
+            "Belum ada posisi aktif (lot &gt; 0) di portofoliomu. Pilih saham di "
             "bawah atau ketik kode saham yang kamu pegang di Stockbit "
             "(mis. <code>TLKM jual gak?</code>):"
         )
@@ -575,6 +890,7 @@ def _guide_pemula_view() -> tuple[str, InlineKeyboardMarkup]:
         "<code>BBRI fundamentalnya bagus?</code></i>"
     )
     markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Ikuti Panduan Bertahap (Tahap 1→5)", callback_data="onboard:s1")],
         [InlineKeyboardButton("🟢 Cari Saham Cocok Dibeli", callback_data="guide:beli"),
          InlineKeyboardButton("🛡️ Coba Cek BBCA", callback_data="tick:cek:BBCA")],
         [InlineKeyboardButton("🎓 Kamus Istilah Pemula", callback_data="run:belajar"),
@@ -584,12 +900,14 @@ def _guide_pemula_view() -> tuple[str, InlineKeyboardMarkup]:
     return text, markup
 
 
-def _load_guide_beli_data(chat_id: int) -> tuple[list[dict], dict, int]:
-    """Muat snapshot scan & modal dalam satu panggilan store sekuensial."""
+def _load_guide_beli_data(chat_id: int) -> tuple[list[dict], dict, int, float]:
+    """Muat snapshot scan, modal & batas posisi dalam satu panggilan store sekuensial."""
+    max_pos, _ = store.get_risk_limits(chat_id)
     return (
         store.load_market_scan(),
         store.market_scan_meta(),
         store.get_modal(chat_id),
+        max_pos,
     )
 
 
@@ -602,15 +920,335 @@ def _load_guide_jual_data(chat_id: int) -> tuple[list[dict], list[str], list[dic
     )
 
 
+_ONBOARD_GOALS = {
+    "beli": "🟢 Cari & Beli Saham",
+    "cek": "🔍 Cek Nilai 1 Saham",
+    "jual": "🔴 Tinjau Saham untuk Dijual",
+}
+
+
+def _resolve_onboard_goal(raw: str | None) -> str:
+    return raw if raw in _ONBOARD_GOALS else "beli"
+
+
+def _onboard_load_state_sync(chat_id: int) -> dict:
+    """Muat state onboarding, modal & batas slot dalam satu panggilan sinkron."""
+    st = store.get_onboard_state(chat_id)
+    modal = store.get_modal(chat_id)
+    max_pos, _ = store.get_risk_limits(chat_id)
+    return {"state": st, "modal": modal, "max_pos": max_pos}
+
+
+def _onboard_set_stage_sync(
+    chat_id: int,
+    stage: str,
+    *,
+    goal: str | None = None,
+    ticker: str | None = None,
+) -> dict:
+    """Simpan progres onboarding lalu muat ulang modal & batas slot sekuensial."""
+    updates: dict[str, str] = {"stage": stage}
+    if goal is not None:
+        updates["goal"] = goal
+    if ticker is not None:
+        updates["ticker"] = ticker
+    st = store.set_onboard_state(chat_id, **updates)
+    modal = store.get_modal(chat_id)
+    max_pos, _ = store.get_risk_limits(chat_id)
+    return {"state": st, "modal": modal, "max_pos": max_pos}
+
+
+def _onboard_s3_payload_sync(chat_id: int, st: dict, modal: int) -> dict:
+    """Muat semua data Stage 3 secara sekuensial agar koneksi SQLite aman."""
+    max_pos, _ = store.get_risk_limits(chat_id)
+    return {
+        "state": st,
+        "modal": modal,
+        "max_pos": max_pos,
+        "rows": store.load_market_scan(),
+        "meta": store.market_scan_meta(),
+        "positions": store.real_positions(chat_id),
+        "wl": store.get_watchlist(chat_id),
+    }
+
+
+def _onboard_load_s3_sync(chat_id: int) -> dict:
+    """Simpan stage s3 dan muat kandidat adaptif Stage 3 secara sekuensial."""
+    st = store.set_onboard_state(chat_id, stage="s3")
+    modal = store.get_modal(chat_id)
+    return _onboard_s3_payload_sync(chat_id, st, modal)
+
+
+def _onboard_set_modal_sync(chat_id: int, val: int) -> dict:
+    """Simpan modal baru, set stage s3 & muat kandidat Stage 3 sekuensial."""
+    store.set_modal(chat_id, val)
+    st = store.set_onboard_state(chat_id, stage="s3")
+    return _onboard_s3_payload_sync(chat_id, st, val)
+
+
+def _onboard_done_sync(chat_id: int) -> dict:
+    """Ambil ringkasan state terakhir lalu bersihkan state onboarding."""
+    st = store.get_onboard_state(chat_id)
+    store.clear_onboard_state(chat_id)
+    return st
+
+
+def _onboard_s1_view(state: dict) -> tuple[str, InlineKeyboardMarkup]:
+    cur_goal = state.get("goal")
+    cur_note = (
+        f"\nTujuan terakhir: <b>{_ONBOARD_GOALS[cur_goal]}</b>."
+        if cur_goal in _ONBOARD_GOALS else ""
+    )
+    text = (
+        "🧭 <b>Panduan Bertahap · Tahap 1 dari 5 — Pilih Tujuan</b>\n\n"
+        "Ikuti 5 langkah singkat agar keputusanmu terukur (data jujur, tanpa "
+        "janji untung, dan eksekusi tetap manual di Stockbit):\n"
+        "1️⃣ Pilih tujuan · 2️⃣ Cek modal · 3️⃣ Pilih saham · "
+        "4️⃣ Cek kelayakan · 5️⃣ Hitung lot &amp; catat."
+        f"{cur_note}\n\n"
+        "Apa tujuanmu saat ini?"
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 Cari & Beli Saham", callback_data="onboard:goal:beli")],
+        [InlineKeyboardButton("🔍 Cek Nilai 1 Saham", callback_data="onboard:goal:cek")],
+        [InlineKeyboardButton("🔴 Tinjau Saham untuk Dijual", callback_data="onboard:goal:jual")],
+        [InlineKeyboardButton("📖 Panduan Cepat", callback_data="guide:start"),
+         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+    return text, markup
+
+
+def _onboard_s2_view(
+    state: dict, modal: int, max_pos: float
+) -> tuple[str, InlineKeyboardMarkup]:
+    goal = _resolve_onboard_goal(state.get("goal"))
+    slot_25 = modal * max_pos
+    risk_1 = modal * 0.01
+    text = (
+        "🧭 <b>Panduan Bertahap · Tahap 2 dari 5 — Modal &amp; Ukuran 1 Lot</b>\n\n"
+        f"Tujuan: <b>{_ONBOARD_GOALS[goal]}</b>\n"
+        f"Modal tersimpan: <b>{saranmod.fmt(modal)}</b>\n"
+        f"• Batas slot ideal ({int(round(max_pos * 100))}% modal): "
+        f"<b>{saranmod.fmt(slot_25)}</b> per saham\n"
+        f"• Risiko maks normal (1%): <b>{saranmod.fmt(risk_1)}</b> per posisi\n\n"
+        "ℹ️ Di BEI minimum beli <b>1 lot = 100 lembar</b>. Jika modalmu Rp500rb–Rp1jt, "
+        "bot akan menandai saham mana yang harga 1 lot-nya muat modal vs melebihi slot 25%.\n\n"
+        "Pilih modal cepat atau pakai nominal tersimpan:"
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Rp 500 Rb", callback_data=f"onboard:modal:{_MODAL_PRESETS[0]}"),
+         InlineKeyboardButton("Rp 1 Juta", callback_data=f"onboard:modal:{_MODAL_PRESETS[1]}")],
+        [InlineKeyboardButton("Rp 2 Juta", callback_data=f"onboard:modal:{_MODAL_PRESETS[2]}"),
+         InlineKeyboardButton("Rp 5 Juta", callback_data=f"onboard:modal:{_MODAL_PRESETS[3]}")],
+        [InlineKeyboardButton("Rp 10 Juta", callback_data=f"onboard:modal:{_MODAL_PRESETS[4]}"),
+         InlineKeyboardButton("Rp 25 Juta", callback_data=f"onboard:modal:{_MODAL_PRESETS[5]}")],
+        [InlineKeyboardButton("✏️ Ketik Modal Sendiri", callback_data="manual:onboard_modal")],
+        [InlineKeyboardButton(f"✅ Lanjut Pakai {saranmod.fmt(modal)}", callback_data="onboard:s3")],
+        [InlineKeyboardButton("⬅️ Tahap 1", callback_data="onboard:s1"),
+         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+    return text, markup
+
+
+def _onboard_s3_view(
+    payload: dict, *, cache_dir: str | None = None
+) -> tuple[str, InlineKeyboardMarkup]:
+    state = payload["state"]
+    modal = int(payload["modal"])
+    max_pos = float(payload["max_pos"])
+    goal = _resolve_onboard_goal(state.get("goal"))
+    rows = payload["rows"]
+    positions = payload["positions"]
+    wl = payload["wl"]
+    kb: list[list[InlineKeyboardButton]] = []
+    picks: list[str] = []
+
+    if goal == "jual":
+        active = [
+            p for p in positions
+            if int(p.get("lots") or 0) > 0 and p.get("ticker")
+        ]
+        if active:
+            lines = []
+            seen: set[str] = set()
+            for p in active:
+                t = _clean_cb_ticker(str(p["ticker"]))
+                if not t or t in seen:
+                    continue
+                seen.add(t)
+                picks.append(t)
+                lots = int(p.get("lots") or 0)
+                avg = float(p.get("avg_price") or 0)
+                avg_str = f" @ {saranmod.fmt(avg)}" if avg > 0 else ""
+                lines.append(f"• <b>{esc(t)}</b> — {lots} lot aktif{avg_str}")
+                if len(picks) >= 4:
+                    break
+            body = (
+                "Posisi aktif di portofoliomu (lot &gt; 0):\n"
+                + "\n".join(lines)
+                + "\n\nPilih saham yang ingin dicek sinyal tahan/jual:"
+            )
+        else:
+            picks = list(dict.fromkeys([*wl, *POPULAR_TICKERS]))[:4]
+            body = (
+                "Belum ada posisi aktif (lot &gt; 0) di portofolio tersimpan.\n"
+                "Pilih dari watchlist/saham populer di bawah atau ketik kode saham "
+                "yang kamu pegang di Stockbit:"
+            )
+    elif goal == "beli":
+        cands, has_cache = _evaluate_beli_candidates(
+            rows, modal, cache_dir=cache_dir, max_pos_pct=max_pos
+        )
+        eligible = [c for c in cands if c["q_tier"] < 2][:4]
+        if eligible:
+            picks = [c["ticker"] for c in eligible]
+            lines = "\n".join(
+                _format_beli_candidate_line(c, modal, max_pos) for c in eligible
+            )
+            cache_note = (
+                "Diprioritaskan dari cache kualitas sehat &amp; biaya 1 lot vs modal:"
+                if has_cache
+                else "Dari scan terakhir (cache kualitas belum tersedia; urut skor &amp; 1 lot):"
+            )
+            body = f"{cache_note}\n{lines}\n\nPilih 1 saham untuk dicek kelayakannya di Tahap 4:"
+        else:
+            picks = list(dict.fromkeys([*wl, *POPULAR_TICKERS]))[:4]
+            note = (
+                "Belum ada kandidat BELI lolos saringan cache kualitas hari ini."
+                if cands
+                else "Belum ada snapshot scan pasar tersimpan."
+            )
+            body = (
+                f"{note} Kamu bisa pilih dari watchlist/populer di bawah, ketik kode lain, "
+                "atau jalankan <b>Pilihan BELI Berkualitas</b> dulu:"
+            )
+            kb.append([
+                InlineKeyboardButton("✨ Pilihan BELI Berkualitas", callback_data="run:sinyal_bagus"),
+                InlineKeyboardButton("💡 Ide Harian", callback_data="run:saran"),
+            ])
+    else:
+        picks = list(dict.fromkeys([*wl, *POPULAR_TICKERS]))[:4]
+        src = "Watchlist &amp; saham populer" if wl else "Saham populer BEI"
+        body = (
+            f"{src}: <b>{', '.join(esc(t) for t in picks)}</b>.\n\n"
+            "Pilih saham di bawah atau ketik kode 4 huruf yang ingin dicek:"
+        )
+
+    for i in range(0, len(picks), 2):
+        kb.append([
+            InlineKeyboardButton(f"➡️ Cek {t} (Tahap 4)", callback_data=f"onboard:s4:{t}")
+            for t in picks[i:i + 2]
+        ])
+    kb.append([InlineKeyboardButton("✏️ Ketik Kode Saham Lain", callback_data="manual:onboard_ticker")])
+    kb.append([
+        InlineKeyboardButton("⬅️ Tahap 2 (Modal)", callback_data="onboard:s2"),
+        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+    ])
+    text = (
+        "🧭 <b>Panduan Bertahap · Tahap 3 dari 5 — Pilih Saham</b>\n\n"
+        f"Tujuan: <b>{_ONBOARD_GOALS[goal]}</b> · Modal: <b>{saranmod.fmt(modal)}</b>\n\n"
+        f"{body}"
+    )
+    return text, InlineKeyboardMarkup(kb)
+
+
+def _onboard_s4_view(
+    state: dict, modal: int, ticker: str
+) -> tuple[str, InlineKeyboardMarkup]:
+    goal = _resolve_onboard_goal(state.get("goal"))
+    t = _clean_cb_ticker(ticker)
+    text = (
+        f"🧭 <b>Panduan Bertahap · Tahap 4 dari 5 — Cek Kelayakan {esc(t)}</b>\n\n"
+        f"Tujuan: <b>{_ONBOARD_GOALS[goal]}</b> · Modal: <b>{saranmod.fmt(modal)}</b>\n\n"
+        "Sebelum menentukan ukuran lot atau eksekusi manual di Stockbit, cek dulu:\n"
+        "• <b>Cek Kelayakan</b> — status LAYAK / TUNGGU / HINDARI + Pro/Risiko\n"
+        "• <b>Rincian Nilai</b> — PER, PBV, ROE, dividen &amp; kas perusahaan\n"
+        "• <b>Grafik &amp; Analisis</b> — tren harga, momentum &amp; sentimen\n\n"
+        "Setelah membaca hasilnya, lanjut ke <b>Tahap 5</b>:"
+    )
+    kb: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(f"🛡️ Cek Kelayakan {t}", callback_data=f"tick:cek:{t}"),
+         InlineKeyboardButton("💰 Fundamental", callback_data=f"tick:fundamental:{t}")],
+        [InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{t}")],
+    ]
+    if goal == "jual":
+        kb[1].append(InlineKeyboardButton(f"🔴 Cek Jual {t}", callback_data=f"tick:jual:{t}"))
+    kb.append([InlineKeyboardButton(f"➡️ Lanjut Tahap 5: Hitung & Catat {t}", callback_data=f"onboard:s5:{t}")])
+    kb.append([
+        InlineKeyboardButton("⬅️ Ganti Saham (Tahap 3)", callback_data="onboard:s3"),
+        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+    ])
+    return text, InlineKeyboardMarkup(kb)
+
+
+def _onboard_s5_view(
+    state: dict, modal: int, ticker: str
+) -> tuple[str, InlineKeyboardMarkup]:
+    goal = _resolve_onboard_goal(state.get("goal"))
+    t = _clean_cb_ticker(ticker)
+    if goal == "jual":
+        action_hint = (
+            "1️⃣ Jalankan <b>Cek Jual</b> untuk lihat apakah tren/trailing stop sudah tersentuh.\n"
+            "2️⃣ Jika mengeksekusi jual manual di Stockbit, catat lewat <b>Catat Jual Stockbit</b>.\n"
+            "3️⃣ Pasang/perbarui <b>Watchlist &amp; Alarm</b> atau selesaikan panduan."
+        )
+        row1 = [
+            InlineKeyboardButton(f"🔴 Cek Jual {t}", callback_data=f"tick:jual:{t}"),
+            InlineKeyboardButton(f"📝 Catat Jual {t}", callback_data=f"exec:sell:{t}"),
+        ]
+    else:
+        action_hint = (
+            "1️⃣ Ketuk <b>Hitung Lot &amp; Rencana</b> untuk lihat area beli, SL, TP &amp; lot pas modal.\n"
+            "2️⃣ Jika benar beli manual di Stockbit, catat lewat <b>Catat Beli Stockbit</b>.\n"
+            "3️⃣ Pantau harga lewat <b>Watchlist &amp; Alarm</b> atau akhiri panduan."
+        )
+        row1 = [
+            InlineKeyboardButton(f"🎯 Hitung Lot {t}", callback_data=f"tick:rencana:{t}"),
+            InlineKeyboardButton(f"📝 Catat Beli {t}", callback_data=f"exec:buy:{t}"),
+        ]
+    text = (
+        f"🧭 <b>Panduan Bertahap · Tahap 5 dari 5 — Hitung Lot &amp; Catat ({esc(t)})</b>\n\n"
+        f"Tujuan: <b>{_ONBOARD_GOALS[goal]}</b> · Modal: <b>{saranmod.fmt(modal)}</b>\n\n"
+        f"{action_hint}\n\n"
+        "<i>Bot tidak terhubung ke akun Stockbit dan tidak pernah menaruh order otomatis.</i>"
+    )
+    kb = [
+        row1,
+        [InlineKeyboardButton("👀 Watchlist & Alarm", callback_data="sub:pantau"),
+         InlineKeyboardButton("✅ Selesai Panduan", callback_data="onboard:done")],
+        [InlineKeyboardButton(f"⬅️ Tahap 4 ({t})", callback_data=f"onboard:s4:{t}"),
+         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ]
+    return text, InlineKeyboardMarkup(kb)
+
+
+def _onboard_done_view(prev_state: dict) -> tuple[str, InlineKeyboardMarkup]:
+    t = prev_state.get("ticker")
+    note = f" untuk <b>{esc(t)}</b>" if t else ""
+    text = (
+        f"✅ <b>Panduan Bertahap Selesai{note}!</b>\n\n"
+        "Kamu siap pakai menu utama kapan saja, memasang alarm harga di "
+        "<b>Watchlist &amp; Alarm</b>, atau ganti ke <b>Mode Expert</b> lewat "
+        "<code>/mode expert</code> jika ingin akses cepat semua alat."
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👀 Watchlist & Alarm", callback_data="sub:pantau"),
+         InlineKeyboardButton("💼 Portofolio Saya", callback_data="run:portofolio")],
+        [InlineKeyboardButton("🔁 Ulangi Panduan (Tahap 1)", callback_data="onboard:s1"),
+         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+    return text, markup
+
+
 async def _guide_content(
-    step: str, chat_id: int
+    step: str, chat_id: int, cache_dir: str | None = None
 ) -> tuple[str, InlineKeyboardMarkup] | None:
     """Bangun konten & tombol panduan interaktif langkah demi langkah."""
     if step == "start":
         return _guide_start_view()
     if step == "beli":
-        rows, meta, modal = await asyncio.to_thread(_load_guide_beli_data, chat_id)
-        return _guide_beli_view(rows, meta, modal)
+        rows, meta, modal, max_pos = await asyncio.to_thread(_load_guide_beli_data, chat_id)
+        return _guide_beli_view(rows, meta, modal, cache_dir=cache_dir, max_pos_pct=max_pos)
     if step == "cek":
         wl = await asyncio.to_thread(store.get_watchlist, chat_id)
         text = (
@@ -790,6 +1428,151 @@ async def _handle_run(update: Update, msg, ctx, action: str, deps):
         await deps.run_menu_action(update, action, [])
 
 
+def _cache_dir(deps) -> str:
+    return getattr(deps, "TMP_DIR", config.TMP_DIR)
+
+
+def _load_pick_data(chat_id: int, action: str) -> tuple[list[str], list[str]]:
+    """Muat watchlist & (jika sinyal_detail) ticker teratas dari snapshot scan."""
+    wl = store.get_watchlist(chat_id)
+    if action != "sinyal_detail":
+        return wl, []
+    rows = store.load_market_scan()
+    ranked = sorted(
+        (r for r in rows if r.get("ticker")),
+        key=lambda r: (
+            0 if r.get("signal") == "BELI" else (1 if r.get("signal") == "JUAL" else 2),
+            -float(r.get("rel_pct") or 0),
+        ),
+    )
+    extra: list[str] = []
+    for r in ranked:
+        t = _clean_cb_ticker(str(r["ticker"]))
+        if t and t not in extra:
+            extra.append(t)
+        if len(extra) >= 6:
+            break
+    return wl, extra
+
+
+def _onboard_tick_markup(
+    ob_state: dict, ticker: str, deps
+) -> InlineKeyboardMarkup:
+    """Kembalikan tombol navigasi Stage 4/5 saat aksi dipicu dari panduan bertahap."""
+    stage = ob_state.get("stage")
+    clean = _clean_cb_ticker(ticker)
+    if stage not in ("s4", "s5") or ob_state.get("ticker") != clean:
+        return deps.home_markup()
+    if stage == "s4":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"➡️ Lanjut Tahap 5 ({clean})", callback_data=f"onboard:s5:{clean}")],
+            [InlineKeyboardButton("⬅️ Kembali Tahap 4", callback_data=f"onboard:s4:{clean}"),
+             InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Kembali Tahap 5", callback_data=f"onboard:s5:{clean}"),
+         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+async def _edit_current_menu(msg, chat_id: int, deps) -> None:
+    mode = await asyncio.to_thread(store.get_user_mode, chat_id)
+    await deps._safe_edit(
+        msg,
+        _render_menu_text(deps, mode),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_render_main_menu_markup(deps, mode),
+    )
+
+
+async def _handle_onboard_cb(msg, chat_id: int, step_raw: str, deps) -> None:
+    """Tangani seluruh callback panduan bertahap `onboard:*`."""
+    if step_raw == "s1":
+        data = await asyncio.to_thread(_onboard_set_stage_sync, chat_id, "s1")
+        txt, rm = _onboard_s1_view(data["state"])
+        await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+        return
+
+    if step_raw.startswith("goal:"):
+        goal = step_raw.split(":", 1)[1]
+        if goal not in _ONBOARD_GOALS:
+            await deps._safe_edit(
+                msg, "❌ Tujuan panduan tidak dikenal.", reply_markup=deps.home_markup(),
+            )
+            return
+        data = await asyncio.to_thread(_onboard_set_stage_sync, chat_id, "s2", goal=goal)
+        txt, rm = _onboard_s2_view(data["state"], data["modal"], data["max_pos"])
+        await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+        return
+
+    if step_raw == "s2":
+        data = await asyncio.to_thread(_onboard_set_stage_sync, chat_id, "s2")
+        txt, rm = _onboard_s2_view(data["state"], data["modal"], data["max_pos"])
+        await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+        return
+
+    if step_raw.startswith("modal:"):
+        raw_val = step_raw.split(":", 1)[1]
+        try:
+            val = int(raw_val)
+        except ValueError:
+            await deps._safe_edit(
+                msg, "❌ Nominal modal tidak valid.", reply_markup=deps.home_markup(),
+            )
+            return
+        if not (100_000 <= val <= 10_000_000_000):
+            await deps._safe_edit(
+                msg, "❌ Modal harus antara Rp100 ribu dan Rp10 miliar.",
+                reply_markup=deps.home_markup(),
+            )
+            return
+        payload = await asyncio.to_thread(_onboard_set_modal_sync, chat_id, val)
+        txt, rm = _onboard_s3_view(payload, cache_dir=_cache_dir(deps))
+        await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+        return
+
+    if step_raw == "s3":
+        payload = await asyncio.to_thread(_onboard_load_s3_sync, chat_id)
+        txt, rm = _onboard_s3_view(payload, cache_dir=_cache_dir(deps))
+        await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+        return
+
+    if step_raw == "s4" or step_raw.startswith("s4:") or step_raw == "s5" or step_raw.startswith("s5:"):
+        stage = step_raw[:2]
+        explicit = step_raw.split(":", 1)[1] if ":" in step_raw else ""
+        if explicit:
+            ticker = _clean_ticker_tok(explicit.strip().upper())
+            if not ticker:
+                await deps._safe_edit(
+                    msg, "❌ Kode saham tidak valid.", reply_markup=deps.home_markup(),
+                )
+                return
+        else:
+            cur_data = await asyncio.to_thread(_onboard_load_state_sync, chat_id)
+            saved_t = str(cur_data["state"].get("ticker") or "").strip().upper()
+            ticker = _clean_ticker_tok(saved_t)
+            if not ticker:
+                payload = await asyncio.to_thread(_onboard_load_s3_sync, chat_id)
+                txt, rm = _onboard_s3_view(payload, cache_dir=_cache_dir(deps))
+                await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+                return
+        data = await asyncio.to_thread(_onboard_set_stage_sync, chat_id, stage, ticker=ticker)
+        view_fn = _onboard_s4_view if stage == "s4" else _onboard_s5_view
+        txt, rm = view_fn(data["state"], data["modal"], ticker)
+        await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+        return
+
+    if step_raw == "done":
+        prev = await asyncio.to_thread(_onboard_done_sync, chat_id)
+        txt, rm = _onboard_done_view(prev)
+        await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+        return
+
+    await deps._safe_edit(
+        msg, "❌ Langkah panduan tidak dikenal.", reply_markup=deps.home_markup(),
+    )
+
+
 async def menu_callback(update: Update, ctx, deps):
     q = update.callback_query
     if deps.ALLOWED_IDS and (not q.from_user or q.from_user.id not in deps.ALLOWED_IDS):
@@ -804,10 +1587,44 @@ async def menu_callback(update: Update, ctx, deps):
 
     if cb_data == "menu":
         deps._pending_clear(chat_id)
+        await _edit_current_menu(msg, chat_id, deps)
+        return
+
+    if cb_data.startswith("mode:"):
+        deps._pending_clear(chat_id)
+        sub_mode = cb_data.split(":", 1)[1]
+        if sub_mode == "menu":
+            cur_mode = await asyncio.to_thread(store.get_user_mode, chat_id)
+            await deps._safe_edit(
+                msg,
+                mode_text(cur_mode),
+                parse_mode=ParseMode.HTML,
+                reply_markup=mode_menu_markup(cur_mode),
+            )
+            return
+        if sub_mode.startswith("set:"):
+            raw_target = sub_mode.split(":", 1)[1]
+            try:
+                norm_mode = store.normalize_user_mode(raw_target)
+            except ValueError:
+                await deps._safe_edit(
+                    msg, "❌ Pilihan level menu tidak valid.",
+                    reply_markup=deps.home_markup(),
+                )
+                return
+            saved_mode = await asyncio.to_thread(store.set_user_mode, chat_id, norm_mode)
+            txt, rm = _mode_switched_view(saved_mode, deps)
+            await deps._safe_edit(msg, txt, parse_mode=ParseMode.HTML, reply_markup=rm)
+            return
         await deps._safe_edit(
-            msg, deps._menu_text(), parse_mode=ParseMode.HTML,
-            reply_markup=deps.main_menu_markup(),
+            msg, "❌ Tombol level menu tidak dikenal.", reply_markup=deps.home_markup(),
         )
+        return
+
+    if cb_data.startswith("onboard:"):
+        deps._pending_clear(chat_id)
+        step_raw = cb_data.split(":", 1)[1]
+        await _handle_onboard_cb(msg, chat_id, step_raw, deps)
         return
 
     if cb_data.startswith("sub:"):
@@ -816,10 +1633,7 @@ async def menu_callback(update: Update, ctx, deps):
         modal = await asyncio.to_thread(store.get_modal, chat_id)
         sub = _submenu_content(group, modal)
         if not sub:
-            await deps._safe_edit(
-                msg, deps._menu_text(), parse_mode=ParseMode.HTML,
-                reply_markup=deps.main_menu_markup(),
-            )
+            await _edit_current_menu(msg, chat_id, deps)
             return
         text, markup = sub
         await deps._safe_edit(msg, text, parse_mode=ParseMode.HTML, reply_markup=markup)
@@ -828,12 +1642,9 @@ async def menu_callback(update: Update, ctx, deps):
     if cb_data.startswith("guide:"):
         deps._pending_clear(chat_id)
         step = cb_data.split(":", 1)[1]
-        guide = await _guide_content(step, chat_id)
+        guide = await _guide_content(step, chat_id, cache_dir=_cache_dir(deps))
         if not guide:
-            await deps._safe_edit(
-                msg, deps._menu_text(), parse_mode=ParseMode.HTML,
-                reply_markup=deps.main_menu_markup(),
-            )
+            await _edit_current_menu(msg, chat_id, deps)
             return
         text, markup = guide
         await deps._safe_edit(msg, text, parse_mode=ParseMode.HTML, reply_markup=markup)
@@ -859,14 +1670,9 @@ async def menu_callback(update: Update, ctx, deps):
         await asyncio.to_thread(store.set_modal, chat_id, val)
         await deps._safe_edit(
             msg,
-            f"💵 Modal diperbarui: {saranmod.fmt(cur)} → <b>{saranmod.fmt(val)}</b>\n"
-            f"<i>Risiko maks normal (1%): {saranmod.fmt(val * 0.01)} per posisi.</i>",
+            _modal_saved_text(cur, val),
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎯 Hitung 1 Saham Sekarang", callback_data="pick:rencana")],
-                [InlineKeyboardButton("⬅️ Kembali", callback_data="sub:rencana"),
-                 InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
-            ]),
+            reply_markup=_modal_saved_markup(),
         )
         return
 
@@ -894,26 +1700,34 @@ async def menu_callback(update: Update, ctx, deps):
             head += f"\n<i>{esc(hint)}</i>"
         head += "\n\nPilih saham di bawah:"
         deps._pending_clear(chat_id)
-        await deps._safe_edit(
-            msg,
-            head,
-            parse_mode=ParseMode.HTML,
-            reply_markup=deps.ticker_pick_markup(
-                action, await asyncio.to_thread(store.get_watchlist, chat_id),
-            ),
-        )
+        wl, extra = await asyncio.to_thread(_load_pick_data, chat_id, action)
+        try:
+            rm = deps.ticker_pick_markup(action, wl, extra_tickers=extra)
+        except TypeError:
+            rm = deps.ticker_pick_markup(action, wl)
+        await deps._safe_edit(msg, head, parse_mode=ParseMode.HTML, reply_markup=rm)
         return
 
     if cb_data.startswith("manual:"):
         action = cb_data.split(":", 1)[1]
         deps._pending_set(chat_id, action)
+        if action == "onboard_modal":
+            cancel_kb = [[
+                InlineKeyboardButton("⬅️ Kembali Tahap 2", callback_data="onboard:s2"),
+                InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+            ]]
+        elif action == "onboard_ticker":
+            cancel_kb = [[
+                InlineKeyboardButton("⬅️ Kembali Tahap 3", callback_data="onboard:s3"),
+                InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+            ]]
+        else:
+            cancel_kb = [[InlineKeyboardButton("⬅️ Batal", callback_data="menu")]]
         await deps._safe_edit(
             msg,
             _MANUAL_PROMPT.get(action, "Ketik kode emiten:"),
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Batal", callback_data="menu")]]
-            ),
+            reply_markup=InlineKeyboardMarkup(cancel_kb),
         )
         return
 
@@ -929,11 +1743,15 @@ async def menu_callback(update: Update, ctx, deps):
         action, ticker = parts
         deps._pending_clear(chat_id)
         verb = "Memperbarui" if kind == "refresh" else "Memproses"
+        ob_state = (
+            await asyncio.to_thread(store.get_onboard_state, chat_id)
+            if kind == "tick" else {}
+        )
         await deps._safe_edit(
             msg,
             f"⏳ {verb} <b>{esc(ticker)}</b>...",
             parse_mode=ParseMode.HTML,
-            reply_markup=deps.home_markup(),
+            reply_markup=_onboard_tick_markup(ob_state, ticker, deps),
         )
         await deps.run_menu_action(update, action, [ticker])
         return
@@ -978,8 +1796,18 @@ def _parse_menu_tokens(action: str, raw_text: str) -> list[str]:
         head = _clean_ticker_tok(parts[0])
         if not head:
             return []
-        if action == "rencana" and len(parts) > 2:
-            return []
+        if action == "rencana":
+            if len(parts) == 1:
+                return [head]
+            if len(parts) == 2:
+                return [head, parts[1]] if textutil.parse_rupiah(parts[1]) is not None else []
+            # Gabungkan multi-token seperti `BBCA Rp 500.000` atau `BBCA 5 jt`.
+            has_rp = any(p == "RP" or p.startswith("RP") for p in parts[1:])
+            has_unit = parts[-1] in ("JUTA", "JT", "RIBU", "RB", "K")
+            if not (has_rp or has_unit):
+                return []
+            joined = "".join(parts[1:])
+            return [head, joined] if textutil.parse_rupiah(joined) is not None else []
         return [head, *parts[1:12]]
     out: list[str] = []
     for tok in up.replace(",", " ").split():
@@ -1021,7 +1849,7 @@ async def menu_text_input(update: Update, ctx, deps):
         update, chat_id, action, raw_text, deps
     ):
         return
-    if action == "modal":
+    if action in ("modal", "onboard_modal"):
         val = deps._parse_rupiah(raw_text)
         if val is None or not (100_000 <= val <= 10_000_000_000):
             await update.effective_message.reply_text(
@@ -1031,17 +1859,37 @@ async def menu_text_input(update: Update, ctx, deps):
             )
             return
         deps._pending_clear(chat_id)
-        cur = await asyncio.to_thread(store.get_modal, chat_id)
         iv = int(round(val))
+        if action == "onboard_modal":
+            payload = await asyncio.to_thread(_onboard_set_modal_sync, chat_id, iv)
+            txt, rm = _onboard_s3_view(payload, cache_dir=_cache_dir(deps))
+            await update.effective_message.reply_text(
+                txt, parse_mode=ParseMode.HTML, reply_markup=rm,
+            )
+            return
+        cur = await asyncio.to_thread(store.get_modal, chat_id)
         await asyncio.to_thread(store.set_modal, chat_id, iv)
         await update.effective_message.reply_text(
-            f"💵 Modal diperbarui: {saranmod.fmt(cur)} → <b>{saranmod.fmt(iv)}</b>\n"
-            f"<i>Risiko maks normal (1%): {saranmod.fmt(iv * 0.01)} per posisi.</i>",
+            _modal_saved_text(cur, iv),
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎯 Hitung 1 Saham Sekarang", callback_data="pick:rencana")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
-            ]),
+            reply_markup=_modal_saved_markup(),
+        )
+        return
+
+    if action == "onboard_ticker":
+        tokens = _parse_menu_tokens("cek", raw_text)
+        if len(tokens) != 1:
+            await update.effective_message.reply_text(
+                "❌ Ketik tepat 1 kode emiten yang valid (contoh: <code>BBCA</code>).",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        deps._pending_clear(chat_id)
+        t = tokens[0]
+        data = await asyncio.to_thread(_onboard_set_stage_sync, chat_id, "s4", ticker=t)
+        txt, rm = _onboard_s4_view(data["state"], data["modal"], t)
+        await update.effective_message.reply_text(
+            txt, parse_mode=ParseMode.HTML, reply_markup=rm,
         )
         return
 

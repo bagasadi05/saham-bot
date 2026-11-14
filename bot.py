@@ -716,8 +716,12 @@ _MANUAL_PROMPT = menu_handler._MANUAL_PROMPT
 ALLOWED_IDS: set[int] = set()
 
 
-def main_menu_markup() -> InlineKeyboardMarkup:
-    return menu_handler.main_menu_markup()
+def main_menu_markup(mode: str = "pemula") -> InlineKeyboardMarkup:
+    return menu_handler.main_menu_markup(mode)
+
+
+def mode_menu_markup(mode: str = "pemula") -> InlineKeyboardMarkup:
+    return menu_handler.mode_menu_markup(mode)
 
 
 def home_markup() -> InlineKeyboardMarkup:
@@ -730,8 +734,19 @@ def result_markup(
     return menu_handler.result_markup(action, ticker, allow_buy=allow_buy)
 
 
-def ticker_pick_markup(action: str, watchlist: list[str] | None = None) -> InlineKeyboardMarkup:
-    return menu_handler.ticker_pick_markup(action, watchlist)
+def ticker_pick_markup(
+    action: str,
+    watchlist: list[str] | None = None,
+    *,
+    show_guide_back: bool = False,
+    extra_tickers: list[str] | None = None,
+) -> InlineKeyboardMarkup:
+    return menu_handler.ticker_pick_markup(
+        action,
+        watchlist,
+        show_guide_back=show_guide_back,
+        extra_tickers=extra_tickers,
+    )
 
 
 def watch_menu_markup() -> InlineKeyboardMarkup:
@@ -781,8 +796,8 @@ async def menu_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await menu_handler.menu_text_input(update, ctx, sys.modules[__name__])
 
 
-def _menu_text() -> str:
-    return menu_handler.menu_text()
+def _menu_text(mode: str = "pemula") -> str:
+    return menu_handler.menu_text(mode)
 
 
 def _help_text() -> str:
@@ -795,6 +810,7 @@ async def _post_init(app: Application):
     try:
         await app.bot.set_my_commands([
             BotCommand("start", "Buka menu utama (tombol)"),
+            BotCommand("mode", "Ganti level menu: pemula / expert"),
             BotCommand("help", "Panduan pemula (3 langkah mulai)"),
             BotCommand("cek", "Cek 6 poin layak beli: /cek BBCA"),
             BotCommand("analisis", "Grafik & analisis lengkap: /analisis BBCA"),
@@ -1046,6 +1062,10 @@ async def cmd_fundamental(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # --------------------------- info (kode di handlers/info.py)
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await info_handler.do_start(update, ctx, sys.modules[__name__])
+
+
+async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await info_handler.do_mode(update, ctx, sys.modules[__name__])
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1672,6 +1692,7 @@ def main():
     def reg(names, fn):
         app.add_handler(CommandHandler(names, timed(fn), filters=user_filter))
     reg(["start", "menu"], cmd_start)
+    reg(["mode", "level"], cmd_mode)
     reg("help", cmd_help)
     reg(["analisa", "analysis", "analisis"], cmd_analisis)
     reg("skor", cmd_skor)

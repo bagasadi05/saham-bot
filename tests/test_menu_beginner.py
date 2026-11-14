@@ -7,7 +7,7 @@ import types
 import numpy as np
 
 import bot
-from core import alerts, bandar, banding, data, fundamental, learn, marketcal, news, store
+from core import alerts, bandar, banding, data, fundamental, kualitas, learn, marketcal, news, store, textutil
 from handlers import menu as menu_mod, sinyal as sinyal_mod
 from telegram.error import BadRequest
 from tests.conftest import make_prices
@@ -375,6 +375,9 @@ def test_semua_tombol_menu_submenu_dan_belajar_valid(monkeypatch, tmp_store):
 
     markups = [
         bot.main_menu_markup(),
+        bot.main_menu_markup("expert"),
+        bot.mode_menu_markup("pemula"),
+        bot.mode_menu_markup("expert"),
         bot.help_markup(),
         bot.watch_menu_markup(),
         bot.alert_menu_markup(),
@@ -386,7 +389,23 @@ def test_semua_tombol_menu_submenu_dan_belajar_valid(monkeypatch, tmp_store):
         bot.result_markup("fundamental", "BBCA"),
         bot.result_markup("analisis", "BBCA"),
         bot.result_markup("rencana", "BBCA"),
+        bot.result_markup("rencana", "BBCA", allow_buy=False),
+        bot.result_markup("skor", "BBCA"),
+        bot.result_markup("skor", "BBCA", allow_buy=False),
+        bot.result_markup("berita", "BBCA"),
+        bot.result_markup("backtest", "BBCA"),
         bot.result_markup("jual", "BBCA"),
+        bot.result_markup("tanya_umum", "BBCA", allow_buy=False),
+        menu_mod._onboard_s1_view({})[1],
+        menu_mod._onboard_s2_view({"goal": "beli"}, 500_000, 0.25)[1],
+        menu_mod._onboard_s3_view({
+            "state": {"goal": "beli"}, "modal": 500_000, "max_pos": 0.25,
+            "rows": [], "meta": {}, "positions": [], "wl": ["ANTM"],
+        })[1],
+        menu_mod._onboard_s4_view({"goal": "beli"}, 500_000, "BBCA")[1],
+        menu_mod._onboard_s5_view({"goal": "beli"}, 500_000, "BBCA")[1],
+        menu_mod._onboard_s5_view({"goal": "jual"}, 500_000, "BBCA")[1],
+        menu_mod._onboard_done_view({"ticker": "BBCA"})[1],
         sinyal_mod.overview_markup(),
         sinyal_mod.section_markup("BELI"),
         sinyal_mod.section_markup("JUAL"),
@@ -631,6 +650,293 @@ def test_result_markup_langkah_lanjutan_jujur():
         assert not any(c.startswith("tick:rencana:") for c in cbs)
         assert {"exec:sell:BBCA", "run:portofolio",
                 "tick:analisis:BBCA", "tick:fundamental:BBCA"} <= set(cbs)
+
+    # Cabang skor, berita, backtest, rencana & larangan exec:buy/tick:rencana saat allow_buy=False
+    for act in ("skor", "berita", "backtest", "rencana"):
+        cbs_ok = _callbacks(bot.result_markup(act, "BBCA", allow_buy=True))
+        assert "exec:buy:BBCA" in cbs_ok
+        if act != "rencana":
+            assert "tick:rencana:BBCA" in cbs_ok
+        else:
+            assert {"sub:modal", "manual:rencana", "tick:cek:BBCA"} <= set(cbs_ok)
+
+        cbs_no = _callbacks(bot.result_markup(act, "BBCA", allow_buy=False))
+        assert not any(c.startswith("exec:buy:") for c in cbs_no)
+        assert not any(c.startswith("tick:rencana:") for c in cbs_no)
+
+
+def test_mode_pemula_vs_expert_dan_perintah_mode_start(monkeypatch, tmp_store):
+    _setup(monkeypatch, tmp_store)
+
+    # Default mode: pemula (<= 8 tombol, slot #8 mode:menu, teks < 900)
+    pemula_kb = bot.main_menu_markup("pemula")
+    pemula_cbs = _callbacks(pemula_kb)
+    assert len(pemula_cbs) <= 8
+    assert pemula_cbs[-1] == "mode:menu"
+    assert len(bot._menu_text("pemula")) < 900
+
+    # Expert mode: grid akses cepat alat pro + mode:menu
+    expert_kb = bot.main_menu_markup("expert")
+    expert_cbs = _callbacks(expert_kb)
+    assert {
+        "pick:cek", "pick:analisis", "sub:rencana", "run:paket",
+        "run:sinyal", "run:sinyal_bagus", "run:saran", "run:sektor",
+        "run:portofolio", "run:jurnal", "sub:pantau", "sub:pro",
+        "sub:allcmd", "mode:menu",
+    } <= set(expert_cbs)
+    assert "Mode Expert" in bot._menu_text("expert")
+
+    # Callback mode:menu -> mode:set:expert -> menu mempertahankan mode expert
+    q_mode = _Query("mode:menu")
+    asyncio.run(bot.menu_callback(_Update(query=q_mode), _ctx()))
+    assert {"mode:set:pemula", "mode:set:expert", "onboard:s1"} <= set(
+        _callbacks(q_mode.message.edits[-1][1]["reply_markup"])
+    )
+
+    q_exp = _Query("mode:set:expert")
+    asyncio.run(bot.menu_callback(_Update(query=q_exp), _ctx()))
+    assert store.get_user_mode(100) == "expert"
+    assert "run:jurnal" in _callbacks(q_exp.message.edits[-1][1]["reply_markup"])
+
+    q_menu = _Query("menu")
+    asyncio.run(bot.menu_callback(_Update(query=q_menu), _ctx()))
+    assert "run:jurnal" in _callbacks(q_menu.message.edits[-1][1]["reply_markup"])
+
+    # Switch kembali ke pemula -> tautkan onboard:s1 secara menonjol
+    q_pem = _Query("mode:set:pemula")
+    asyncio.run(bot.menu_callback(_Update(query=q_pem), _ctx()))
+    assert store.get_user_mode(100) == "pemula"
+    assert "onboard:s1" in _callbacks(q_pem.message.edits[-1][1]["reply_markup"])
+
+    # /mode & /start menerima argumen pemula/expert + /mode tanpa argumen
+    ctx_exp = types.SimpleNamespace(bot=types.SimpleNamespace(), job_queue=None, args=["expert"])
+    upd_m = _Update("/mode expert")
+    asyncio.run(bot.cmd_mode(upd_m, ctx_exp))
+    assert store.get_user_mode(100) == "expert"
+    assert "run:jurnal" in _callbacks(upd_m.effective_message.replies[-1][1]["reply_markup"])
+
+    upd_s0 = _Update("/start")
+    asyncio.run(bot.cmd_start(upd_s0, _ctx()))
+    assert "Mode Expert" in upd_s0.effective_message.replies[-1][0]
+
+    ctx_pem = types.SimpleNamespace(bot=types.SimpleNamespace(), job_queue=None, args=["pemula"])
+    upd_sp = _Update("/start pemula")
+    asyncio.run(bot.cmd_start(upd_sp, ctx_pem))
+    assert store.get_user_mode(100) == "pemula"
+    assert len(_callbacks(upd_sp.effective_message.replies[-1][1]["reply_markup"])) <= 8
+
+    # /mode ngawur -> pesan error jujur
+    ctx_bad = types.SimpleNamespace(bot=types.SimpleNamespace(), job_queue=None, args=["ngawur"])
+    upd_mb = _Update("/mode ngawur")
+    asyncio.run(bot.cmd_mode(upd_mb, ctx_bad))
+    assert "tidak dikenal" in upd_mb.effective_message.replies[-1][0].lower()
+
+    # Monkeypatch 0-arg fallback pada _menu_text & main_menu_markup tetap aman
+    monkeypatch.setattr(bot, "_menu_text", lambda: "Teks Custom 0-arg")
+    monkeypatch.setattr(bot, "main_menu_markup", lambda: bot.home_markup())
+    upd_mp = _Update("/start")
+    asyncio.run(bot.cmd_start(upd_mp, _ctx()))
+    assert upd_mp.effective_message.replies[-1][0] == "Teks Custom 0-arg"
+    q_mp = _Query("menu")
+    asyncio.run(bot.menu_callback(_Update(query=q_mp), _ctx()))
+    assert q_mp.message.edits[-1][0] == "Teks Custom 0-arg"
+
+    # sub:allcmd & _post_init mendaftarkan /mode
+    allcmd = menu_mod._submenu_content("allcmd", 5_000_000)
+    assert allcmd is not None and "/mode" in allcmd[0]
+    registered = []
+
+    class _BotRec:
+        async def set_my_commands(self, cmds):
+            registered.extend(c.command for c in cmds)
+
+    asyncio.run(bot._post_init(types.SimpleNamespace(bot=_BotRec())))
+    assert "mode" in registered
+
+
+def test_panduan_bertahap_linear_stage_1_sampai_5(monkeypatch, tmp_store, tmp_path):
+    _setup(monkeypatch, tmp_store)
+    monkeypatch.setattr(bot, "TMP_DIR", str(tmp_path))
+    today = marketcal.now_wib().date().isoformat()
+    base = {
+        "board": "Utama", "sector": "Keuangan", "trade_date": today,
+        "rsi": 55.0, "ret20d": 3.0, "reason": "", "entry": 4000.0,
+        "sl": 3800.0, "tp": 4400.0, "ret1d": 0.5, "ret5d": 1.0,
+        "sma20": 3950.0, "sma50": 3900.0, "sma200": 3700.0,
+    }
+    store.save_market_scan(
+        [
+            {**base, "ticker": "BBRI", "name": "BBRI", "price": 4000.0, "rel_pct": 72.0, "signal": "BELI"},
+            {**base, "ticker": "BBCA", "name": "BBCA", "price": 9000.0, "rel_pct": 95.0, "signal": "BELI"},
+            {**base, "ticker": "ASII", "name": "ASII", "price": 5000.0, "rel_pct": 99.0, "signal": "BELI"},
+            {**base, "ticker": "TLKM", "name": "TLKM", "price": 3200.0, "rel_pct": 85.0, "signal": "BELI"},
+        ],
+        {"ok": 4, "trade_date": today, "scanned_at": f"{today}T09:00:00"},
+    )
+    sehat = {"per": 12.0, "pbv": 1.8, "roe": 18.0, "roe_unit": "pct"}
+    gagal = {"per": 40.0, "pbv": 5.0, "roe": 4.0, "roe_unit": "pct"}
+    assert kualitas.save_cached(str(tmp_path), "BBRI", today, sehat)
+    assert kualitas.save_cached(str(tmp_path), "BBCA", today, sehat)
+    assert kualitas.save_cached(str(tmp_path), "ASII", today, gagal)
+
+    # guide:start menautkan onboard:s1 di baris pertama
+    q_gs = _Query("guide:start")
+    asyncio.run(bot.menu_callback(_Update(query=q_gs), _ctx()))
+    assert _callbacks(q_gs.message.edits[-1][1]["reply_markup"])[0] == "onboard:s1"
+
+    # Stage 1 -> Goal Beli (Stage 2)
+    q_s1 = _Query("onboard:s1")
+    asyncio.run(bot.menu_callback(_Update(query=q_s1), _ctx()))
+    assert {"onboard:goal:beli", "onboard:goal:cek", "onboard:goal:jual"} <= set(
+        _callbacks(q_s1.message.edits[-1][1]["reply_markup"])
+    )
+
+    q_gb = _Query("onboard:goal:beli")
+    asyncio.run(bot.menu_callback(_Update(query=q_gb), _ctx()))
+    s2_txt, s2_kw = q_gb.message.edits[-1]
+    s2_cbs = _callbacks(s2_kw["reply_markup"])
+    assert store.get_onboard_state(100)["goal"] == "beli"
+    assert store.get_onboard_state(100)["stage"] == "s2"
+    assert "1 lot = 100 lembar" in s2_txt
+    assert {f"onboard:modal:{v}" for v in (500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000, 25_000_000)} <= set(s2_cbs)
+    assert "manual:onboard_modal" in s2_cbs
+
+    # Stage 2 -> Preset Rp 500rb -> Stage 3 adaptif (BBRI sehat & muat Rp500rb > BBCA > modal, ASII gagal disaring)
+    q_m500 = _Query("onboard:modal:500000")
+    asyncio.run(bot.menu_callback(_Update(query=q_m500), _ctx()))
+    assert store.get_modal(100) == 500_000
+    s3_txt, s3_kw = q_m500.message.edits[-1]
+    s3_cbs = _callbacks(s3_kw["reply_markup"])
+    assert "onboard:s4:BBRI" in s3_cbs
+    assert "onboard:s4:ASII" not in s3_cbs
+    assert s3_txt.index("BBRI") < s3_txt.index("BBCA")
+    assert "&gt; modal" in s3_txt or "> modal" in s3_txt
+
+    # Stage 2 manual modal via pending input
+    q_mm = _Query("manual:onboard_modal")
+    asyncio.run(bot.menu_callback(_Update(query=q_mm), _ctx()))
+    assert bot._pending_get(100) == "onboard_modal"
+    u_ok_m = _Update("2jt", uid=100, cid=100)
+    asyncio.run(bot.menu_text_input(u_ok_m, _ctx()))
+    assert store.get_modal(100) == 2_000_000
+    assert bot._pending_get(100) is None
+    assert "onboard:s4:BBCA" in _callbacks(u_ok_m.effective_message.replies[-1][1]["reply_markup"])
+
+    # Stage 3 manual ticker -> langsung Stage 4
+    q_mt = _Query("manual:onboard_ticker")
+    asyncio.run(bot.menu_callback(_Update(query=q_mt), _ctx()))
+    assert bot._pending_get(100) == "onboard_ticker"
+    u_bad_t = _Update("BBCA TLKM", uid=100, cid=100)
+    asyncio.run(bot.menu_text_input(u_bad_t, _ctx()))
+    assert bot._pending_get(100) == "onboard_ticker"
+    u_ok_t = _Update("BBRI", uid=100, cid=100)
+    asyncio.run(bot.menu_text_input(u_ok_t, _ctx()))
+    assert bot._pending_get(100) is None
+    assert store.get_onboard_state(100)["stage"] == "s4"
+    assert store.get_onboard_state(100)["ticker"] == "BBRI"
+    s4_cbs = _callbacks(u_ok_t.effective_message.replies[-1][1]["reply_markup"])
+    assert {"tick:cek:BBRI", "tick:fundamental:BBRI", "tick:analisis:BBRI", "onboard:s5:BBRI"} <= set(s4_cbs)
+
+    # Stage 5 -> Done clears state
+    q_s5 = _Query("onboard:s5:BBRI")
+    asyncio.run(bot.menu_callback(_Update(query=q_s5), _ctx()))
+    s5_cbs = _callbacks(q_s5.message.edits[-1][1]["reply_markup"])
+    assert {"tick:rencana:BBRI", "exec:buy:BBRI", "sub:pantau", "onboard:done"} <= set(s5_cbs)
+
+    q_done = _Query("onboard:done")
+    asyncio.run(bot.menu_callback(_Update(query=q_done), _ctx()))
+    assert store.get_onboard_state(100) == {}
+
+    # Adaptive S3 untuk goal='jual': hanya lots > 0 yg ditampilkan
+    store.add_real_position(100, "ANTM", 5, 1500.0, today)
+    store.reduce_real_position(100, "ANTM", 5, 1600.0, today)  # ditutup (lots == 0)
+    store.add_real_position(100, "TLKM", 4, 3000.0, today)     # lots == 4
+    asyncio.run(bot.menu_callback(_Update(query=_Query("onboard:goal:jual")), _ctx()))
+    q_s3j = _Query("onboard:s3")
+    asyncio.run(bot.menu_callback(_Update(query=q_s3j), _ctx()))
+    s3j_txt, s3j_kw = q_s3j.message.edits[-1]
+    s3j_cbs = _callbacks(s3j_kw["reply_markup"])
+    assert "onboard:s4:TLKM" in s3j_cbs
+    assert "onboard:s4:ANTM" not in s3j_cbs
+    assert "4 lot" in s3j_txt
+
+    # Cek filter lots > 0 langsung meski ada entri posisi lots=0
+    s3j_direct_txt, s3j_direct_kb = menu_mod._onboard_s3_view({
+        "state": {"goal": "jual"}, "modal": 2_000_000, "max_pos": 0.25,
+        "rows": [], "meta": {}, "positions": [
+            {"ticker": "INDF", "lots": 0, "avg_price": 6000.0},
+            {"ticker": "TLKM", "lots": 4, "avg_price": 3000.0},
+        ], "wl": [],
+    })
+    assert "INDF" not in s3j_direct_txt
+    assert "onboard:s4:INDF" not in _callbacks(s3j_direct_kb)
+    assert "onboard:s4:TLKM" in _callbacks(s3j_direct_kb)
+
+    q_s5j = _Query("onboard:s5:TLKM")
+    asyncio.run(bot.menu_callback(_Update(query=q_s5j), _ctx()))
+    s5j_cbs = _callbacks(q_s5j.message.edits[-1][1]["reply_markup"])
+    assert {"tick:jual:TLKM", "exec:sell:TLKM", "sub:pantau", "onboard:done"} <= set(s5j_cbs)
+    assert not any(c.startswith("exec:buy:") for c in s5j_cbs)
+
+
+def test_ux_modal_presets_beli_cache_jual_lots_pick_dan_parse_tokens(monkeypatch, tmp_store, tmp_path):
+    _setup(monkeypatch, tmp_store)
+    monkeypatch.setattr(bot, "TMP_DIR", str(tmp_path))
+
+    # 1) Modal presets mencakup 500rb & 1jt + tombol lanjutan pasca setmodal & manual
+    assert menu_mod._MODAL_PRESETS[:2] == (500_000, 1_000_000)
+    modal_cbs = _callbacks(bot.modal_menu_markup())
+    assert {"setmodal:500000", "setmodal:1000000"} <= set(modal_cbs)
+
+    q_sm = _Query("setmodal:500000")
+    asyncio.run(bot.menu_callback(_Update(query=q_sm), _ctx()))
+    sm_cbs = _callbacks(q_sm.message.edits[-1][1]["reply_markup"])
+    assert {"pick:rencana", "guide:beli", "run:sinyal_bagus", "sub:rencana", "menu"} <= set(sm_cbs)
+
+    # 2) _guide_beli_view: prioritas cache sehat > uncached > skip gagal, fallback rel_pct bila cache kosong
+    today = marketcal.now_wib().date().isoformat()
+    base = {"price": 5000.0, "signal": "BELI"}
+    rows = [
+        {**base, "ticker": "BBCA", "rel_pct": 95.0},
+        {**base, "ticker": "BMRI", "rel_pct": 91.0},
+        {**base, "ticker": "BBRI", "rel_pct": 70.0},
+        {**base, "ticker": "ASII", "rel_pct": 99.0},
+    ]
+    txt_no_cache, kb_no_cache = menu_mod._guide_beli_view(rows, {}, 5_000_000, cache_dir=str(tmp_path))
+    assert "belum ada" in txt_no_cache.lower()
+    assert [c for c in _callbacks(kb_no_cache) if c.startswith("tick:cek:")] == [
+        "tick:cek:ASII", "tick:cek:BBCA", "tick:cek:BMRI"
+    ]
+
+    kualitas.save_cached(str(tmp_path), "BBRI", today, {"per": 10.0, "pbv": 1.5, "roe": 19.0, "roe_unit": "pct"})
+    kualitas.save_cached(str(tmp_path), "ASII", today, {"per": 45.0, "pbv": 6.0, "roe": 3.0, "roe_unit": "pct"})
+    txt_cached, kb_cached = menu_mod._guide_beli_view(rows, {}, 5_000_000, cache_dir=str(tmp_path))
+    cek_btns = [c for c in _callbacks(kb_cached) if c.startswith("tick:cek:")]
+    assert cek_btns[0] == "tick:cek:BBRI"
+    assert "tick:cek:ASII" not in cek_btns
+    assert "1 lot" in txt_cached
+
+    # 3) _guide_jual_view filter lots > 0
+    pos = [{"ticker": "ANTM", "lots": 0}, {"ticker": "BMRI", "lots": 3}]
+    txt_j, kb_j = menu_mod._guide_jual_view(pos, ["TLKM"], rows)
+    assert "ANTM" not in txt_j
+    assert "BMRI" in txt_j and "tick:jual:BMRI" in _callbacks(kb_j)
+
+    # 4) _parse_menu_tokens terima 'BBCA Rp 500.000'
+    toks_rp = menu_mod._parse_menu_tokens("rencana", "BBCA Rp 500.000")
+    assert len(toks_rp) == 2 and toks_rp[0] == "BBCA"
+    assert textutil.parse_rupiah(toks_rp[1]) == 500_000.0
+    assert menu_mod._parse_menu_tokens("rencana", "BBCA 5jt 10jt") == []
+
+    # 5) ticker_pick_markup(extra_tickers=...) & pick:sinyal_detail top scan
+    pk_cbs = _callbacks(bot.ticker_pick_markup("sinyal_detail", ["ANTM"], extra_tickers=["BMRI", "ANTM", "TLKM"]))
+    assert {"tick:sinyal_detail:BMRI", "tick:sinyal_detail:ANTM", "tick:sinyal_detail:TLKM"} <= set(pk_cbs)
+    store.save_market_scan(rows, {"ok": 4, "trade_date": today})
+    q_sd = _Query("pick:sinyal_detail")
+    asyncio.run(bot.menu_callback(_Update(query=q_sd), _ctx()))
+    sd_cbs = _callbacks(q_sd.message.edits[-1][1]["reply_markup"])
+    assert {"tick:sinyal_detail:ASII", "tick:sinyal_detail:BBCA", "tick:sinyal_detail:ANTM"} <= set(sd_cbs)
+
 
 
 

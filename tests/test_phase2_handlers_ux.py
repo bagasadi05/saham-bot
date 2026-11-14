@@ -631,3 +631,50 @@ def test_market_rencana_single_text_shows_custom_risk_limits_and_sinyal_sort():
     assert "exec:buy:ANTM" not in cbs_jual
     assert "exec:sell:ANTM" in cbs_jual
     assert "tick:jual:ANTM" in cbs_jual
+
+
+# ---------------------------------------------------------------------------
+# 11. Mode pemula/expert, onboarding Stage 4->tick lanjutan, & rencana Rp multi-token
+# ---------------------------------------------------------------------------
+def test_mode_persistence_onboard_tick_dan_manual_rencana_rp(monkeypatch):
+    # /start tanpa argumen mengikuti mode tersimpan setelah /mode expert
+    ctx_exp = types.SimpleNamespace(bot=_FakeBot(), job_queue=None, args=["expert"])
+    u_mode = _FakeUpdate("/mode expert", cid=202)
+    asyncio.run(info_handler.do_mode(u_mode, ctx_exp, bot))
+    assert store.get_user_mode(202) == "expert"
+
+    u_start = _FakeUpdate("/start", cid=202)
+    asyncio.run(info_handler.do_start(u_start, _ctx(), bot))
+    start_txt, start_kw = u_start.effective_message.replies[-1]
+    assert "Mode Expert" in start_txt
+    assert {"sub:rencana", "run:jurnal", "mode:menu"} <= set(_all_callbacks(start_kw["reply_markup"]))
+
+    # Selama Stage 4 onboarding, ketuk tick:cek:BBCA tetap menyediakan tombol lanjut Tahap 5
+    store.set_onboard_state(202, stage="s4", goal="beli", ticker="BBCA")
+    dispatched = []
+
+    async def fake_run_action(upd, action, tickers):
+        dispatched.append((action, list(tickers)))
+
+    with monkeypatch.context() as mp:
+        mp.setattr(bot, "run_menu_action", fake_run_action)
+        q_tick = _FakeQuery("tick:cek:BBCA", uid=202, cid=202)
+        asyncio.run(bot.menu_callback(_FakeUpdate(query=q_tick, uid=202, cid=202), _ctx()))
+        assert dispatched == [("cek", ["BBCA"])]
+        assert "onboard:s5:BBCA" in _all_callbacks(q_tick.message.edits[-1][1]["reply_markup"])
+
+    # Input manual `BBCA Rp 500.000` di menu_text_input dikirim sebagai argumen valid ke _do_rencana
+    got_rencana = []
+
+    async def fake_rencana(upd, args, *, from_menu=False):
+        got_rencana.append((list(args), from_menu))
+
+    monkeypatch.setattr(bot, "_do_rencana", fake_rencana)
+    q_mr = _FakeQuery("manual:rencana", uid=202, cid=202)
+    asyncio.run(bot.menu_callback(_FakeUpdate(query=q_mr, uid=202, cid=202), _ctx()))
+    u_inp = _FakeUpdate("BBCA Rp 500.000", uid=202, cid=202)
+    asyncio.run(bot.menu_text_input(u_inp, _ctx()))
+    assert len(got_rencana) == 1
+    assert got_rencana[0][1] is True and got_rencana[0][0][0] == "BBCA"
+    assert bot._parse_rupiah(got_rencana[0][0][1]) == 500_000.0
+
