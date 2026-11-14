@@ -8,7 +8,9 @@
   "universe": "LQ45_2026",
   "embargo_days": 0,
   "period": "10y",
-  "generated": "2026-11-12"
+  "generated": "2026-11-12",
+  "weights_synced_to": "core/relatif.py",
+  "sync_note": "WEIGHTS dan OOS_QUINTILES di core/relatif.py disinkronkan ke artefak ini; metrik OOS empiris tidak diubah."
  },
  "score": {
   "ic": {
@@ -222,6 +224,16 @@
   "f_atr": 0.00122
  },
  "portfolio": {
+  "portfolio_generated": "2026-11-14T07:13:09+07:00",
+  "cli_params": {
+   "quintile": 0.2,
+   "step": 20,
+   "hold": 0.6,
+   "min_hold": 2,
+   "regime": "sma50_200_half",
+   "offline": true
+  },
+  "cli_command": "python research/portfolio.py --hold 0.6 --min-hold 2 --regime sma50_200_half --offline",
   "n_phases": 20,
   "holding_days": 20,
   "cost_per_round_trip_pct": 0.4,
@@ -240,6 +252,12 @@
    "best_sr": 0.279,
    "sr0": 0.142,
    "dsr": 0.86
+  },
+  "experiments_trials": {
+   "n_configs": 16,
+   "n_phases_per_config": 20,
+   "total_trials": 320,
+   "note": "deflated_sharpe.n_trials=20 hanya menghitung 20 fase konfigurasi terpilih; ablasi penuh research/experiments.py menguji 16 konfigurasi x 20 fase = 320 trial"
   },
   "alpha_gross_mean_pct": 0.416,
   "alpha_net_mean_pct": 0.33,

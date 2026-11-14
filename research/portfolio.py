@@ -1,7 +1,7 @@
 """Uji portofolio: apakah keunggulan skor relatif bertahan SETELAH biaya transaksi.
 
-IC mengukur kemampuan memeringkat, bukan cuan. Selisih kuintil Q5-Q1 hanya
-+0,67% per 20 hari; biaya pulang-pergi all-in 0,40% (pajak jual sudah
+IC mengukur kemampuan memeringkat, bukan cuan. Selisih kuintil Q5-Q1 sekitar
++0,60% per 20 hari; biaya pulang-pergi all-in 0,40% (pajak jual sudah
 termasuk). Jadi pertanyaan yang
 harus dijawab sebelum fitur ini dipakai: **masih untung, atau habis di biaya?**
 
@@ -46,7 +46,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import data, regime
+from core import data, marketcal, regime
 from config import IDX_BUY_FEE, IDX_SELL_FEE
 
 BUY_COST = IDX_BUY_FEE
@@ -91,16 +91,47 @@ def sharpe_ratio(x: np.ndarray) -> float | None:
     x = np.asarray(x, dtype=float)
     if len(x) < 2:
         return None
+    m = float(x.mean())
     sd = float(x.std(ddof=1))
-    return float(x.mean()) / sd if sd > 0 else None
+    return m / sd if sd > 1e-12 * max(1.0, abs(m)) else None
+
+
+def probabilistic_sharpe(returns, sr_ref: float = 0.0) -> float | None:
+    """Probabilistic Sharpe Ratio (Bailey & López de Prado, 2012).
+
+    Menghitung P(SR_true > sr_ref) dengan koreksi skewness (gamma3) dan
+    raw Pearson kurtosis (gamma4, distribusi normal = 3) dari seri return:
+        PSR(SR*) = Phi((SR_hat - SR*) * sqrt(T - 1) /
+                       sqrt(1 - gamma3 * SR_hat + ((gamma4 - 1) / 4) * SR_hat^2))
+
+    Referensi: Bailey, D. H. & López de Prado, M. (2012), "The Sharpe Ratio
+    Efficient Frontier", Journal of Risk, 15(2), 3-44.
+    """
+    x = np.asarray(returns, dtype=float)
+    x = x[np.isfinite(x)]
+    if len(x) < 3:
+        return None
+    m = float(x.mean())
+    sd = float(x.std(ddof=1))
+    if sd <= 1e-12 * max(1.0, abs(m)):
+        return None
+    sr = m / sd
+    z = (x - m) / sd
+    skew = float(np.mean(z ** 3))
+    kurt = float(np.mean(z ** 4))  # raw Pearson kurtosis (normal = 3)
+    denom = math.sqrt(max(1e-12, 1.0 - skew * sr + (kurt - 1.0) / 4.0 * sr ** 2))
+    stat = (sr - sr_ref) * math.sqrt(len(x) - 1) / denom
+    return round(float(NormalDist().cdf(stat)), 3)
 
 
 def deflated_sharpe(nets: list[np.ndarray], n_trials: int | None = None) -> dict:
-    """Deflated Sharpe Ratio (Bailey & Lopez de Prado) untuk banyak fase.
+    """Deflated Sharpe Ratio (Bailey & López de Prado, 2014) untuk banyak fase.
 
-    Setiap fase dianggap satu percobaan. SR terbaik diuji terhadap SR maksimum
-    yang wajar muncul karena keberuntungan (`sr0`), memakai skew/kurtosis
-    sebaran return fase itu.
+    Setiap fase (atau total konfigurasi × fase bila `n_trials` diisi jujur)
+    dianggap satu percobaan. SR terbaik diuji terhadap SR maksimum yang wajar
+    muncul karena keberuntungan (`sr0`), memakai skew/kurtosis sebaran return
+    fase itu. Mengembalikan kunci standar `{n_trials, best_sr, sr0, dsr}`;
+    untuk P(SR > 0) fase tunggal lihat `probabilistic_sharpe()`.
     """
     series = [np.asarray(x, dtype=float) for x in nets if len(x) > 2]
     srs = [s for s in (sharpe_ratio(x) for x in series) if s is not None]
@@ -120,7 +151,7 @@ def deflated_sharpe(nets: list[np.ndarray], n_trials: int | None = None) -> dict
     best = srs[idx]
     x = series[idx]
     m, sd = float(x.mean()), float(x.std(ddof=1))
-    if sd <= 0:
+    if sd <= 1e-12 * max(1.0, abs(m)):
         return {"n_trials": trials, "best_sr": round(best, 3),
                 "sr0": round(sr0, 3), "dsr": None}
     skew = float(np.mean(((x - m) / sd) ** 3))
@@ -133,6 +164,18 @@ def deflated_sharpe(nets: list[np.ndarray], n_trials: int | None = None) -> dict
         "sr0": round(sr0, 3),
         "dsr": round(float(nd.cdf(stat)), 3),
     }
+
+
+def best_phase_psr(nets: list[np.ndarray], sr_ref: float = 0.0) -> float | None:
+    """Probabilistic Sharpe Ratio untuk fase dengan Sharpe tertinggi di `nets`."""
+    best_sr = None
+    best_arr = None
+    for arr in nets:
+        sr = sharpe_ratio(arr)
+        if sr is not None and (best_sr is None or sr > best_sr):
+            best_sr = sr
+            best_arr = arr
+    return probabilistic_sharpe(best_arr, sr_ref=sr_ref) if best_arr is not None else None
 
 
 def moving_block_bootstrap_ci(values, iters: int = 2000,
@@ -380,6 +423,7 @@ def run(
     nets: list[np.ndarray] = []
     mdds: list[float] = []
     srs: list[float] = []
+    psrs: list[float] = []
     exps: list[float] = []
     act_alphas: list[float] = []
     for off in range(step):
@@ -396,6 +440,9 @@ def run(
         sr = sharpe_ratio(arr_net)
         if sr is not None:
             srs.append(sr)
+        psr = probabilistic_sharpe(arr_net)
+        if psr is not None:
+            psrs.append(psr)
         exp_mean = float(df["exposure"].mean()) * 100.0
         exps.append(exp_mean)
         act_valid = df["active_alpha"].dropna().to_numpy(dtype=float)
@@ -412,6 +459,7 @@ def run(
             "start": df["date"].iloc[0], "end": df["date"].iloc[-1],
             "exposure_pct": round(exp_mean, 1),
             "max_drawdown_pct": round(mdd, 1),
+            "psr": psr,
             "turnover_pct": round(float(df["turnover"].mean()) * 100, 1),
             "turnover_two_way_pct": round(
                 float(df["turnover_two_way"].mean()) * 100, 1),
@@ -443,6 +491,8 @@ def run(
     q5_mean = oos[oos["decile"] == 4].groupby("date")["fwd"].mean()
     all_exc = (q5_mean - all_mean).dropna()
 
+    psr_mean = round(float(np.mean(psrs)), 3) if psrs else None
+    psr_best = best_phase_psr(nets, sr_ref=0.0)
     return {
         "n_phases": len(phases),
         "holding_days": step,
@@ -470,6 +520,7 @@ def run(
             "avg_exposure_pct": round(float(np.mean(exps)), 1),
             "max_drawdown_mean_pct": round(float(np.mean(mdds)), 1),
             "sharpe_mean": round(float(np.mean(srs)), 3) if srs else None,
+            "psr_mean": psr_mean,
             "alpha_vs_ihsg_mean_pct": round(float(ih.mean()), 3) if len(ih) else None,
             "phases_vs_ihsg_positive": int((ih > 0).sum()) if len(ih) else None,
             "n_phases_vs_ihsg": int(len(ih)),
@@ -478,6 +529,11 @@ def run(
         "ci95_alpha_net_iid": boot_iid,
         "all_dates_q5_excess": summarize(all_exc.to_numpy()),
         "deflated_sharpe": deflated_sharpe(nets),
+        "probabilistic_sharpe": {
+            "sr_ref": 0.0,
+            "psr": psr_best,
+            "psr_mean": psr_mean,
+        },
         "avg_turnover_pct": round(
             float(np.mean([p["turnover_pct"] for p in phases])), 1),
         "avg_turnover_two_way_pct": round(
@@ -532,6 +588,33 @@ def main(argv: list[str] | None = None):
     if "error" in res:
         raise SystemExit(res["error"])
 
+    cmd_parts = [
+        "python research/portfolio.py",
+        f"--quintile {args.quintile}",
+        f"--step {args.step}",
+    ]
+    if args.hold is not None:
+        cmd_parts.append(f"--hold {args.hold}")
+    if args.min_hold != 1:
+        cmd_parts.append(f"--min-hold {args.min_hold}")
+    if args.regime != "none":
+        cmd_parts.append(f"--regime {args.regime}")
+    if args.offline:
+        cmd_parts.append("--offline")
+    if args.no_ihsg:
+        cmd_parts.append("--no-ihsg")
+    res["portfolio_generated"] = marketcal.now_wib().isoformat(timespec="seconds")
+    res["cli_params"] = {
+        "quintile": args.quintile,
+        "step": args.step,
+        "hold": args.hold,
+        "min_hold": args.min_hold,
+        "regime": args.regime,
+        "offline": bool(args.offline),
+        "no_ihsg": bool(args.no_ihsg),
+    }
+    res["cli_command"] = " ".join(cmd_parts)
+
     os.makedirs(args.out, exist_ok=True)
     with open(os.path.join(args.out, "portfolio.json"), "w",
               encoding="utf-8") as f:
@@ -573,9 +656,11 @@ def main(argv: list[str] | None = None):
               f"{a['alpha_vs_ihsg_mean_pct']:+.3f}%/periode"
               f" · {a['phases_vs_ihsg_positive']}/{a['n_phases_vs_ihsg']} fase positif")
     dsr = res.get("deflated_sharpe") or {}
+    psr_info = res.get("probabilistic_sharpe") or {}
     if dsr.get("dsr") is not None:
         print(f"Deflated Sharpe: terbaik {dsr['best_sr']} · ambang keberuntungan "
-              f"{dsr['sr0']} · DSR {dsr['dsr']} (n_trials={dsr['n_trials']})")
+              f"{dsr['sr0']} · DSR {dsr['dsr']} · PSR {psr_info.get('psr')} "
+              f"(rata-rata fase {a.get('psr_mean')}, n_trials={dsr['n_trials']})")
     print(f"cross-check (semua tanggal): excess Q5 "
           f"{res['all_dates_q5_excess']['mean_pct']:+.3f}%/periode"
           f" · median {res['all_dates_q5_excess']['median_pct']:+.3f}%")

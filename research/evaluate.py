@@ -36,7 +36,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import analysis, data, saran  # noqa: E402
+from core import analysis, data, marketcal, saran  # noqa: E402
 
 WARMUP = 210
 MIN_TICKERS_PER_DATE = 8
@@ -371,6 +371,42 @@ def purged_split(df: pd.DataFrame, year: int, horizon: int,
     return train, test
 
 
+def summarize_quintile_bands(oos: pd.DataFrame | None) -> list[dict]:
+    """Hitung rata-rata dan band dispersi empiris P25–P75 (IQR) per kuintil OOS.
+
+    Dapat dipanggil langsung dari hasil `walk_forward` maupun DataFrame mentah
+    `oos_predictions.pkl` yang memuat kolom `date`, `pred`, dan `fwd`.
+    """
+    if oos is None or oos.empty:
+        return []
+    od = oos.dropna(subset=["pred", "fwd"]).copy()
+    if od.empty:
+        return []
+    if "excess" not in od.columns:
+        od["excess"] = od["fwd"] - od.groupby("date")["fwd"].transform("mean")
+    if "decile" not in od.columns:
+        od["decile"] = od.groupby("date")["pred"].transform(
+            lambda s: pd.qcut(s.rank(method="first"), 5, labels=False, duplicates="drop")
+            if s.notna().sum() >= 5 else np.nan
+        )
+    od = od.dropna(subset=["decile"])
+    deciles: list[dict] = []
+    for k, g in od.groupby("decile"):
+        exc = g["excess"].to_numpy(dtype=float)
+        p25, med, p75 = np.percentile(exc, [25.0, 50.0, 75.0])
+        deciles.append({
+            "quintile": int(k) + 1,
+            "n": int(len(g)),
+            "excess_pct": round(float(exc.mean()) * 100, 3),
+            "median_pct": round(float(med) * 100, 3),
+            "p25_pct": round(float(p25) * 100, 3),
+            "p75_pct": round(float(p75) * 100, 3),
+            "iqr_pct": round(float(p75 - p25) * 100, 3),
+            "win_rate": round(float((exc > 0).mean()) * 100, 1),
+        })
+    return deciles
+
+
 def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
                  test_years: list[int], embargo_days: int = 0):
     """Latih di masa lalu, uji tahun berikutnya.
@@ -437,12 +473,7 @@ def walk_forward(df: pd.DataFrame, feats: list[str], horizon: int,
             lambda s: pd.qcut(s.rank(method="first"), 5, labels=False, duplicates="drop")
             if s.notna().sum() >= 5 else np.nan)
         od = od.dropna(subset=["decile"])
-        for k, g in od.groupby("decile"):
-            deciles.append({
-                "quintile": int(k) + 1, "n": int(len(g)),
-                "excess_pct": round(float(g["excess"].mean()) * 100, 3),
-                "win_rate": round(float((g["excess"] > 0).mean()) * 100, 1),
-            })
+        deciles = summarize_quintile_bands(od)
     return results, deciles, od
 
 
@@ -529,9 +560,18 @@ def render_md(res: dict) -> str:
     L.append("")
 
     L.append("## 8. Kalibrasi out-of-sample (kuintil prediksi model)\n")
-    L.append("| kuintil | n | excess return | win-rate |\n|---|---|---|---|")
+    L.append("| kuintil | n | excess return | P25..P75 (IQR) | win-rate |\n|---|---|---|---|---|")
     for r in res.get("oos_quintiles", []):
-        L.append(f"| Q{r['quintile']} | {r['n']:,} | {r['excess_pct']:+.3f}% | {r['win_rate']}% |")
+        p25, p75 = r.get("p25_pct"), r.get("p75_pct")
+        iqr_s = (
+            f"[{p25:+.2f}%, {p75:+.2f}%]"
+            if p25 is not None and p75 is not None
+            else "—"
+        )
+        L.append(
+            f"| Q{r['quintile']} | {r['n']:,} | {r['excess_pct']:+.3f}% | "
+            f"{iqr_s} | {r['win_rate']}% |"
+        )
     L.append("")
 
     L.append("## 9. Bobot produksi (rata-rata bobot walk-forward)\n")
@@ -552,6 +592,11 @@ def _wf_summary(wf: list[dict]) -> dict:
     sc = [r["ic_score"] for r in ok if r.get("ic_score") is not None]
     beats = sum(1 for r in ok
                 if r.get("ic_eq") is not None and r["ic_model"] > r["ic_eq"])
+    cv_trials = sum(
+        int((r.get("lam_cv") or {}).get("folds", 0))
+        * int((r.get("lam_cv") or {}).get("n_candidates", 0))
+        for r in ok
+    )
     return {
         "n_years": len(ok),
         "ic_model_mean": round(float(np.mean(mod)), 4),
@@ -559,6 +604,7 @@ def _wf_summary(wf: list[dict]) -> dict:
         "ic_score_mean": round(float(np.mean(sc)), 4) if sc else None,
         "years_model_beats_eq": beats,
         "lam_rel": [r.get("lam_rel") for r in ok],
+        "cv_trials": cv_trials,
         "note": ("baseline bobot-sama adalah pembanding anti-overfit; "
                  "kalau model tidak menang, bobot bebas tidak layak dipakai"),
     }
@@ -615,7 +661,8 @@ def main():
             "universe": UNIVERSE_NAME,
             "embargo_days": args.embargo,
             "period": args.period,
-            "generated": time.strftime("%Y-%m-%d"),
+            "generated": marketcal.now_wib().date().isoformat(),
+            "generated_wib": marketcal.now_wib().isoformat(timespec="seconds"),
         },
         "ic_score": ic_summary(ic_score, args.horizon),
         "ic_timeseries": time_series_ic(df, "score"),

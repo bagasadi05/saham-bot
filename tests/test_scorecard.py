@@ -61,11 +61,81 @@ def test_jual_has_no_r_multiple_but_counts_as_correct_when_price_falls():
     df = make_prices([100, 96, 95])
     row = _row(df, signal="JUAL", entry=None, sl=None, tp=None)
     got = scorecard.resolve_rows([row], {"TEST": df}, horizon=2)
-    assert got[0]["outcome"] == "NA"
+    assert got[0]["outcome"] == "TURUN"
     assert got[0]["r_multiple"] is None
     stats = scorecard.summarize(got, horizon=2)
     assert stats["signals"]["JUAL"]["win"] == 100.0
     assert stats["signals"]["JUAL"]["avg_fwd"] < 0
+    assert stats["signals"]["JUAL"]["outcomes"].get("TURUN") == 1
+
+
+def test_jual_naik_datar_and_strict_separation_from_beli():
+    df_up = make_prices([100, 102, 105])
+    df_flat = make_prices([100, 101, 100])
+    df_down = make_prices([100, 97, 94])
+    rows = [
+        {**_row(df_up, signal="JUAL", entry=None, sl=None, tp=None), "ticker": "UP"},
+        {**_row(df_flat, signal="JUAL", entry=None, sl=None, tp=None), "ticker": "FLT"},
+        {**_row(df_down, signal="JUAL", entry=None, sl=None, tp=None), "ticker": "DWN"},
+        {**_row(df_up, signal="BELI", entry=100, sl=95, tp=110), "ticker": "UP"},
+        {**_row(df_flat, signal="TAHAN", entry=None, sl=None, tp=None), "ticker": "FLT"},
+    ]
+    got = scorecard.resolve_rows(
+        rows, {"UP": df_up, "FLT": df_flat, "DWN": df_down}, horizon=2,
+    )
+    outcomes_jual = {r["ticker"]: r["outcome"] for r in got if r["signal"] == "JUAL"}
+    assert outcomes_jual == {"UP": "NAIK", "FLT": "DATAR", "DWN": "TURUN"}
+    tahan = [r for r in got if r["signal"] == "TAHAN"][0]
+    assert tahan["outcome"] == "NA"
+
+    stats = scorecard.summarize(got, horizon=2)
+    assert stats["signals"]["JUAL"]["n"] == 3
+    assert stats["signals"]["BELI"]["n"] == 1
+    assert stats["signals"]["JUAL"]["outcomes"]["NAIK"] == 1
+    assert stats["signals"]["JUAL"]["outcomes"]["DATAR"] == 1
+    assert stats["signals"]["JUAL"]["outcomes"]["TURUN"] == 1
+    assert stats["jual_edge"] is not None
+
+    rendered = scorecard.format_summary(stats)
+    assert "evaluasi peringatan (bukan short)" in rendered
+    assert "turun 1" in rendered and "naik 1" in rendered and "datar 1" in rendered
+    assert "Selisih BELI vs TAHAN" in rendered
+    assert "Selisih JUAL vs TAHAN" in rendered
+
+
+def test_live_ic_reports_t_hac_and_div_adjusted_flag():
+    rows = []
+    # Buat >8 tanggal berurutan dengan sinyal/return tumpang tindih + div_adjusted
+    for d in range(12):
+        date_str = f"2026-01-{d + 1:02d}"
+        for k in range(8):
+            # Variasikan peringkat antar tanggal agar std(IC) > 0 dan ada autokorelasi
+            jitter = 3.5 if (d % 4 < 2 and k == 2) else (-2.5 if (d % 3 == 0 and k == 5) else 0.0)
+            rows.append({
+                "trade_date": date_str,
+                "ticker": f"T{k}",
+                "signal": "BELI" if k >= 4 else "JUAL",
+                "rel_pct": 10.0 + k * 10.0,
+                "fwd_ret": float(k - 3) + jitter,
+                "outcome": "TIME" if k >= 4 else "TURUN",
+                "div_adjusted": (d == 0 and k == 0),
+            })
+    ic = scorecard.live_ic(rows, horizon=5)
+    assert ic["n_dates"] == 12
+    assert ic["mean"] is not None
+    assert ic["t"] is not None
+    assert ic["t_hac"] is not None
+    assert ic["nlags"] == 5
+    assert ic["adjusted_data"] is True
+    assert ic["n_div_shifted"] == 1
+    assert ic["adjusted_warning"]
+
+    df_div = make_prices([100, 102, 104])
+    row_div = _row(df_div, signal="BELI", entry=105, sl=95, tp=115)
+    row_div["price"] = 105.0  # 100 vs 105 -> ~4.76% selisih (antara 0.5% dan 25%)
+    resolved = scorecard.resolve_rows([row_div], {"TEST": df_div}, horizon=2)
+    assert resolved[0]["div_adjusted"] is True
+    assert resolved[0]["adj_shift_pct"] < 0
 
 
 def test_split_adjustment_closes_row_as_adj():

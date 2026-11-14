@@ -33,7 +33,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import regime  # noqa: E402
+from core import marketcal, regime  # noqa: E402
 from research import evaluate, portfolio  # noqa: E402
 
 DSR_GATE = 0.95
@@ -239,6 +239,7 @@ def simulate_variant(
 
     dsr_single = portfolio.deflated_sharpe(nets)
     srs = [s for s in (portfolio.sharpe_ratio(x) for x in nets) if s is not None]
+    psrs = [p for p in (portfolio.probabilistic_sharpe(x) for x in nets) if p is not None]
     ci = portfolio.moving_block_bootstrap_ci(alphas_net, iters=2000, block=4)
     net_means = [float(x.mean()) * 100.0 for x in nets]
     cum_means = [float(np.prod(1.0 + x) - 1.0) * 100.0 for x in nets]
@@ -271,6 +272,8 @@ def simulate_variant(
         "alpha_vs_ihsg_pct": round(float(np.mean(vs_ihsg_means)), 3)
         if vs_ihsg_means else None,
         "dsr_20": dsr_single["dsr"],
+        "psr": portfolio.best_phase_psr(nets),
+        "psr_mean": round(float(np.mean(psrs)), 3) if psrs else None,
         "best_sr": dsr_single["best_sr"],
         "sr0_20": dsr_single["sr0"],
         "by_year": by_year,
@@ -307,6 +310,7 @@ def run_ablation(
         dsr_all = portfolio.deflated_sharpe(nets, n_trials=max(2, total_trials))
         r["n_trials_all"] = total_trials
         r["dsr_all"] = dsr_all["dsr"]
+        r["psr_all"] = r.get("psr")
         r["sr0_all"] = dsr_all["sr0"]
         r["passes_dsr_gate"] = bool(
             dsr_all["dsr"] is not None and dsr_all["dsr"] >= DSR_GATE
@@ -413,20 +417,21 @@ def render_md(report: dict) -> str:
         "# Laporan Ablasi Hipotesis Portofolio SahamBuddy\n",
         f"- Konfigurasi diuji: **{report['n_configs']}** · Total phase-trials: "
         f"**{report['total_trials']}** · Gate DSR jujur: **>= {report['dsr_gate']:.2f}**\n",
-        "| Varian | Exp% | Turn% | Net% | Cum% | MDD% | SR | αNet% | CI95 | +Fase | DSR20 | DSRall | Gate |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| Varian | Exp% | Turn% | Net% | Cum% | MDD% | SR | PSR | αNet% | CI95 | +Fase | DSR20 | DSRall | Gate |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for v in report["variants"]:
         if "error" in v:
-            L.append(f"| `{v['name']}` | — | — | — | — | — | — | — | — | — | — | — | ERROR |")
+            L.append(f"| `{v['name']}` | — | — | — | — | — | — | — | — | — | — | — | — | ERROR |")
             continue
         ci = v["ci95_alpha_net"]
         ci_s = f"[{ci[0]:+.2f}, {ci[1]:+.2f}]" if ci[0] is not None else "—"
         gate = "PASS" if v["passes_dsr_gate"] else "BELOW GATE"
+        psr_s = f"{v['psr']:.3f}" if v.get("psr") is not None else "—"
         L.append(
             f"| `{v['name']}` | {v['exposure_pct']:.1f} | {v['turnover_pct']:.1f} | "
             f"{v['net_mean_pct']:+.3f} | {v['cum_mean_pct']:+.1f} | {v['mdd_mean_pct']:+.1f} | "
-            f"{v['sharpe_mean']:.3f} | {v['alpha_net_pct']:+.3f} | {ci_s} | "
+            f"{v['sharpe_mean']:.3f} | {psr_s} | {v['alpha_net_pct']:+.3f} | {ci_s} | "
             f"{v['phases_net_positive']}/{v['n_phases']} | {v['dsr_20']:.3f} | "
             f"{v['dsr_all']:.3f} | {gate} |"
         )
@@ -514,6 +519,18 @@ def main(argv: list[str] | None = None) -> int:
         report["total_trials_with_horizons"] = (
             report["total_trials"] + sum(int(r.get("total_trials", 0)) for r in hz_rows)
         )
+
+    report["generated"] = marketcal.now_wib().isoformat(timespec="seconds")
+    report["cli_params"] = {
+        "step": args.step,
+        "horizons": args.horizons,
+        "offline": bool(args.offline),
+    }
+    report["experiments_trials"] = {
+        "n_configs": report["n_configs"],
+        "total_phase_trials": report["total_trials"],
+        "total_trials_with_horizons": report.get("total_trials_with_horizons", report["total_trials"]),
+    }
 
     os.makedirs(args.out, exist_ok=True)
     json_path = os.path.join(args.out, "experiments.json")

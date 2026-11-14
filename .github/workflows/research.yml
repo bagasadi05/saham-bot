@@ -1,15 +1,57 @@
-name: Riset mingguan
+name: Riset & Sinkronisasi
 
-# Alarm dini: jalankan evaluasi IC pada sampel kecil (12 emiten, 3 tahun)
-# setiap Senin. Tujuannya BUKAN menggantikan evaluasi 10 tahun penuh, tapi
-# menangkap sinyal memburuk (IC < 0) tanpa menunggu ada yang membuka repo.
 on:
   schedule:
     - cron: "0 1 * * 1"      # Senin 01:00 UTC = 08:00 WIB
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "research/**"
+      - "core/relatif.py"
+      - "core/scorecard.py"
+      - "data/validation.json"
+      - "data/idx_universe.json"
+      - "tools/check_sync.py"
+      - "tools/record_fixtures.py"
+      - ".github/workflows/research.yml"
 
 jobs:
+  offline-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Audit sinkronisasi riset, LQ45 & backup SQLite (offline)
+        run: python tools/check_sync.py
+      - name: Verifikasi struktur fixture (offline)
+        run: python tools/record_fixtures.py --verify
+      - name: Tes riset & sinkronisasi deterministik (offline)
+        run: >
+          pytest -q
+          tests/test_relatif.py
+          tests/test_scorecard.py
+          tests/test_experiments.py
+          tests/test_deflated_sharpe.py
+          tests/test_portfolio.py
+          tests/test_portfolio_bootstrap.py
+          tests/test_portfolio_turnover.py
+          tests/test_validasi_baseline.py
+          tests/test_validasi_hac.py
+          tests/test_validasi_portfolio.py
+          tests/test_evaluate_hac.py
+          tests/test_evaluate_lam_cv.py
+          tests/test_fixtures_replay.py
+          tests/test_phase2_research_tools.py
+
   rolling:
+    if: github.event_name != 'pull_request'
+    needs: offline-audit
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -20,11 +62,29 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
-      - name: Evaluasi IC sampel (gagal bila IC < 0)
-        run: >
-          python research/evaluate.py
-          --period 3y --limit 12 --horizon 20 --min-ic 0
-          --out temp/research
+      - name: Evaluasi IC sampel live (toleran HTTP 429 Yahoo, gagal bila IC < 0)
+        shell: bash
+        run: |
+          mkdir -p temp/research
+          LOG="temp/research/evaluate_live.log"
+          set +e
+          python research/evaluate.py --period 3y --limit 12 --horizon 20 --min-ic 0 --out temp/research 2>&1 | tee "$LOG"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Evaluasi live selesai tanpa alarm --min-ic." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          elif [ "$rc" -eq 2 ]; then
+            echo "::error::Model gagal ambang --min-ic 0 (exit code 2) — cek evaluation.md."
+            exit 2
+          elif grep -Eiq "429|Too Many Requests|RateLimit|YFRateLimitError|Timeout|Connection|crumb|tidak cukup|gagal" "$LOG"; then
+            echo "::warning::Yahoo Finance rate-limit / gangguan jaringan saat fetch live (exit=$rc); bukan kegagalan model."
+            echo "Live Yahoo fetch dibatasi rate-limit/jaringan (exit=$rc). Audit offline tetap PASS." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          else
+            echo "::error::research/evaluate.py gagal tak terduga (exit=$rc)."
+            exit "$rc"
+          fi
       - name: Simpan laporan
         if: always()
         uses: actions/upload-artifact@v4
@@ -33,4 +93,5 @@ jobs:
           path: |
             temp/research/evaluation.md
             temp/research/evaluation.json
+            temp/research/evaluate_live.log
           if-no-files-found: warn

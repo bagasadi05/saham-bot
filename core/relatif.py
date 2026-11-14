@@ -1,55 +1,68 @@
 """Skor relatif antar-emiten — satu-satunya bagian skor yang lolos uji OOS.
 
-Latar belakang (lihat research/evaluation.md):
-  - Skor teknikal absolut (0–90) punya IC cross-sectional +0,0115 (praktis nol)
-    dan IC time-series -0,0207 (di dalam satu emiten justru sedikit berlawanan
-    arah). Jadi skor itu tetap dipakai sebagai BACAAN TREN, bukan sinyal beli.
-  - Model linier 12 faktor di bawah ini, dilatih walk-forward (latih 2017–2021,
-    uji 2022; latih s.d. 2022, uji 2023; dst.), memberi IC OOS +0,047 / +0,048
-    / +0,025 / -0,026 / +0,063 (rata-rata +0,031), dengan bobot yang stabil
-    antar tahun. Kuintil teratas vs terbawah: +0,42% vs -0,24% excess return
-    per 20 hari.
+Latar belakang (lihat `temp/research/evaluation.md` & `data/validation.json`):
+  - Skor teknikal absolut (0–90) punya IC cross-sectional +0,0115 (t naif 2,68;
+    t HAC Newey-West 0,85 — tidak signifikan) dan IC time-series -0,0207
+    (t=-2,33). Jadi skor absolut tetap dipakai sebagai BACAAN TREN, bukan
+    sinyal beli.
+  - Model linier 12 faktor di bawah ini, dilatih walk-forward dengan pemilihan
+    regularisasi ridge CV per tahun uji (latih 2017–2021, uji 2022; dst.),
+    memberi IC OOS +0,0492 / +0,0490 / +0,0206 / -0,0250 / +0,0584 (rata-rata
+    `ic_model_mean=0.0304` vs baseline bobot-sama `-0.0061`; menang 4/5 tahun).
+    Kuintil teratas vs terbawah: +0,400% vs -0,204% excess return rata-rata
+    per 20 hari bursa.
 
 Artinya: jangan dibaca sebagai "pasti naik". Ini peringkat relatif yang tipis
 tapi terukur — berguna untuk memilih di antara kandidat, bukan untuk memprediksi
-arah pasar. Bobot di bawah DIBEKUKAN dari hasil walk-forward; jangan diubah
-tanpa menjalankan ulang research/evaluate.py.
+arah pasar. Bobot di bawah DISINKRONKAN dengan `data/validation.json` hasil
+walk-forward CV; jangan diubah tanpa menjalankan ulang `research/evaluate.py`
+dan `research/publish.py`.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 
 import pandas as pd
 
-# Bobot rata-rata walk-forward 2022–2026 (research/evaluate.py → production_weights).
-# Nama fitur = kunci internal; lihat FEATURES untuk cara menghitungnya.
+# Bobot rata-rata walk-forward CV 2022–2026 (`data/validation.json` → weights).
+# Nama fitur = kunci internal (tanpa prefiks `f_`).
 WEIGHTS = {
-    "close_sma50": -0.02392,
-    "rsi": 0.01904,
-    "breakout": -0.01122,
-    "sma50_sma200": 0.01050,
-    "mom20": 0.00890,
-    "macd": 0.00776,
-    "volat": -0.00738,
-    "mom1": -0.00652,
-    "volume": 0.00574,
-    "sma20_sma50": 0.00524,
-    "close_sma200": -0.00468,
-    "atr": 0.00118,
+    "close_sma50": -0.01766,
+    "rsi": 0.01680,
+    "sma50_sma200": 0.01076,
+    "breakout": -0.01032,
+    "mom20": 0.00728,
+    "volat": -0.00692,
+    "mom1": -0.00670,
+    "macd": 0.00662,
+    "volume": 0.00554,
+    "close_sma200": -0.00526,
+    "sma20_sma50": 0.00218,
+    "atr": 0.00122,
 }
 
 # Kalibrasi OOS: excess return rata-rata per kuintil prediksi (20 hari bursa).
-# Sumber: research/evaluation.md bagian 8. Ditampilkan sebagai konteks, bukan janji.
+# Sumber: `data/validation.json` ("quintiles") & `temp/research/evaluation.md`.
+# Ditampilkan sebagai konteks deskriptif, bukan janji.
 OOS_QUINTILES = {
-    1: {"excess_pct": -0.242, "win_rate": 43.5, "n": 9775},
-    2: {"excess_pct": -0.416, "win_rate": 43.6, "n": 9632},
-    3: {"excess_pct": -0.090, "win_rate": 45.0, "n": 9416},
-    4: {"excess_pct": 0.320, "win_rate": 47.1, "n": 9632},
-    5: {"excess_pct": 0.424, "win_rate": 47.4, "n": 9741},
+    1: {"excess_pct": -0.204, "win_rate": 44.0, "n": 9775},
+    2: {"excess_pct": -0.391, "win_rate": 43.3, "n": 9632},
+    3: {"excess_pct": -0.100, "win_rate": 44.9, "n": 9416},
+    4: {"excess_pct": 0.292, "win_rate": 47.2, "n": 9632},
+    5: {"excess_pct": 0.400, "win_rate": 47.2, "n": 9741},
 }
 
 MIN_UNIVERSE = 8      # di bawah ini statistik cross-sectional tidak berarti
 Z_CLIP = 3.0
+
+VALIDATION_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "validation.json",
+)
+_QUINTILE_CACHE: dict[str, tuple[int | None, dict[int, dict]]] = {}
 
 
 def factors_from_ind(ind: pd.DataFrame, i: int = -1) -> dict[str, float]:
@@ -156,12 +169,95 @@ def score_universe(items: list[dict]) -> list[dict]:
     return items
 
 
-def summary_line(item: dict) -> str:
+def _finite_float(val) -> float | None:
+    try:
+        x = float(val)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+def load_oos_quintiles(path: str | None = None) -> dict[int, dict]:
+    """Muat kalibrasi kuintil OOS (termasuk band IQR P25–P75 jika tersedia).
+
+    Selalu jatuh aman ke `OOS_QUINTILES` bila berkas tidak ada/rusak dan tidak
+    pernah mengarang angka P25–P75 bila belum direkam di `validation.json`.
+    """
+    target = path or VALIDATION_FILE
+    base = {k: dict(v) for k, v in OOS_QUINTILES.items()}
+    try:
+        mtime = os.stat(target).st_mtime_ns
+    except OSError:
+        return base
+
+    cached = _QUINTILE_CACHE.get(target)
+    if cached is not None and cached[0] == mtime:
+        return {k: dict(v) for k, v in cached[1].items()}
+
+    try:
+        with open(target, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return base
+
+    for row in payload.get("quintiles") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            q = int(row.get("quintile"))
+        except (TypeError, ValueError):
+            continue
+        if q not in base:
+            continue
+        for key in ("excess_pct", "win_rate", "median_pct", "p25_pct", "p75_pct", "iqr_pct"):
+            num = _finite_float(row.get(key))
+            if num is not None:
+                base[q][key] = num
+        if isinstance(row.get("n"), int):
+            base[q]["n"] = row["n"]
+
+    _QUINTILE_CACHE[target] = (mtime, {k: dict(v) for k, v in base.items()})
+    return base
+
+
+def quintile_dispersion(
+    quintil: int,
+    quintiles: dict[int, dict] | None = None,
+) -> dict:
+    """Dispersi empiris deskriptif P25–P75 (IQR) untuk kuintil OOS 1..5."""
+    src = quintiles if quintiles is not None else load_oos_quintiles()
+    cal = src.get(quintil) or OOS_QUINTILES.get(quintil, {})
+    p25 = _finite_float(cal.get("p25_pct"))
+    p75 = _finite_float(cal.get("p75_pct"))
+    iqr = _finite_float(cal.get("iqr_pct"))
+    if iqr is None and p25 is not None and p75 is not None:
+        iqr = round(p75 - p25, 3)
+    has_iqr = p25 is not None and p75 is not None
+    return {
+        "quintile": quintil,
+        "excess_pct": _finite_float(cal.get("excess_pct")),
+        "median_pct": _finite_float(cal.get("median_pct")),
+        "p25_pct": p25,
+        "p75_pct": p75,
+        "iqr_pct": iqr,
+        "has_iqr": has_iqr,
+    }
+
+
+def summary_line(item: dict, quintiles: dict[int, dict] | None = None) -> str:
     """Satu baris ringkas untuk laporan Telegram (tanpa HTML)."""
     if not item.get("rel_ok"):
         return "peringkat relatif: butuh ≥8 emiten dalam satu pemindaian"
     q = item["rel_quintil"]
-    cal = OOS_QUINTILES.get(q, {})
-    return (f"peringkat relatif {item['rel_pct']:.0f}/100 (kuintil {q}/5) · "
-            f"historis OOS kuintil ini: {cal.get('excess_pct', 0):+.2f}% vs pasar "
-            f"per 20 hari")
+    src = quintiles if quintiles is not None else load_oos_quintiles()
+    cal = src.get(q) or OOS_QUINTILES.get(q, {})
+    disp = quintile_dispersion(q, src)
+    iqr_txt = ""
+    if disp["has_iqr"]:
+        iqr_txt = (f" · sebaran P25–P75: {disp['p25_pct']:+.2f}% s.d. "
+                   f"{disp['p75_pct']:+.2f}%")
+    return (
+        f"peringkat relatif {item['rel_pct']:.0f}/100 (kuintil {q}/5) · "
+        f"historis OOS kuintil ini: {cal.get('excess_pct', 0):+.2f}% vs pasar "
+        f"per 20 hari{iqr_txt} · peringkat relatif, bukan jaminan return"
+    )
