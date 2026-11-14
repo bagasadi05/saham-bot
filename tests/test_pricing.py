@@ -47,3 +47,15 @@ def test_pnl_pct_matches_config_fees():
     assert saran.pnl_pct(1000, 1000) == pytest.approx(-0.3994, abs=1e-3)
     assert saran.BUY_FEE == config.IDX_BUY_FEE
     assert saran.SELL_FEE == config.IDX_SELL_FEE
+
+
+def test_arb_floor_and_gap_risk_defaults():
+    import datetime as dt
+    d = dt.date(2026, 11, 2)
+    assert pricing.min_board_floor(d) == 1.0
+    assert pricing.min_board_floor(dt.date(2026, 9, 1)) == 50.0
+    assert pricing.arb_floor_price(2000, d) == 1860.0
+    risk = pricing.check_arb_gap_risk(2000, 1800, dt=d)
+    assert risk["risk"] is True
+    assert risk["below_floor"] is True
+    assert risk["deeper_than_7pct"] is True

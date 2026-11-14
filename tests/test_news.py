@@ -63,3 +63,32 @@ def test_berita_lama_bobotnya_lebih_kecil():
 def test_news_sentiment_kosong():
     out = news.news_sentiment([])
     assert out["pct"] == 0 and out["n"] == 0
+
+
+def test_news_query_ketat_hindari_bentrok_kata_umum(monkeypatch):
+    captured_urls: list[str] = []
+    rss = (b"<rss><channel><item><title>BUMI cetak laba</title>"
+           b"<link>https://a</link><pubDate>Fri, 06 Nov 2026 10:00:00 GMT</pubDate>"
+           b"<source>Kontan</source></item></channel></rss>")
+
+    def fake_get(url, timeout=15):
+        captured_urls.append(url)
+        return rss
+
+    monkeypatch.setattr(news, "_http_get", fake_get)
+    monkeypatch.setattr(news.datamod, "fetch_quote_name", lambda sym: (
+        "PT Bumi Resources Tbk" if sym == "BUMI" else sym
+    ))
+    news.clear_cache()
+    try:
+        items_bumi = news.fetch_news("BUMI")
+        items_auto = news.fetch_news("AUTO")
+        assert '"PT Bumi Resources Tbk" OR "BUMI.JK" OR "saham BUMI"' in items_bumi[0]["query"]
+        assert '"AUTO.JK" OR "saham AUTO"' == items_auto[0]["query"]
+        assert news.last_query("BUMI") == items_bumi[0]["query"]
+        assert news.news_sentiment(items_bumi)["query"] == items_bumi[0]["query"]
+        assert len(captured_urls) == 2
+        assert "OR+BUMI&" not in captured_urls[0]
+        assert "OR+AUTO&" not in captured_urls[1]
+    finally:
+        news.clear_cache()

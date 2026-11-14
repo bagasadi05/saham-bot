@@ -18,6 +18,7 @@ from core import data as datamod
 # fetch_news dipanggil untuk setiap emiten di setiap pemindaian /saran.
 _NEWS_TTL = int(os.getenv("SAHAMBOT_NEWS_TTL", "900") or 0)
 _news_cache: dict[tuple[str, int], tuple[float, list[dict]]] = {}
+_last_queries: dict[str, str] = {}
 _news_lock = threading.Lock()
 
 
@@ -25,6 +26,7 @@ def clear_cache():
     """Kosongkan cache berita (dipakai test / manual)."""
     with _news_lock:
         _news_cache.clear()
+        _last_queries.clear()
 
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
@@ -116,6 +118,28 @@ def _http_get(url: str, timeout: int = 15) -> bytes:
         return resp.read()
 
 
+def build_query(symbol: str, name: str | None = None) -> str:
+    """Bangun query Google News yang ketat agar ticker tidak bentrok kata umum."""
+    sym = (symbol or "").strip().upper().removesuffix(".JK")
+    clean_name = re.sub(r"\s+", " ", (name or "").replace('"', "")).strip()
+    parts: list[str] = []
+    if clean_name and clean_name.upper() != sym:
+        parts.append(f'"{clean_name}"')
+    parts.append(f'"{sym}.JK"')
+    parts.append(f'"saham {sym}"')
+    return " OR ".join(parts)
+
+
+def last_query(ticker: str) -> str | None:
+    """Query Google News terakhir yang dipakai untuk emiten ini (untuk audit/metadata)."""
+    try:
+        symbol = datamod.normalize_ticker(ticker).replace(".JK", "")
+    except ValueError:
+        symbol = (ticker or "").strip().upper().removesuffix(".JK")
+    with _news_lock:
+        return _last_queries.get(symbol)
+
+
 def fetch_news(ticker: str, limit: int = 12) -> list[dict]:
     """Berita Google News untuk emiten (cache 15 menit, max `limit`)."""
     symbol = datamod.normalize_ticker(ticker).replace(".JK", "")
@@ -127,7 +151,9 @@ def fetch_news(ticker: str, limit: int = 12) -> list[dict]:
                 # salinan: news_sentiment menulis 'sent'/'engine' ke item
                 return [dict(it) for it in hit[1]]
     name = datamod.fetch_quote_name(symbol)
-    query = f"{name} OR {symbol}"
+    query = build_query(symbol, name)
+    with _news_lock:
+        _last_queries[symbol] = query
     qs = urllib.parse.urlencode({
         "q": query,
         "hl": "id",
@@ -163,7 +189,10 @@ def fetch_news(ticker: str, limit: int = 12) -> list[dict]:
                     dt = parsed.astimezone(timezone.utc)
             except (TypeError, ValueError):
                 dt = None
-        items.append({"title": title, "link": link, "date": dt, "source": source})
+        items.append({
+            "title": title, "link": link, "date": dt,
+            "source": source, "query": query,
+        })
         if len(items) >= limit:
             break
     if _NEWS_TTL > 0:
@@ -231,11 +260,13 @@ def news_sentiment(items: list[dict]) -> dict:
     else:
         label, emoji = "NETRAL", "⚪"
     n_ml = sum(1 for d in details if d.get("engine") == "ml")
+    query = next((d.get("query") for d in details if d.get("query")), None)
     return {
         "pct": round(pct, 1),
         "label": label,
         "emoji": emoji,
         "n": len(items),
         "engine_ml": n_ml,
+        "query": query,
         "details": details,
     }

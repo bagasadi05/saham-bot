@@ -8,13 +8,13 @@ test:
 	pytest
 
 coverage:
-	pytest --cov=core --cov=bot --cov=config --cov-report=term-missing --cov-fail-under=75
+	pytest --cov=core --cov=handlers --cov=bot --cov=config --cov-report=term-missing --cov-fail-under=75
 
 lint:
 	ruff check .
 
 compile:
-	python -m compileall -q bot.py core backtest.py backtest_real.py
+	python -m compileall -q bot.py config.py core handlers tools research backtest.py backtest_real.py
 
 run:
 	python bot.py

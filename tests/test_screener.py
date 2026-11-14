@@ -189,3 +189,42 @@ def test_scan_saves_snapshot_then_uses_cache(tmp_store):
 def test_scan_raises_when_nothing_downloaded(tmp_store):
     with pytest.raises(RuntimeError):
         screener.scan(force=True, symbols=["AAAA"], downloader=lambda s: {})
+
+
+def test_evaluate_rejects_stale_and_bad_ohlc_and_downgrades_dormant(monkeypatch):
+    monkeypatch.setattr(screener, "classify", lambda *a, **k: ("BELI", "uji"))
+    live_df = make_prices(np.linspace(9000, 9500, 120), start="2026-06-01")
+    stale_df = make_prices(np.linspace(1000, 1200, 60), start="2025-01-01")
+    bad_df = live_df.copy()
+    bad_df.iloc[-1, bad_df.columns.get_loc("high")] = bad_df.iloc[-1]["low"] - 10
+    dormant_df = live_df.copy()
+    dormant_df.iloc[-6:, dormant_df.columns.get_loc("volume")] = 0.0
+
+    rows, skipped = screener.evaluate({
+        "LIVE": live_df,
+        "SUSP": stale_df,
+        "BROKEN": bad_df,
+        "SLEEP": dormant_df,
+    })
+    assert "SUSP" in skipped
+    assert "BROKEN" in skipped
+    by_t = {r["ticker"]: r for r in rows}
+    assert "LIVE" in by_t
+    assert by_t["LIVE"]["signal"] == "BELI"
+    assert by_t["LIVE"]["entry"] % 25 == 0
+    assert by_t["LIVE"]["sl"] % 25 == 0
+    assert by_t["LIVE"]["tp"] % 25 == 0
+    assert by_t["SLEEP"]["signal"] == "TAHAN"
+    assert "tidur" in by_t["SLEEP"]["reason"].lower()
+
+
+def test_evaluate_buy_levels_use_pricing_round_tick(monkeypatch):
+    monkeypatch.setattr(screener, "classify", lambda *a, **k: ("BELI", "uji"))
+    df = make_prices(np.linspace(8900, 9013.4, 80), start="2026-06-01")
+    rows, _ = screener.evaluate({"TICK": df})
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["entry"] == 9025.0
+    assert r["sl"] % 25 == 0
+    assert r["tp"] % 25 == 0
+    assert r["sl"] < r["entry"] < r["tp"]

@@ -65,3 +65,25 @@ def test_empty_frame_is_reported():
     assert q["ok"] is False
     assert q["flags"]["no_data"] == 1
     assert "tanpa data" in data_quality.summary_line(q)
+
+
+def test_format_provenance_wib_dan_status_jujur():
+    assert "tidak tersedia" in data_quality.format_provenance(None)
+
+    df = _frame([100.0] * 35)
+    df.attrs.update({
+        "provider": "yfinance",
+        "provenance": "live",
+        "stale": False,
+        "adjusted": True,
+        "repaired_count": 2,
+        "last_bar_date": "2026-11-13",
+        "fetched_at": "2026-11-14T02:30:00+00:00",
+    })
+    text = data_quality.format_provenance(df)
+    assert "yfinance" in text
+    assert "live" in text
+    assert "adjusted" in text
+    assert "repaired 2 bar" in text
+    assert "2026-11-13 WIB" in text
+    assert "09:30 WIB" in text  # 02:30 UTC -> 09:30 WIB

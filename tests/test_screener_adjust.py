@@ -17,6 +17,7 @@ def test_download_chunk_uses_adjusted_prices(monkeypatch):
     screener._download_chunk(["BBCA"], "1y")
 
     assert captured["auto_adjust"] is True
+    assert captured["repair"] is True
     # argumen lain tetap seperti semula
     assert captured["interval"] == "1d"
     assert captured["group_by"] == "ticker"

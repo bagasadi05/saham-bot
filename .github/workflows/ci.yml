@@ -30,7 +30,7 @@ jobs:
         run: ruff check .
       - name: Test + coverage
         run: >
-          pytest --cov=core --cov=bot --cov=config
+          pytest --cov=core --cov=handlers --cov=bot --cov=config
           --cov-report=term-missing --cov-report=xml --cov-fail-under=75
       - name: Upload coverage
         if: matrix.python-version == '3.12'
@@ -39,3 +39,18 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           if-no-files-found: error
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compose syntax check
+        run: |
+          cp .env.example .env
+          docker compose config -q
+          rm -f .env
+      - name: Docker build (SKIP_MODEL=1) + import smoke test
+        run: |
+          docker build --build-arg SKIP_MODEL=1 -t saham-bot:ci-smoke .
+          docker run --rm --entrypoint python saham-bot:ci-smoke -c "import bot, config, core, handlers; print('docker-import-ok')"

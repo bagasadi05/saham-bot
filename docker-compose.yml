@@ -11,6 +11,7 @@ services:
       STORE_FILE: /app/data/store.json   # hanya dipakai sekali untuk migrasi JSON lama
       TMP_DIR: /app/data/temp
       SAHAMBOT_CACHE: /app/data/cache
+      BACKUP_DIR: /app/data/backups
       HEARTBEAT_FILE: /app/data/heartbeat.txt
       SAHAMBOT_LOCAL_MODEL: /app/models/indo-fin-roberta
     volumes:

@@ -104,3 +104,87 @@ def summary_line(quality: dict | None) -> str:
         else:
             parts.append(f"{value} {label}")
     return "🧪 <i>Kualitas data: " + ", ".join(parts) + ".</i>\n"
+
+
+def _fmt_wib_timestamp(raw: str) -> str:
+    """Konversi ISO timestamp ke teks WIB yang ringkas; '' bila tidak valid."""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        wib = parsed.astimezone(marketcal.WIB)
+        return f"{wib:%d %b %Y %H:%M} WIB"
+    except ValueError:
+        return ""
+
+
+def _last_bar_wib(df: pd.DataFrame) -> str:
+    """Tanggal bar terakhir dalam zona WIB (ISO YYYY-MM-DD)."""
+    raw = str(df.attrs.get("last_bar_date") or df.attrs.get("as_of") or "").strip()
+    if raw:
+        return raw[:10]
+    try:
+        idx = df.index[-1]
+        if isinstance(idx, pd.Timestamp) and idx.tzinfo is not None:
+            idx = idx.tz_convert(marketcal.WIB)
+        elif isinstance(idx, dt.datetime) and idx.tzinfo is not None:
+            idx = idx.astimezone(marketcal.WIB)
+        return (idx.date() if hasattr(idx, "date") else idx).isoformat()[:10]
+    except Exception:
+        return ""
+
+
+def format_provenance(df: pd.DataFrame | None) -> str:
+    """Ringkasan jujur sumber data, tanggal bar terakhir (WIB), dan status."""
+    if df is None or len(df) == 0:
+        return "Sumber data: tidak tersedia"
+
+    attrs = getattr(df, "attrs", {}) or {}
+    provider = str(attrs.get("provider") or "tidak diketahui").strip()
+    provenance = str(attrs.get("provenance") or "").strip()
+    stale = bool(attrs.get("stale"))
+
+    tags: list[str] = []
+    if provenance == "cache-legacy":
+        tags.append("cache lama/basi")
+    elif stale or provenance == "cache":
+        tags.append("cache/basi")
+    elif provenance:
+        tags.append(provenance)
+
+    adjusted = attrs.get("adjusted")
+    if adjusted is True:
+        tags.append("adjusted")
+    elif adjusted is False:
+        tags.append("unadjusted")
+    else:
+        tags.append("penyesuaian tidak diketahui")
+
+    repaired = attrs.get("repaired_count")
+    if repaired is not None:
+        try:
+            n_rep = int(repaired)
+            tags.append(f"repaired {n_rep} bar" if n_rep > 0 else "repaired 0 bar")
+        except (TypeError, ValueError):
+            pass
+
+    qual = attrs.get("quality") if isinstance(attrs.get("quality"), dict) else None
+    stale_days = (qual or {}).get("flags", {}).get("stale_days")
+    if stale_days:
+        tags.append(f"tertinggal {stale_days} hari bursa")
+
+    parts = [f"Sumber: {provider} ({' · '.join(tags)})"]
+    last_bar = _last_bar_wib(df)
+    if last_bar:
+        parts.append(f"bar terakhir {last_bar} WIB")
+    else:
+        parts.append("tanggal bar tidak tersedia")
+
+    fetched_wib = _fmt_wib_timestamp(str(attrs.get("fetched_at") or ""))
+    if fetched_wib:
+        parts.append(f"diambil {fetched_wib}")
+    return " · ".join(parts)
+

@@ -58,5 +58,30 @@ def test_live_fetch_sets_provider_adjusted_and_quality(tmp_path, monkeypatch):
     assert out.attrs["provenance"] == "live"
     assert out.attrs["provider"] == "yfinance"
     assert out.attrs["adjusted"] is True
+    assert out.attrs["repaired_count"] == 0
+    assert out.attrs["last_bar_date"] == out.attrs["as_of"]
     assert out.attrs["fetched_at"]
     assert isinstance(out.attrs["quality"], dict)
+
+
+def test_live_fetch_tracks_and_strips_repaired_column(tmp_path, monkeypatch):
+    monkeypatch.setattr(data, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(data, "_MAX_RETRIES", 1)
+    captured: dict = {}
+    frames = make_prices([100, 101, 102, 103])
+    frames["Repaired?"] = [False, True, False, True]
+
+    def fake_download(*_a, **kwargs):
+        captured.update(kwargs)
+        return frames.copy()
+
+    monkeypatch.setattr(data.yf, "download", fake_download)
+    out = data.fetch_history("BBCA")
+
+    assert captured["auto_adjust"] is True
+    assert captured["repair"] is True
+    assert out is not None
+    assert out.attrs["repaired_count"] == 2
+    assert "repaired?" not in [str(c).lower() for c in out.columns]
+    csv_text = (tmp_path / "BBCA.JK_1y.csv").read_text(encoding="utf-8")
+    assert "repaired" not in csv_text.lower()

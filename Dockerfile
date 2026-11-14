@@ -33,13 +33,15 @@ RUN if [ "$SKIP_MODEL" = "1" ]; then \
 # kode aplikasi
 COPY config.py bot.py backtest.py backtest_real.py ./
 COPY core/ ./core/
+COPY handlers/ ./handlers/
+COPY vendor/ ./vendor/
 COPY data/validation.json ./data/validation.json
 COPY data/idx_universe.json ./data/idx_universe.json
 COPY tools/ ./tools/
 
 # user non-root & folder data untuk volume
 RUN useradd -m -u 1000 appuser \
-    && mkdir -p /app/data /app/models \
+    && mkdir -p /app/data /app/data/backups /app/models \
     && chown -R appuser:appuser /app
 USER appuser
 
