@@ -67,6 +67,7 @@ def test_live_fetch_sets_provider_adjusted_and_quality(tmp_path, monkeypatch):
 def test_live_fetch_tracks_and_strips_repaired_column(tmp_path, monkeypatch):
     monkeypatch.setattr(data, "_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(data, "_MAX_RETRIES", 1)
+    monkeypatch.setattr(data, "supports_yf_repair", lambda: True)
     captured: dict = {}
     frames = make_prices([100, 101, 102, 103])
     frames["Repaired?"] = [False, True, False, True]

@@ -44,9 +44,12 @@ def downtrend_df():
 
 
 @pytest.fixture(autouse=True)
-def _isolated_caches():
+def _isolated_caches(monkeypatch):
     from core import bandar, banding, data, fundamental, news, regime
 
+    # Jaga suite test tetap 100% offline meski `.env` lokal menyimpan API key live.
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
+    monkeypatch.delenv("ALPHAVANTAGE_API_KEY", raising=False)
     data.clear_cache()
     fundamental.clear_cache()
     news.clear_cache()

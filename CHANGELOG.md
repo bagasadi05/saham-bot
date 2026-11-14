@@ -21,8 +21,9 @@ sinkronisasi `core/relatif.py` & `tools/check_sync.py`), dan **Wave 2B**
 beli & jual/exit portofolio-aware, exit alert otomatis portofolio asli di
 `scan_alerts`, diagnostik MAE/MFE `/jurnal`, target harga `/alert`, menu
 `Cek Jual / Tinjau Posisi`, serta sinkronisasi penuh `.agents/skills/` &
-dokumentasi proyek). Total verifikasi akhir: **666 tes lulus** offline
-(`0 skipped`, `0 failed`, coverage `core+handlers` **84%**, `bot.py` 1.737 baris),
+dokumentasi proyek), plus hotfix `yfinance` adaptif tanpa `scipy` & cooldown
+kuota EODHD. Total verifikasi akhir: **668 tes lulus** offline
+(`0 skipped`, `0 failed`, coverage target CI `core+handlers+bot+config` **83%**, `bot.py` 1.737 baris),
 `ruff check .` bersih.
 
 ### Ditambahkan
@@ -170,6 +171,16 @@ dokumentasi proyek). Total verifikasi akhir: **666 tes lulus** offline
   mengevaluasi sinyal `JUAL` secara terpisah sebagai `TURUN`/`NAIK`/`DATAR` (`r_multiple=None`);
   serta menambahkan `t_hac` Newey-West dan deteksi pergeseran eks-dividen (`div_adjusted`) pada
   `scorecard.live_ic()`.
+- **Perbaikan crash `yfinance(..., repair=True)` tanpa `scipy`, cooldown kuota EODHD & isolasi `.env` di tes (`core/data.py`, `core/screener.py`, `tests/conftest.py`)** —
+  `yfinance==1.8.0` mengimpor `scipy` secara internal saat `repair=True`, menyebabkan
+  unduhan live gagal total di environment tanpa `scipy` (`requirements.txt` memang tidak
+  menyertakan `scipy`) dan memicu spam fallback EODHD. Ditambahkan `supports_yf_repair()` &
+  `download_yf_with_safe_repair()` di `core/data.py` (dipakai bersama oleh `core/screener.py`)
+  yang memakai `repair=True` hanya bila `scipy` tersedia serta mengulang dengan `repair=False`
+  bila `ModuleNotFoundError` muncul; cooldown EODHD (`EODHD_COOLDOWN_SECONDS=900`) saat HTTP
+  `402`/`429` agar batch tidak membakar kuota gratis; serta `monkeypatch.delenv` di
+  `tests/conftest.py` agar suite offline tetap terisolasi meski `.env` lokal menyimpan API key
+  live. Total terbaru: **668 tes lulus** offline (`0 skipped`, `ruff` bersih).
 - **Integrasi provenance WIB, `_verdict_jual` portofolio-aware & async SQLite (`core/reports.py`, `bot.py`, `handlers/*` — Wave 2B)** —
   `reports.provenance_line` meneruskan DataFrame ke `data_quality.format_provenance` tanpa
   tertahan token pendek `live`/`cache`; `handlers/cek.py` mengisi `res["sl"]` & `res["prev_close"]`

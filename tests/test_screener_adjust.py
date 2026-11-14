@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import pandas as pd
 
-from core import screener
+from core import data, screener
 
 
 def test_download_chunk_uses_adjusted_prices(monkeypatch):
     captured: dict = {}
+    monkeypatch.setattr(data, "supports_yf_repair", lambda: True)
 
     def fake_download(*args, **kwargs):
         captured.update(kwargs)

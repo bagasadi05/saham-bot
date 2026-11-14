@@ -1,8 +1,8 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
-> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (pasca-Wave 2A & Wave 2B)
-> **Baseline terukur saat ini:** **`666 passed`** (`0 skipped`, `0 failed`; naik dari 653 di Wave 2A, 586 pra-Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
-> coverage `core+handlers` **`TOTAL 84%`** (`9.137 Stmts`, `1.501 Miss`; gerbang CI `>= 75%`) · `bot.py` **1.737 baris** +
+> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (pasca-Wave 2A, Wave 2B & hotfix `scipy`/EODHD)
+> **Baseline terukur saat ini:** **`668 passed`** (`0 skipped`, `0 failed`; naik dari 666 di Wave 2B, 653 di Wave 2A, 586 pra-Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
+> coverage target CI (`core+handlers+bot+config`) **`TOTAL 83%`** (`82.92%`; gerbang CI `>= 75%`) · `bot.py` **1.737 baris** +
 > 12 modul `handlers/` (analisis, cek, info, jobs, jurnal, market, menu, portfolio, sektor,
 > sinyal, trading, watchlist) + 33 modul `core/` (`SCHEMA_VERSION = 6`).
 >

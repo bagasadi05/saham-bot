@@ -26,7 +26,7 @@ import time
 
 import pandas as pd
 
-from core import analysis, data_quality, marketcal, pricing, relatif, scorecard, store, universe
+from core import analysis, data as datamod, data_quality, marketcal, pricing, relatif, scorecard, store, universe
 
 log = logging.getLogger("sahambuddy.screener")
 
@@ -83,9 +83,10 @@ def _download_chunk(symbols: list[str], period: str) -> pd.DataFrame | None:
     import yfinance as yf
 
     full = [f"{s}.JK" for s in symbols]
-    return yf.download(full, period=period, interval="1d", group_by="ticker",
-                       threads=True, progress=False, auto_adjust=True,
-                       repair=True, timeout=30)
+    return datamod.download_yf_with_safe_repair(
+        yf.download, full, period=period, interval="1d", group_by="ticker",
+        threads=True, progress=False, auto_adjust=True, timeout=30,
+    )
 
 
 def fetch_frames(symbols: list[str], period: str = PERIOD, chunk: int = CHUNK,

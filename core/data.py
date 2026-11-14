@@ -11,12 +11,14 @@ Lapisan ketahanan:
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
@@ -32,6 +34,7 @@ log = logging.getLogger("sahambuddy.data")
 _CACHE_DIR = os.getenv("SAHAMBOT_CACHE", os.path.join("temp", "cache"))
 _MAX_RETRIES = int(os.getenv("YF_RETRIES", "3"))
 _TTL_SECONDS = int(os.getenv("SAHAMBOT_TTL", "300") or 0)
+_EODHD_COOLDOWN_SEC = max(0, int(os.getenv("EODHD_COOLDOWN_SECONDS", "900") or 0))
 
 # yfinance dipanggil dengan auto_adjust=True: OHLC sudah disesuaikan split
 # dan dividen. Penanda ini disimpan bersama cache agar data tidak tercampur.
@@ -46,6 +49,7 @@ _PERIOD_DAYS = {
 _mem: dict[tuple, tuple[float, pd.DataFrame]] = {}
 _mem_lock = threading.Lock()
 _stats = {"hit": 0, "miss": 0}
+_fallback_cooldown_until: dict[str, float] = {}
 
 
 def cache_stats() -> dict:
@@ -58,6 +62,37 @@ def clear_cache():
     with _mem_lock:
         _mem.clear()
         _stats.update({"hit": 0, "miss": 0})
+        _fallback_cooldown_until.clear()
+
+
+def supports_yf_repair() -> bool:
+    """True bila `scipy` terpasang sehingga `yfinance(..., repair=True)` aman dipakai."""
+    return importlib.util.find_spec("scipy") is not None
+
+
+def download_yf_with_safe_repair(download_fn, *args, **kwargs):
+    """Panggil fungsi unduh `yfinance` dengan `repair` adaptif terhadap ketersediaan `scipy`."""
+    use_repair = supports_yf_repair()
+    try:
+        return download_fn(*args, repair=use_repair, **kwargs)
+    except ModuleNotFoundError as exc:
+        if use_repair and "scipy" in str(exc).lower():
+            log.warning("scipy tidak tersedia; mengulang unduh yfinance tanpa repair")
+            return download_fn(*args, repair=False, **kwargs)
+        raise
+
+
+def _is_fallback_cooled_down(provider: str) -> bool:
+    with _mem_lock:
+        until = _fallback_cooldown_until.get(provider, 0.0)
+        return until > time.monotonic()
+
+
+def _mark_fallback_cooldown(provider: str, seconds: int) -> None:
+    if seconds <= 0:
+        return
+    with _mem_lock:
+        _fallback_cooldown_until[provider] = time.monotonic() + seconds
 
 
 def normalize_ticker(ticker: str) -> str:
@@ -508,11 +543,20 @@ def _fetch_fallback_provider(symbol: str, period: str, interval: str) -> pd.Data
     if interval != "1d" or not symbol.endswith(".JK"):
         return None
     eodhd_key = os.getenv("EODHD_API_KEY", "").strip()
-    if eodhd_key:
+    if eodhd_key and not _is_fallback_cooled_down("eodhd"):
         try:
             df = _fetch_eodhd(symbol, period, eodhd_key)
             if df is not None and not df.empty:
                 return df
+        except urllib.error.HTTPError as exc:
+            if exc.code in (402, 429) and _EODHD_COOLDOWN_SEC > 0:
+                _mark_fallback_cooldown("eodhd", _EODHD_COOLDOWN_SEC)
+                log.warning(
+                    "%s: EODHD kuota/rate-limit (HTTP %s) — jeda %ds sebelum fallback EODHD lagi",
+                    symbol, exc.code, _EODHD_COOLDOWN_SEC,
+                )
+            else:
+                log.warning("%s: fallback EODHD gagal (%s)", symbol, exc)
         except Exception as exc:
             log.warning("%s: fallback EODHD gagal (%s)", symbol, exc)
     av_key = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
@@ -539,8 +583,10 @@ def _fetch_bars(ticker: str, period: str = DEFAULT_PERIOD,
     last_exc = None
     for attempt in range(_MAX_RETRIES):
         try:
-            df = yf.download(symbol, period=period, interval=interval,
-                             auto_adjust=True, repair=True, progress=False)
+            df = download_yf_with_safe_repair(
+                yf.download, symbol, period=period, interval=interval,
+                auto_adjust=True, progress=False,
+            )
             if df is not None and not df.empty:
                 last_exc = None
                 break

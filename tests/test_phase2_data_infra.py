@@ -3,7 +3,9 @@ BEI 2026 ARB, filter kualitas screener, query berita ketat, dan Docker/CI."""
 from __future__ import annotations
 
 import datetime as dt
+import email.message
 import inspect
+import urllib.error
 from pathlib import Path
 
 import numpy as np
@@ -280,3 +282,96 @@ def test_infra_dockerfile_compose_makefile_ci_env_gitignore():
 
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert ".zwork/" in gitignore
+
+
+def test_yfinance_repair_adaptive_without_scipy_and_fallback_on_importerror(
+    tmp_path, monkeypatch
+):
+    """Tanpa `scipy`, `repair=False` agar `yf.download` tidak gagal `No module named scipy`."""
+    monkeypatch.setattr(data, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(data, "_MAX_RETRIES", 1)
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
+    monkeypatch.delenv("ALPHAVANTAGE_API_KEY", raising=False)
+
+    # 1. `find_spec("scipy")` None -> repair=False di data.fetch_history & screener._download_chunk
+    orig_find_spec = data.importlib.util.find_spec
+    monkeypatch.setattr(
+        data.importlib.util, "find_spec",
+        lambda name, *a, **k: None if name == "scipy" else orig_find_spec(name, *a, **k),
+    )
+    assert data.supports_yf_repair() is False
+
+    frames = make_prices([5000, 5100, 5200])
+    seen_data_kwargs: list[dict] = []
+
+    def fake_yf_data(*_a, **kwargs):
+        seen_data_kwargs.append(dict(kwargs))
+        return frames.copy()
+
+    monkeypatch.setattr(data.yf, "download", fake_yf_data)
+    out = data.fetch_history("BBCA", "1mo")
+    assert out is not None
+    assert seen_data_kwargs[-1]["auto_adjust"] is True
+    assert seen_data_kwargs[-1]["repair"] is False
+
+    seen_screener_kwargs: list[dict] = []
+
+    def fake_yf_screener(*_a, **kwargs):
+        seen_screener_kwargs.append(dict(kwargs))
+        return pd.DataFrame()
+
+    monkeypatch.setattr("yfinance.download", fake_yf_screener)
+    screener._download_chunk(["BBCA"], "1y")
+    assert seen_screener_kwargs[-1]["auto_adjust"] is True
+    assert seen_screener_kwargs[-1]["repair"] is False
+
+    # 2. Bila `supports_yf_repair()` True namun `ModuleNotFoundError("scipy")` muncul,
+    #    helper mengulang sekali dengan repair=False.
+    monkeypatch.setattr(data, "supports_yf_repair", lambda: True)
+    calls: list[bool] = []
+
+    def flaky_scipy_download(*_a, **kwargs):
+        calls.append(bool(kwargs.get("repair")))
+        if kwargs.get("repair"):
+            raise ModuleNotFoundError("No module named 'scipy'")
+        return frames.copy()
+
+    res = data.download_yf_with_safe_repair(flaky_scipy_download, "BBCA.JK", period="1mo")
+    assert res is not None and not res.empty
+    assert calls == [True, False]
+
+
+def test_eodhd_quota_error_triggers_cooldown_and_resets_with_clear_cache(
+    tmp_path, monkeypatch
+):
+    """HTTP 402/429 EODHD mengaktifkan cooldown sementara agar batch tidak spam kuota."""
+    monkeypatch.setattr(data, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(data, "_MAX_RETRIES", 1)
+    monkeypatch.setattr(data, "_EODHD_COOLDOWN_SEC", 600)
+    monkeypatch.setenv("EODHD_API_KEY", "quota-key")
+    monkeypatch.delenv("ALPHAVANTAGE_API_KEY", raising=False)
+    monkeypatch.setattr(data.yf, "download", lambda *_a, **_k: pd.DataFrame())
+
+    eodhd_calls = {"n": 0}
+
+    def raise_quota(url, timeout=15):
+        eodhd_calls["n"] += 1
+        raise urllib.error.HTTPError(
+            url, 402, "Payment Required", email.message.Message(), None
+        )
+
+    monkeypatch.setattr(data, "_http_get_json", raise_quota)
+
+    assert data.fetch_history("BBCA", "1mo") is None
+    assert eodhd_calls["n"] == 1
+    assert data._is_fallback_cooled_down("eodhd") is True
+
+    # Panggilan berikutnya tidak lagi memukul EODHD selama masa cooldown aktif
+    assert data.fetch_history("BBRI", "1mo") is None
+    assert eodhd_calls["n"] == 1
+
+    # clear_cache() membersihkan status cooldown (untuk isolasi / reset manual)
+    data.clear_cache()
+    assert data._is_fallback_cooled_down("eodhd") is False
+    assert data.fetch_history("BMRI", "1mo") is None
+    assert eodhd_calls["n"] == 2
