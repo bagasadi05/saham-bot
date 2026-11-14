@@ -26,7 +26,8 @@ _PORTO_USAGE = (
     "<code>/portofolio</code> — lihat posisi &amp; untung/rugi\n"
     "<code>/portofolio beli BBCA 5 9000</code> — catat beli 5 lot @ Rp9.000\n"
     "<code>/portofolio jual BBCA 2 9500</code> — catat jual 2 lot @ Rp9.500\n"
-    "<code>/portofolio riwayat</code> — 10 transaksi terakhir\n\n"
+    "<code>/portofolio riwayat</code> — 10 transaksi terakhir\n"
+    "<code>/portofolio batas [20 35|reset]</code> — batas maks posisi &amp; sektor (%)\n\n"
     "Bot tidak pernah menaruh order ke Stockbit; ini hanya buku catatan."
 )
 
@@ -142,6 +143,17 @@ def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> st
             out.append(f"   Korelasi rata-rata {risk['corr_avg']:.2f} · "
                        f"tertinggi {esc(risk.get('corr_pair') or '—')} "
                        f"{risk['corr_max']:.2f}".replace(".", ","))
+        inv_vol = risk.get("inv_vol") or {}
+        if inv_vol.get("ok") and inv_vol.get("weights"):
+            parts = []
+            cur_w = risk.get("weights") or {}
+            for tk, w_tgt in inv_vol["weights"].items():
+                w_now = cur_w.get(tk)
+                now_txt = f" (skrg {w_now:.0f}%)" if w_now is not None else ""
+                parts.append(f"{esc(tk)} {w_tgt:.0f}%{now_txt}")
+            out.append("   Bobot seimbang (inv-vol): " + " · ".join(parts))
+            if inv_vol.get("cap_note"):
+                out.append(f"   <i>{esc(inv_vol['cap_note'])}</i>")
         for w in (risk.get("warnings") or [])[:3]:
             out.append("⚠️ " + esc(w.replace(".", ",")))
     out += [
@@ -164,6 +176,62 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
     chat_id = update.effective_chat.id
     rm = deps.home_markup() if from_menu else None
     sub = (args[0].lower() if args else "")
+
+    if sub in ("batas", "limit", "limits"):
+        cur_pos, cur_sec = await asyncio.to_thread(store.get_risk_limits, chat_id)
+        tail = args[1:]
+        if not tail:
+            await msg.reply_text(
+                "🛡️ <b>Batas Risiko Portofolio</b>\n"
+                f"Maks 1 posisi: <b>{cur_pos * 100:.0f}%</b> modal "
+                f"(bawaan {riskmod.MAX_POS_PCT * 100:.0f}%)\n"
+                f"Maks 1 sektor: <b>{cur_sec * 100:.0f}%</b> modal "
+                f"(bawaan {riskmod.MAX_SECTOR_PCT * 100:.0f}%)\n\n"
+                "Ubah: <code>/portofolio batas 20 35</code>\n"
+                "Reset ke bawaan: <code>/portofolio batas reset</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=rm,
+            )
+            return
+        if tail[0].lower() in ("reset", "default", "bawaan"):
+            p, s = await asyncio.to_thread(store.set_risk_limits, chat_id, None, None)
+            await msg.reply_text(
+                f"♻️ Batas risiko dikembalikan ke bawaan: maks posisi "
+                f"<b>{p * 100:.0f}%</b>, maks sektor <b>{s * 100:.0f}%</b>.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=rm,
+            )
+            return
+
+        def _parse_pct(tok: str) -> float | None:
+            try:
+                return float(tok.strip().rstrip("%").replace(",", ".")) / 100.0
+            except ValueError:
+                return None
+
+        new_pos = _parse_pct(tail[0])
+        new_sec = _parse_pct(tail[1]) if len(tail) > 1 else max(cur_sec, new_pos or 0.0)
+        if new_pos is None or new_sec is None:
+            await msg.reply_text(
+                "Format tidak valid. Contoh: <code>/portofolio batas 20 35</code> "
+                "atau <code>/portofolio batas reset</code>.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=rm,
+            )
+            return
+        try:
+            p, s = await asyncio.to_thread(store.set_risk_limits, chat_id, new_pos, new_sec)
+        except ValueError as e:
+            await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=rm)
+            return
+        await msg.reply_text(
+            f"✅ Batas risiko diperbarui: maks 1 posisi <b>{p * 100:.0f}%</b> modal · "
+            f"maks 1 sektor <b>{s * 100:.0f}%</b> modal.\n"
+            "<i>Berlaku di /rencana, /cek, dan laporan /portofolio.</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm,
+        )
+        return
 
     if sub in ("beli", "buy", "jual", "sell"):
         if len(args) < 4:
@@ -278,7 +346,11 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
     quotes = await _porto_quotes([p["ticker"] for p in positions], deps)
     summary = portmod.summarize(positions, quotes)
     modal = await asyncio.to_thread(store.get_modal, chat_id)
+    max_pos, max_sec = await asyncio.to_thread(store.get_risk_limits, chat_id)
     bench = await asyncio.to_thread(_bench_rets)
-    risk = riskmod.portfolio_risk(positions, quotes, bench)
+    risk = riskmod.portfolio_risk(
+        positions, quotes, bench,
+        max_pos_pct=max_pos, max_sector_pct=max_sec,
+    )
     await deps.reply_long(msg, _porto_text(summary, modal, deps, risk),
                           reply_markup=porto_kb)

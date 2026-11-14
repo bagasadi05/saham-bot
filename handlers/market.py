@@ -394,11 +394,12 @@ async def do_rencana(update: Update, args: list[str], deps,
             return
 
     modal = await asyncio.to_thread(store.get_modal, chat_id)
+    max_pos, max_sec = await asyncio.to_thread(store.get_risk_limits, chat_id)
     from_modal = budget is None
     if budget is None:
         # Tanpa anggaran eksplisit, jangan otomatis memakai seluruh modal:
-        # batas satu posisi (25%) tetap berlaku (P23).
-        budget = float(modal or 0) * riskmod.MAX_POS_PCT
+        # batas satu posisi (default 25% atau batas kustom) tetap berlaku (P23).
+        budget = float(modal or 0) * max_pos
     if budget <= 0:
         await deps.reply_long(
             msg,
@@ -449,8 +450,9 @@ async def do_rencana(update: Update, args: list[str], deps,
     plan = rencana.budget_plan(enriched, budget, modal)
     if plan.get("ok") and modal:
         positions = await asyncio.to_thread(store.real_positions, chat_id)
-        limits = await asyncio.to_thread(riskmod.check_limits, plan, positions,
-                                         modal)
+        limits = await asyncio.to_thread(
+            riskmod.check_limits, plan, positions, modal,
+            max_pos_pct=max_pos, max_sector_pct=max_sec)
         if not limits["ok"]:
             lines = [f"⛔ <b>Rencana {esc(head)} ditolak — batas portofolio</b>",
                      ""]
@@ -463,11 +465,11 @@ async def do_rencana(update: Update, args: list[str], deps,
                              "kurangi posisi lain atau tambah modal.")
             lines += [
                 "",
-                f"Batas: <b>{riskmod.MAX_POS_PCT * 100:.0f}%</b> modal per "
-                f"posisi, <b>{riskmod.MAX_SECTOR_PCT * 100:.0f}%</b> per sektor. "
+                f"Batas: <b>{max_pos * 100:.0f}%</b> modal per "
+                f"posisi, <b>{max_sec * 100:.0f}%</b> per sektor. "
                 "Posisi lama dinilai di harga rata-rata.",
                 "Ubah anggaran: <code>/rencana %s 3000000</code> · "
-                "lihat portofolio: <code>/portofolio</code>" % esc(head),
+                "batas: <code>/portofolio batas</code>" % esc(head),
                 "",
                 deps._SINYAL_DISCLAIMER,
             ]

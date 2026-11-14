@@ -181,13 +181,20 @@ CREATE TABLE IF NOT EXISTS real_executions (
 );
 CREATE INDEX IF NOT EXISTS idx_real_exec_chat
     ON real_executions(chat_id, id DESC);
+-- P23 lanjutan: pengaturan batas risiko per chat.
+CREATE TABLE IF NOT EXISTS chat_settings (
+    chat_id TEXT NOT NULL,
+    key     TEXT NOT NULL,
+    value   TEXT NOT NULL,
+    PRIMARY KEY (chat_id, key)
+);
 """
 
 
 _init_lock = threading.Lock()
 _ready_for: str | None = None
 
-SCHEMA_VERSION = 5          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
+SCHEMA_VERSION = 6          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
 BACKUP_PREFIX = "store-"
 
 
@@ -287,7 +294,22 @@ def _migrate_v5(conn):
         """)
 
 
-_MIGRATIONS = {2: _migrate_v2, 3: _migrate_v3, 4: _migrate_v4, 5: _migrate_v5}
+def _migrate_v6(conn):
+    """v6: pengaturan batas risiko per chat (P23 lanjutan)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_settings (
+            chat_id TEXT NOT NULL,
+            key     TEXT NOT NULL,
+            value   TEXT NOT NULL,
+            PRIMARY KEY (chat_id, key)
+        )
+        """)
+
+
+_MIGRATIONS = {
+    2: _migrate_v2, 3: _migrate_v3, 4: _migrate_v4, 5: _migrate_v5, 6: _migrate_v6,
+}
 
 
 def _run_migrations(conn, current: int) -> int:
@@ -1167,3 +1189,59 @@ def execution_chats() -> list[str]:
         rows = conn.execute(
             "SELECT DISTINCT chat_id FROM real_executions").fetchall()
         return [str(r["chat_id"]) for r in rows]
+
+
+def get_risk_limits(
+    chat_id: int | str,
+    default_pos: float = 0.25,
+    default_sec: float = 0.40,
+) -> tuple[float, float]:
+    """Ambil batas posisi & sektor per chat (fraksi, mis. 0.25 dan 0.40)."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT key, value FROM chat_settings "
+            "WHERE chat_id=? AND key IN ('max_pos_pct', 'max_sector_pct')",
+            (str(chat_id),),
+        ).fetchall()
+        cfg = {r["key"]: r["value"] for r in rows}
+    try:
+        pos = float(cfg["max_pos_pct"]) if "max_pos_pct" in cfg else default_pos
+        sec = float(cfg["max_sector_pct"]) if "max_sector_pct" in cfg else default_sec
+    except (TypeError, ValueError):
+        return default_pos, default_sec
+    if not (0.05 <= pos <= 0.50 and 0.10 <= sec <= 0.80 and sec >= pos):
+        return default_pos, default_sec
+    return pos, sec
+
+
+def set_risk_limits(
+    chat_id: int | str,
+    max_pos_pct: float | None,
+    max_sector_pct: float | None,
+) -> tuple[float, float]:
+    """Simpan atau reset batas posisi & sektor per chat (P23 lanjutan)."""
+    from core import risk
+
+    cid = str(chat_id)
+    if max_pos_pct is None and max_sector_pct is None:
+        with _db() as conn:
+            conn.execute(
+                "DELETE FROM chat_settings "
+                "WHERE chat_id=? AND key IN ('max_pos_pct', 'max_sector_pct')",
+                (cid,),
+            )
+        return risk.MAX_POS_PCT, risk.MAX_SECTOR_PCT
+
+    pos, sec = risk.validate_limits(
+        risk.MAX_POS_PCT if max_pos_pct is None else max_pos_pct,
+        risk.MAX_SECTOR_PCT if max_sector_pct is None else max_sector_pct,
+    )
+    with _db() as conn:
+        _ensure_chat(conn, cid)
+        for key, val in (("max_pos_pct", str(pos)), ("max_sector_pct", str(sec))):
+            conn.execute(
+                "INSERT INTO chat_settings(chat_id, key, value) VALUES (?, ?, ?) "
+                "ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value",
+                (cid, key, val),
+            )
+    return pos, sec

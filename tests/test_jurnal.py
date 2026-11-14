@@ -180,7 +180,7 @@ def test_store_migrasi_v4_ke_v5_aman(tmp_store):
 
     conn2 = sqlite3.connect(store.STORE_DB)
     try:
-        assert conn2.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert conn2.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION
     finally:
         conn2.close()
 
