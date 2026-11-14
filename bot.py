@@ -117,9 +117,9 @@ def tokens(update: Update) -> list[str]:
 
 
 # ---- tanya beli/jual bahasa natural: "BBCA beli gak?", "jual TLKM?" ----
-_TANYA_BELI = {"beli", "borong", "buy", "akumulasi", "serok"}
-_TANYA_JUAL = {"jual", "lepas", "sell", "cut", "cutloss", "tp", "take",
-               "tahan", "hold"}
+_TANYA_BELI = {"beli", "dibeli", "membeli", "belinya", "borong", "buy", "akumulasi", "serok", "diserok"}
+_TANYA_JUAL = {"jual", "dijual", "menjual", "jualan", "jualnya", "lepas", "dilepas", "melepas",
+               "sell", "cut", "cutloss", "tp", "take", "tahan", "hold", "dihold", "holdnya"}
 _TANYA_STOP = {"atau", "gak", "nggak", "ngga", "apa", "apakah", "kah",
                "dong", "ya", "lagi", "sekarang", "kapan", "bagus", "layak",
                "mau", "saya", "aku", "kamu", "untuk", "di", "ke", "dari",

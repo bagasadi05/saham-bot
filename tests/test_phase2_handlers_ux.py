@@ -193,6 +193,8 @@ def test_cek_populates_sl_prev_close_and_hides_buy_button_on_hindari(
 # ---------------------------------------------------------------------------
 def test_parse_tanya_ignores_transaction_vocabulary():
     assert bot.parse_tanya("beli 5 lot BBCA?") == ("beli", "BBCA")
+    assert bot.parse_tanya("BBCA layak dibeli?") == ("beli", "BBCA")
+    assert bot.parse_tanya("sudah punya TLKM aman dijual?") == ("jual", "TLKM")
     assert bot.parse_tanya("sudah pegang 10 lot TLKM masih aman hold atau cut?") == (
         "jual",
         "TLKM",
