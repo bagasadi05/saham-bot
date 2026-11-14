@@ -190,6 +190,7 @@ def test_handler_beli_lalu_lihat(jalankan):
     assert "PORTOFOLIO ASLI" in teks
     assert "BBCA" in teks and "Rp4.750.000" in teks
     assert "Risiko total" in teks
+    assert "Risiko portofolio" in teks and "eksposur" in teks
 
 
 def test_handler_jual_dan_riwayat(jalankan):

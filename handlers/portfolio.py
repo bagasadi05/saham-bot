@@ -14,7 +14,8 @@ import re
 
 from telegram.constants import ChatAction, ParseMode
 
-from core import data, fundamental, marketcal, portofolio as portmod, store
+from core import (data, fundamental, marketcal, portofolio as portmod,
+                  risk as riskmod, store)
 from core.reports import esc
 
 log = logging.getLogger("sahambuddy")
@@ -43,7 +44,8 @@ def _quote_posisi(t: str) -> dict:
     except (KeyError, TypeError, ValueError):
         return {"close": None, "atr": None, "stale": True}
     return {"close": close, "atr": portmod.atr14(df),
-            "stale": bool(df.attrs.get("stale_note"))}
+            "stale": bool(df.attrs.get("stale_note")),
+            "rets": df["close"].pct_change().dropna()}
 
 
 async def _porto_quotes(tickers: list[str], deps) -> dict[str, dict]:
@@ -59,7 +61,19 @@ async def _porto_quotes(tickers: list[str], deps) -> dict[str, dict]:
     return out
 
 
-def _porto_text(summary: dict, modal: int, deps) -> str:
+def _bench_rets():
+    """Return harian IHSG 6 bulan untuk beta; None bila tidak tersedia."""
+    try:
+        df = data.fetch_history("^JKSE", "6mo", raw_symbol=True)
+    except Exception:
+        log.warning("IHSG untuk risiko portofolio gagal", exc_info=True)
+        return None
+    if df is None or len(df) < 25:
+        return None
+    return df["close"].pct_change().dropna()
+
+
+def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> str:
     """Rincian posisi + PnL + konsentrasi sektor + risiko SL."""
     rows = summary.get("rows") or []
     out = ["💼 <b>PORTOFOLIO ASLI</b> (uang sungguhan)",
@@ -107,6 +121,28 @@ def _porto_text(summary: dict, modal: int, deps) -> str:
                    "dipakai menghitung PnL")
     for w in summary.get("warnings") or []:
         out.append("⚠️ " + esc(w.replace(".", ",")))
+    if risk and risk.get("ok"):
+        out += ["", "📉 <b>Risiko portofolio</b>"]
+        bits = [f"eksposur {deps._money(risk['value'])}"]
+        if modal:
+            bits.append(f"{risk['value'] / modal * 100:.0f}% modal")
+        if risk.get("vol_ann_pct") is not None:
+            bits.append(f"vol {risk['vol_ann_pct']:.1f}%/thn".replace(".", ","))
+        if risk.get("max_drawdown_pct") is not None:
+            bits.append(f"drawdown {risk['max_drawdown_pct']:.1f}%"
+                        .replace(".", ","))
+        if risk.get("beta") is not None:
+            bits.append(f"beta {risk['beta']:.2f}".replace(".", ","))
+        out.append("   " + " · ".join(bits))
+        if risk.get("var95_pct") is not None:
+            out.append(f"   VaR 95% 1 hari: <b>{deps._money(risk['var95_rp'])}</b> "
+                       f"({risk['var95_pct']:.2f}% nilai)".replace(".", ","))
+        if risk.get("corr_avg") is not None:
+            out.append(f"   Korelasi rata-rata {risk['corr_avg']:.2f} · "
+                       f"tertinggi {esc(risk.get('corr_pair') or '—')} "
+                       f"{risk['corr_max']:.2f}".replace(".", ","))
+        for w in (risk.get("warnings") or [])[:3]:
+            out.append("⚠️ " + esc(w.replace(".", ",")))
     out += [
         "",
         "Catat: <code>/portofolio beli BBCA 5 9000</code> · "
@@ -221,5 +257,7 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
     quotes = await _porto_quotes([p["ticker"] for p in positions], deps)
     summary = portmod.summarize(positions, quotes)
     modal = await asyncio.to_thread(store.get_modal, chat_id)
-    await deps.reply_long(msg, _porto_text(summary, modal, deps),
+    bench = await asyncio.to_thread(_bench_rets)
+    risk = riskmod.portfolio_risk(positions, quotes, bench)
+    await deps.reply_long(msg, _porto_text(summary, modal, deps, risk),
                           reply_markup=rm)

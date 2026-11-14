@@ -119,3 +119,11 @@ def test_cek_data_harga_gagal_dijawab_ramah(jalankan, monkeypatch):
     monkeypatch.setattr(bot, "fetch_and_analyze", boom)
     teks = _teks(jalankan("/cek XXXX"))
     assert "tidak ditemukan" in teks
+
+def test_cek_mengingatkan_posisi_yang_melewati_batas(jalankan, tmp_store):
+    store.set_modal(100, 10_000_000)
+    store.add_real_position(100, "BBCA", 30, 1000, "2026-11-12",
+                            "Financials")
+    teks = _teks(jalankan("/cek BBCA"))
+    assert "jangan tambah" in teks
+    assert "batas 25%" in teks

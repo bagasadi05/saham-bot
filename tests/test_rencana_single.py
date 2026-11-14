@@ -152,16 +152,16 @@ def _teks(replies) -> str:
 
 
 def test_rencana_satu_emiten_menampilkan_lot_biaya_dan_risiko(jalankan):
-    store.set_modal(100, 10_000_000)
+    store.set_modal(100, 25_000_000)
     teks = _teks(jalankan("/rencana BBCA 5000000"))
     assert "RENCANA BELI — BBCA" in teks
     assert "49 lot" in teks and "4.900 lembar" in teks
     assert "4.907.350" in teks              # nilai + fee beli
-    assert "49,1%" in teks                  # porsi modal (1 desimal)
+    assert "19,6%" in teks                  # porsi modal (1 desimal)
     assert "Kalau kena SL: rugi" in teks
     assert "Kalau kena TP: untung bersih" in teks
     assert "RR 1:2" in teks
-    assert "maks <b>33 lot</b>" in teks     # aturan 1% modal
+    assert "maks <b>83 lot</b>" in teks     # aturan 1% modal
 
 
 def test_rencana_tanpa_argumen_memberi_contoh(jalankan):
@@ -184,8 +184,8 @@ def test_rencana_anggaran_tidak_valid_tidak_menebak(jalankan):
 def test_rencana_pakai_modal_tersimpan_kalau_anggaran_kosong(jalankan):
     store.set_modal(100, 10_000_000)
     teks = _teks(jalankan("/rencana BBCA"))
-    assert "modal tersimpan" in teks
-    assert "99 lot" in teks                 # 10 jt / (1000x100), fee beli ikut
+    assert "Modal tersimpan" in teks
+    assert "24 lot" in teks   # 25% x 10 jt = 2,5 jt -> 24 lot + fee
 
 
 def test_rencana_uang_kurang_dijawab_jujur(jalankan):
@@ -202,7 +202,7 @@ def test_rencana_tetap_jujur_bila_gagal_saringan(monkeypatch, tmp_store):
 
     monkeypatch.setattr(bot, "gather_candidate", fake_gather)
     bot._last_used.clear()
-    store.set_modal(100, 10_000_000)
+    store.set_modal(100, 25_000_000)
     upd = _Update("/rencana BBCA 5000000")
     asyncio.run(bot.cmd_rencana(upd, types.SimpleNamespace()))
     teks = _teks(upd.effective_message.replies)

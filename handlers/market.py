@@ -15,7 +15,8 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction, ParseMode
 
-from core import bandar, marketcal, regime, rencana, reports, screener, store, universe
+from core import (bandar, marketcal, regime, rencana, reports,
+                  risk as riskmod, screener, store, universe)
 from core.reports import esc
 from core.textutil import split_message
 
@@ -343,7 +344,8 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
             "yang saya karang.",
         ]
     else:
-        src = "modal tersimpan" if budget_from_modal else "Anggaran"
+        src = ("Modal tersimpan (dibatasi 25%/posisi)"
+               if budget_from_modal else "Anggaran")
         shares = f"{plan['shares']:,}".replace(",", ".")
         out += [
             f"💵 {src} <b>{deps._money(plan['budget'])}</b> → "
@@ -422,7 +424,9 @@ async def do_rencana(update: Update, args: list[str], deps,
     modal = await asyncio.to_thread(store.get_modal, chat_id)
     from_modal = budget is None
     if budget is None:
-        budget = float(modal or 0)
+        # Tanpa anggaran eksplisit, jangan otomatis memakai seluruh modal:
+        # batas satu posisi (25%) tetap berlaku (P23).
+        budget = float(modal or 0) * riskmod.MAX_POS_PCT
     if budget <= 0:
         await deps.reply_long(
             msg,
@@ -471,6 +475,32 @@ async def do_rencana(update: Update, args: list[str], deps,
             reply_markup=rm)
         return
     plan = rencana.budget_plan(enriched, budget, modal)
+    if plan.get("ok") and modal:
+        positions = await asyncio.to_thread(store.real_positions, chat_id)
+        limits = await asyncio.to_thread(riskmod.check_limits, plan, positions,
+                                         modal)
+        if not limits["ok"]:
+            lines = [f"⛔ <b>Rencana {esc(head)} ditolak — batas portofolio</b>",
+                     ""]
+            lines += ["• " + esc(r) for r in limits["reasons"]]
+            if limits["max_lots"] > 0:
+                lines.append(f"Lot maksimum yang masih lolos: "
+                             f"<b>{limits['max_lots']} lot</b>.")
+            else:
+                lines.append("Tidak ada ruang untuk menambah posisi ini — "
+                             "kurangi posisi lain atau tambah modal.")
+            lines += [
+                "",
+                f"Batas: <b>{riskmod.MAX_POS_PCT * 100:.0f}%</b> modal per "
+                f"posisi, <b>{riskmod.MAX_SECTOR_PCT * 100:.0f}%</b> per sektor. "
+                "Posisi lama dinilai di harga rata-rata.",
+                "Ubah anggaran: <code>/rencana %s 3000000</code> · "
+                "lihat portofolio: <code>/portofolio</code>" % esc(head),
+                "",
+                deps._SINYAL_DISCLAIMER,
+            ]
+            await deps.reply_long(msg, "\n".join(lines))
+            return
     await deps.reply_long(
         msg,
         _rencana_single_text(plan, enriched, budget_from_modal=from_modal,

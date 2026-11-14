@@ -215,6 +215,38 @@ coverage 80–81%.
 
 ---
 
+## [Unreleased] — 2026-11-14 — Risiko portofolio (P23/P24)
+
+### Ditambahkan
+
+- **`core/risk.py`** — metrik risiko portofolio asli: eksposur, konsentrasi
+  sektor, **drawdown berjalan** (bobot sekarang, rebalance harian),
+  **volatilitas tahunan**, **VaR 95% 1 hari**, **beta vs IHSG**, dan
+  **korelasi** rata-rata/tertinggi. Semua asumsi ditulis di docstring; bagian
+  tanpa riwayat ditandai `None` + peringatan, bukan diisi nol.
+- **`/portofolio` menampilkan bagian "Risiko portofolio"** — eksposur (Rp dan
+  % modal), vol, drawdown, beta, VaR, korelasi, plus peringatan bila satu
+  posisi >25% modal, satu sektor >40%, korelasi >0,80, beta >1,30, atau
+  drawdown < −15%.
+- **Batas portofolio di `/rencana`** — rencana yang membuat satu posisi >25%
+  modal atau satu sektor >40% **ditolak** dengan alasan nominal + jumlah lot
+  maksimum yang masih lolos. Tanpa anggaran eksplisit, `/rencana` memakai
+  **25% modal** (bukan seluruh modal).
+- **`/cek` mengingatkan posisi yang sudah melewati batas** — bila emiten yang
+  dicek sudah >25% modal atau sektornya >40%, peringatan muncul di kesimpulan.
+- **`core/risk.position_fit()`** — helper yang dipakai `/cek`.
+
+### Tes
+
+- `tests/test_risk.py` (11): vol/drawdown/VaR/beta/korelasi, peringatan
+  konsentrasi, `check_limits` (posisi, sektor, lot maksimum), `position_fit`.
+- `tests/test_rencana_single.py`: happy path memakai modal 25 jt (5 jt = 20%),
+  tes baru penolakan batas 25%.
+- `tests/test_portofolio.py`: memastikan bagian risiko tampil.
+- `tests/test_cek_handler.py`: peringatan posisi di atas batas.
+
+Total: **567 tes lulus**, `ruff` bersih, coverage 82%.
+
 ## Catatan kompatibilitas
 
 - Skema SQLite naik ke **v4** (v3: `real_positions`/`real_trades`; v4:

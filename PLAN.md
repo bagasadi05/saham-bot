@@ -301,6 +301,25 @@ tersedia (keputusan pemilik, 2026-11-12).
 
 ---
 
+## Track C — Manajemen Risiko Portofolio (P23/P24, 2026-11-14)
+
+- [x] **P24 — Laporan risiko portofolio** (`core/risk.py`,
+  `handlers/portfolio.py`) — `/portofolio` menampilkan eksposur, konsentrasi
+  sektor, drawdown berjalan, volatilitas tahunan, VaR 95% 1 hari, beta vs
+  IHSG, dan korelasi rata-rata/tertinggi. Asumsi (bobot sekarang, rebalance
+  harian) ditulis di docstring; data yang tidak tersedia tidak diisi nol.
+- [x] **P23 — Batas portofolio** (`core/risk.check_limits`,
+  `handlers/market.py`, `handlers/cek.py`) — batas 25% modal/posisi dan 40%
+  modal/sektor; `/rencana` menolak rencana yang melanggar dengan alasan
+  nominal + lot maksimum yang lolos; `/cek` memperingatkan posisi yang sudah
+  melewati batas. Tanpa anggaran eksplisit, `/rencana` memakai 25% modal.
+- [ ] **P23 lanjutan** — batas dapat diubah pemilik lewat perintah
+  terdokumentasi (sekarang konstanta di `core/risk.py`).
+- [ ] **P19–P22, P25–P31** — menunggu keputusan D0–D3 (sumber data, biaya,
+  kriteria paper trading, VPS) dan/atau item berikutnya di batch 6.
+
+---
+
 ## Urutan kerja yang disarankan (setelah sesi ini)
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |

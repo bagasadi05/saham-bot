@@ -14,7 +14,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 
 from core import (analysis, bandar, banding, cek as cekmod, data, fundamental,
-                  marketcal, news, store, universe)
+                  marketcal, news, risk as riskmod, store, universe)
 from core.reports import esc
 
 log = logging.getLogger("sahambuddy")
@@ -157,6 +157,8 @@ def _cek_text(out: dict, res: dict, deps) -> str:
                      + _CEK_VERDICT.get(out["verdict"], esc(out["verdict"])))
     for r in out.get("reasons") or []:
         out_lines.append(f"• {esc(r)}")
+    for w in out.get("warnings") or []:
+        out_lines.append("⚠️ " + esc(w.replace(".", ",")))
     if out.get("missing"):
         out_lines.append("❔ Tidak tersedia: " + esc(", ".join(out["missing"]))
                          + " — bagian lain tetap ditampilkan apa adanya.")
@@ -222,6 +224,13 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
                        bandar_row=bahan["bandar_row"], agenda=bahan["agenda"],
                        agenda_days=bahan["agenda_days"], peers=bahan["peers"],
                        value_avg20=bahan["value_avg20"], board=bahan["board"])
+    # P23: posisi yang sudah ada tidak boleh diam-diam ditambah bila
+    # melewati batas portofolio.
+    positions = await asyncio.to_thread(store.real_positions,
+                                        update.effective_chat.id)
+    modal = await asyncio.to_thread(store.get_modal,
+                                    update.effective_chat.id)
+    out["warnings"].extend(riskmod.position_fit(t, positions, modal))
     await deps.reply_long(
         msg,
         _cek_text(out, bahan["res"], deps),
