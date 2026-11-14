@@ -417,10 +417,46 @@ def test_rencana_limit_reject_uses_limit_markup_and_no_buy(
     cbs = _last_callbacks(upd.effective_message.replies)
     assert "tick:cek:BBCA" in cbs
     assert "run:portofolio" in cbs
+    assert "sub:modal" in cbs
+    assert "run:sinyal_bagus" in cbs
     assert "manual:rencana" in cbs
     assert "menu" in cbs
     assert not any(c.startswith("exec:buy:") for c in cbs)
     assert store.get_signal_context(100, "BBCA", intent="beli") is None
+
+
+def test_rencana_small_modal_500rb_limit_reject_gives_beginner_cta_no_buy(
+    monkeypatch, tmp_store
+):
+    _reset_guards()
+    store.set_modal(100, 500_000)
+    cand = _cand("LPIN", price=2000.0, atr=40.0)
+    _mock_gather_and_enrich(monkeypatch, {"LPIN": cand})
+
+    kb_direct = market_handler._rencana_limit_reject_markup("LPIN")
+    cbs_direct = [btn.callback_data for row in kb_direct.inline_keyboard for btn in row]
+    assert "tick:cek:LPIN" in cbs_direct
+    assert "run:portofolio" in cbs_direct
+    assert "sub:modal" in cbs_direct
+    assert "run:sinyal_bagus" in cbs_direct
+    assert "menu" in cbs_direct
+    assert not any(c.startswith("exec:buy:") for c in cbs_direct)
+
+    upd = _FakeUpdate("/rencana LPIN 500000")
+    asyncio.run(bot.cmd_rencana(upd, _ctx()))
+    txt, _ = upd.effective_message.replies[-1]
+    cbs = _last_callbacks(upd.effective_message.replies)
+
+    assert "/portofolio batas" in txt
+    assert "1 lot lebih murah" in txt.lower()
+    assert "/rencana LPIN 3000000" not in txt
+    assert "tick:cek:LPIN" in cbs
+    assert "run:portofolio" in cbs
+    assert "sub:modal" in cbs
+    assert "run:sinyal_bagus" in cbs
+    assert "menu" in cbs
+    assert not any(c.startswith("exec:buy:") for c in cbs)
+    assert store.get_signal_context(100, "LPIN", intent="beli") is None
 
 
 # ------------------------------------------------------------ /scan & /bandar

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -96,29 +97,40 @@ def _paket_picks_markup(picks: list[dict]) -> InlineKeyboardMarkup:
 def _rencana_small_budget_markup(ticker: str) -> InlineKeyboardMarkup:
     """Tombol lanjutan saat slot 25% modal kurang dari 1 lot namun modal penuh cukup."""
     t = _clean_cb_ticker(ticker)
-    rows: list[list[InlineKeyboardButton]] = [[
-        InlineKeyboardButton("✏️ Hitung Budget Penuh", callback_data="manual:rencana"),
-        InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
-    ]]
-    row2: list[InlineKeyboardButton] = []
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton("✏️ Hitung Budget Penuh", callback_data="manual:rencana"),
+            InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+        ],
+        [
+            InlineKeyboardButton("✨ Saham Lebih Murah", callback_data="run:sinyal_bagus"),
+            InlineKeyboardButton("⚙️ Atur Batas", callback_data="run:portofolio"),
+        ],
+    ]
+    row_last: list[InlineKeyboardButton] = []
     if t:
-        row2.append(InlineKeyboardButton(f"🛡️ Cek {t}", callback_data=f"tick:cek:{t}"))
-    row2.append(InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"))
-    rows.append(row2)
+        row_last.append(InlineKeyboardButton(f"🛡️ Cek {t}", callback_data=f"tick:cek:{t}"))
+    row_last.append(InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"))
+    rows.append(row_last)
     return InlineKeyboardMarkup(rows)
 
 
 def _rencana_limit_reject_markup(ticker: str) -> InlineKeyboardMarkup:
     """Tombol saat /rencana ditolak batas risiko portofolio."""
     t = _clean_cb_ticker(ticker)
-    row1 = [InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio")]
+    row1: list[InlineKeyboardButton] = []
     if t:
         row1.append(InlineKeyboardButton(f"🛡️ Cek {t}", callback_data=f"tick:cek:{t}"))
+    row1.append(InlineKeyboardButton("⚙️ Atur Batas / Modal", callback_data="run:portofolio"))
     row2 = [
+        InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+        InlineKeyboardButton("✨ BELI Berkualitas", callback_data="run:sinyal_bagus"),
+    ]
+    row3 = [
         InlineKeyboardButton("✏️ Hitung Manual", callback_data="manual:rencana"),
         InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
     ]
-    return InlineKeyboardMarkup([row1, row2])
+    return InlineKeyboardMarkup([row1, row2, row3])
 
 
 def _scan_followup_markup() -> InlineKeyboardMarkup:
@@ -556,7 +568,9 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
                 f"({deps._money(min_b)}) masih muat (≈ <b>{full_lots} lot</b> maks, "
                 f"1 lot = <b>{one_lot_pct_txt}%</b> modal — melewati batas "
                 f"diversifikasi {pos_cap_txt}%/posisi).",
-                f"Uji anggaran manual: <code>/rencana {t} {int(round(modal_val))}</code>.",
+                f"Pilih saham 1 lot ≤ {deps._money(plan['budget'])} di "
+                "<b>BELI Berkualitas</b>, atau longgarkan <code>/portofolio batas</code> "
+                f"sebelum uji <code>/rencana {t} {int(round(modal_val))}</code>.",
             ]
         else:
             out.append(
@@ -741,18 +755,34 @@ async def do_rencana(update: Update, args: list[str], deps,
                      ""]
             lines += ["• " + esc(r) for r in limits["reasons"]]
             if limits["max_lots"] > 0:
-                lines.append(f"Lot maksimum yang masih lolos: "
-                             f"<b>{limits['max_lots']} lot</b>.")
+                max_budget = int(
+                    math.ceil(
+                        limits["max_lots"]
+                        * float(plan["entry"])
+                        * 100
+                        * (1.0 + saranmod.BUY_FEE)
+                    )
+                )
+                lines.append(
+                    f"Lot maksimum yang masih lolos: <b>{limits['max_lots']} lot</b> "
+                    f"(coba <code>/rencana {esc(head)} {max_budget}</code>)."
+                )
             else:
-                lines.append("Tidak ada ruang untuk menambah posisi ini — "
-                             "kurangi posisi lain atau tambah modal.")
+                lines.append(
+                    "Tidak ada ruang di batas posisi/sektor saat ini — pilih saham "
+                    "dengan harga 1 lot lebih murah (<b>BELI Berkualitas</b>), "
+                    "atur <code>/portofolio batas</code>, atau tambah modal / "
+                    "kurangi posisi lama."
+                )
             lines += [
                 "",
                 f"Batas: <b>{max_pos * 100:.0f}%</b> modal per "
                 f"posisi, <b>{max_sec * 100:.0f}%</b> per sektor. "
                 "Posisi lama dinilai di harga rata-rata.",
-                "Ubah anggaran: <code>/rencana %s 3000000</code> · "
-                "batas: <code>/portofolio batas</code>" % esc(head),
+                "Langkah praktis: atur batas via <code>/portofolio batas</code> "
+                "(mis. <code>/portofolio batas 50 60</code> jika sadar risiko), "
+                "ubah modal via <b>💵 Ubah Modal</b>, atau cari saham 1 lot lebih "
+                "murah via <b>✨ BELI Berkualitas</b>.",
                 "",
                 deps._SINYAL_DISCLAIMER,
             ]

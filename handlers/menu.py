@@ -301,7 +301,16 @@ def result_markup(
             InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
             InlineKeyboardButton("✏️ Hitung Budget Lain", callback_data="manual:rencana"),
         ])
-        rows.append(_action_trade_row(t, allow_buy=allow_buy))
+        if allow_buy:
+            rows.append([
+                InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{t}"),
+            ])
+            rows.append(_action_trade_row(t, allow_buy=True))
+        else:
+            rows.append([
+                InlineKeyboardButton("📈 Grafik & Analisis", callback_data=f"tick:analisis:{t}"),
+                InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{t}"),
+            ])
     elif action in ("jual", "tanya_jual"):
         rows.append([
             InlineKeyboardButton("📝 Sudah jual di Stockbit", callback_data=f"exec:sell:{t}"),

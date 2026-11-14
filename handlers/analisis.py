@@ -360,13 +360,16 @@ async def do_skor(update: Update, tickers: list[str], deps,
                     try:
                         pct = float(sc.get("pct"))
                     except (TypeError, ValueError):
-                        pct = 0.0
+                        pct = None
                     rating_u = str(sc.get("rating") or sc.get("verdict") or "").upper()
+                    verdict_u = str(res.get("verdict") or "").upper()
                     primary_allow_buy = (
                         res.get("allow_buy") is not False
+                        and pct is not None
                         and math.isfinite(pct)
                         and pct >= 0
                         and rating_u not in ("SELL", "STRONG SELL", "HINDARI", "JUAL")
+                        and not any(tok in verdict_u for tok in ("HINDARI", "JUAL", "SELL"))
                     )
         except ValueError as e:
             lines.append(f"❌ {esc(e)}")

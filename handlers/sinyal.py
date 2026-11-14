@@ -485,7 +485,7 @@ def bagus_markup(
     from_menu: bool = False,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    for t in _clean_tickers(tickers, limit=5):
+    for t in _clean_tickers(tickers, limit=6):
         rows.append([
             InlineKeyboardButton(f"🔍 Cek {t}",
                                  callback_data=_safe_cb(f"tick:cek:{t}")),

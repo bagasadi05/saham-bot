@@ -118,6 +118,7 @@ def _seed_market(monkeypatch):
         _row("ASII", rel=86, price=4800),
         _row("TLKM", rel=84, price=3000),
         _row("NFCX", rel=82, price=1500),
+        _row("INDF", rel=80, price=6500),
         _row("ANTM", rel=5, signal="JUAL", price=1500, ret20d=-8.0),
         _row("GOTO", rel=8, signal="JUAL", price=90, ret20d=-4.0),
         _row("BRMS", rel=12, signal="JUAL", price=350, ret20d=-3.0),
@@ -139,6 +140,7 @@ def _seed_market(monkeypatch):
             "BBRI": {"ok": True, "label": "sehat", "bits": ["PER 11,0", "ROE 17,0%"], "reason": ""},
             "BMRI": {"ok": True, "label": "sehat", "bits": ["PER 10,0", "ROE 19,0%"], "reason": ""},
             "ASII": {"ok": True, "label": "sehat", "bits": ["PER 9,5", "ROE 14,0%"], "reason": ""},
+            "INDF": {"ok": True, "label": "sehat", "bits": ["PER 11,0", "ROE 16,0%"], "reason": ""},
             "TLKM": {"ok": False, "label": "mahal", "bits": ["PER 30,0"], "reason": "PER/PBV di atas ambang"},
             "NFCX": {"ok": None, "label": "belum dinilai", "bits": [], "reason": ""},
         }
@@ -150,7 +152,7 @@ def _seed_market(monkeypatch):
 
 
 # --------------------------------------------------------- (1) BELI BERKUALITAS
-def test_beli_bagus_tampilkan_modal_dan_biaya_1_lot_serta_tombol_maks_5(monkeypatch, tmp_store):
+def test_beli_bagus_tampilkan_modal_dan_biaya_1_lot_serta_tombol_maks_6(monkeypatch, tmp_store):
     _seed_market(monkeypatch)
     store.set_modal(100, 500_000)
 
@@ -170,16 +172,17 @@ def test_beli_bagus_tampilkan_modal_dan_biaya_1_lot_serta_tombol_maks_5(monkeypa
     kb = kw["reply_markup"]
     _assert_callbacks_valid(kb)
     cbs = _cbs(kb)
-    # 6 sehat (MPMX, LPIN, BBCA, BBRI, BMRI, ASII) -> maks 5 tombol per kandidat + sg:buy + sg:ov + menu
+    # 7 sehat (MPMX, LPIN, BBCA, BBRI, BMRI, ASII, INDF) -> maks 6 tombol per kandidat + sg:buy + sg:ov + menu
     assert cbs == [
         "tick:cek:MPMX", "tick:rencana:MPMX",
         "tick:cek:LPIN", "tick:rencana:LPIN",
         "tick:cek:BBCA", "tick:rencana:BBCA",
         "tick:cek:BBRI", "tick:rencana:BBRI",
         "tick:cek:BMRI", "tick:rencana:BMRI",
+        "tick:cek:ASII", "tick:rencana:ASII",
         "sg:buy", "sg:ov", "menu",
     ]
-    assert "tick:cek:ASII" not in cbs
+    assert "tick:cek:INDF" not in cbs
     assert "tick:cek:TLKM" not in cbs
     assert "tick:cek:NFCX" not in cbs
 

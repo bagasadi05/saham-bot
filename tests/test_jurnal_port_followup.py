@@ -478,6 +478,29 @@ def test_do_skor_panggil_result_markup_dan_hormati_skor_negatif(isolated_env, mo
     assert "menu" in cbs_legacy
 
 
+@pytest.mark.parametrize("bad_pct", [None, "N/A", float("nan")])
+def test_do_skor_pct_none_atau_non_numerik_set_allow_buy_false(
+    isolated_env, monkeypatch, bad_pct
+):
+    calls: list[tuple[str, str, bool]] = []
+    orig_rm = bot.result_markup
+
+    def _spy_rm(action: str, ticker: str, *, allow_buy: bool = True):
+        calls.append((action, ticker, allow_buy))
+        return orig_rm(action, ticker, allow_buy=allow_buy)
+
+    monkeypatch.setattr(bot, "result_markup", _spy_rm)
+    _patch_analisis_deps(monkeypatch, score_pct=bad_pct, rating="NEUTRAL", ticker="BBRI")
+    upd = _make_update(cid=9305, text="/skor BBRI")
+    asyncio.run(h_analisis.do_skor(upd, ["BBRI"], bot, from_menu=False))
+    assert calls[-1] == ("skor", "BBRI", False)
+    cbs = _cb_list(upd.effective_message.replies[-1][1].get("reply_markup"))
+    assert not any(c.startswith("exec:buy:") for c in cbs)
+    assert not any(c.startswith("tick:rencana:") for c in cbs)
+    assert "tick:jual:BBRI" in cbs
+    assert "menu" in cbs
+
+
 def test_cmd_banding_sertakan_tombol_tindak_lanjut_emiten_utama(isolated_env, monkeypatch):
     monkeypatch.setattr(bot, "tokens", lambda upd: upd.message.text.split()[1:])
 
