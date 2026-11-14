@@ -36,6 +36,14 @@ def _norm_ticker(raw: str) -> str | None:
     return t if re.fullmatch(r"[A-Z]{2,6}", t) else None
 
 
+def _cb_ticker(raw: str | None) -> str | None:
+    """Normalkan kode emiten untuk callback Telegram (`[A-Z0-9]{2,10}`, tanpa `.JK`)."""
+    t = (raw or "").strip().upper()
+    if t.endswith(".JK"):
+        t = t[:-3]
+    return t if re.fullmatch(r"[A-Z0-9]{2,10}", t) else None
+
+
 def _safe_sector(ticker: str) -> str | None:
     try:
         fr = fundamental.fetch_fundamentals(ticker)
@@ -45,24 +53,67 @@ def _safe_sector(ticker: str) -> str | None:
         return None
 
 
-def exec_done_markup(*, from_menu: bool = True) -> InlineKeyboardMarkup:
-    rows = [[
+def _exec_cancel_markup() -> InlineKeyboardMarkup:
+    """Tombol batal + menu untuk mode input eksekusi manual."""
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("❌ Batal", callback_data="exec:cancel"),
+        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+    ]])
+
+
+def exec_done_markup(
+    ticker: str | None = None,
+    *,
+    side: str = "BELI",
+    lots_left: int | None = None,
+    from_menu: bool = True,
+) -> InlineKeyboardMarkup:
+    """Tombol tindak lanjut setelah pencatatan eksekusi Stockbit."""
+    tk = _cb_ticker(ticker)
+    rows: list[list[InlineKeyboardButton]] = []
+    if tk and (side.upper() == "BELI" or (lots_left is not None and lots_left > 0)):
+        rows.append([
+            InlineKeyboardButton("🔔 Pasang Alarm", callback_data="manual:alert_add"),
+            InlineKeyboardButton(f"🤔 Cek Jual {tk}", callback_data=f"tick:jual:{tk}"),
+        ])
+    elif tk and side.upper() == "JUAL":
+        rows.append([
+            InlineKeyboardButton("🟢 Saham Cocok Dibeli", callback_data="guide:beli"),
+            InlineKeyboardButton("🧾 Riwayat Jurnal", callback_data="run:jurnal_history"),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton("🔔 Pasang Alarm", callback_data="manual:alert_add"),
+        ])
+    rows.append([
         InlineKeyboardButton("📒 Jurnal Eksekusi", callback_data="run:jurnal"),
         InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
-    ]]
+    ])
     if from_menu:
         rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
     return InlineKeyboardMarkup(rows)
 
 
 def journal_markup(*, from_menu: bool = False) -> InlineKeyboardMarkup:
-    rows = [[
-        InlineKeyboardButton("🧾 Riwayat Jurnal", callback_data="run:jurnal_history"),
-        InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
-    ]]
-    if from_menu:
-        rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
-    return InlineKeyboardMarkup(rows)
+    del from_menu  # menu utama selalu disediakan di jurnal
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🧾 Riwayat Jurnal", callback_data="run:jurnal_history"),
+            InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
+        ],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def _riwayat_jurnal_markup() -> InlineKeyboardMarkup:
+    """Tombol tindak lanjut di bawah riwayat jurnal eksekusi."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📒 Ringkasan Jurnal", callback_data="run:jurnal"),
+            InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
+        ],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
 
 
 def confirm_exec_markup(
@@ -73,21 +124,47 @@ def confirm_exec_markup(
     from_menu: bool = False,
     allow_buy: bool = True,
 ) -> InlineKeyboardMarkup:
-    """Tombol di bawah /rencana & /cek: konfirmasi Stockbit (+ menu bila from_menu)."""
-    if from_menu:
+    """Tombol di bawah /rencana & /cek: konfirmasi Stockbit + langkah lanjutan."""
+    del from_menu  # langkah lanjutan konsisten untuk slash command & menu
+    tk = _cb_ticker(ticker)
+    res_fn = getattr(deps, "result_markup", None)
+    if tk and callable(res_fn):
         try:
-            return deps.result_markup(action, ticker, allow_buy=allow_buy)
+            return res_fn(action, tk, allow_buy=allow_buy)
         except TypeError:
-            return deps.result_markup(action, ticker)
-    if not allow_buy:
-        return InlineKeyboardMarkup([[
-            InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{ticker}"),
-            InlineKeyboardButton("📊 Analisis", callback_data=f"tick:analisis:{ticker}"),
-        ]])
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{ticker}"),
-        InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{ticker}"),
-    ]])
+            if allow_buy:
+                return res_fn(action, tk)
+    if not tk:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")]])
+    rows: list[list[InlineKeyboardButton]] = []
+    if action == "cek":
+        if allow_buy:
+            rows.append([
+                InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{tk}"),
+                InlineKeyboardButton("🎯 Hitung Lot", callback_data=f"tick:rencana:{tk}"),
+            ])
+        else:
+            rows.append([
+                InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{tk}"),
+                InlineKeyboardButton("📊 Analisis", callback_data=f"tick:analisis:{tk}"),
+            ])
+    else:
+        rows.append([
+            InlineKeyboardButton("🛡️ Cek 6 Poin", callback_data=f"tick:cek:{tk}"),
+            InlineKeyboardButton("💰 Rincian Nilai", callback_data=f"tick:fundamental:{tk}"),
+        ])
+    if allow_buy:
+        rows.append([
+            InlineKeyboardButton("📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{tk}"),
+            InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{tk}"),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton("🤔 Cek layak jual?", callback_data=f"tick:jual:{tk}"),
+            InlineKeyboardButton("📊 Analisis", callback_data=f"tick:analisis:{tk}"),
+        ])
+    rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 async def _record_buy_and_reply(
@@ -113,7 +190,10 @@ async def _record_buy_and_reply(
             source=source, sector=sector,
         )
     except ValueError as e:
-        await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML)
+        await msg.reply_text(
+            f"❌ {esc(e)}", parse_mode=ParseMode.HTML,
+            reply_markup=journal_markup(from_menu=True),
+        )
         return
     slip_txt = jurnalmod.format_slippage_note(res)
     out = [
@@ -139,7 +219,7 @@ async def _record_buy_and_reply(
     ]
     await msg.reply_text(
         "\n".join(out), parse_mode=ParseMode.HTML,
-        reply_markup=exec_done_markup(from_menu=True),
+        reply_markup=exec_done_markup(ticker, side="BELI", from_menu=True),
     )
 
 
@@ -162,7 +242,10 @@ async def _record_sell_and_reply(
             signal_price=signal_price, source=source,
         )
     except ValueError as e:
-        await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML)
+        await msg.reply_text(
+            f"❌ {esc(e)}", parse_mode=ParseMode.HTML,
+            reply_markup=journal_markup(from_menu=True),
+        )
         return
     net_pct = f"{res['net_pnl_pct']:+.2f}%".replace(".", ",")
     out = [
@@ -179,7 +262,9 @@ async def _record_sell_and_reply(
     ]
     await msg.reply_text(
         "\n".join(out), parse_mode=ParseMode.HTML,
-        reply_markup=exec_done_markup(from_menu=True),
+        reply_markup=exec_done_markup(
+            ticker, side="JUAL", lots_left=res.get("lots_left"), from_menu=True,
+        ),
     )
 
 
@@ -189,6 +274,7 @@ async def do_jurnal(update: Update, args: list[str], deps,
     msg = update.effective_message
     chat_id = update.effective_chat.id
     sub = (args[0].lower() if args else "")
+    j_kb = journal_markup(from_menu=True)
 
     if sub in ("riwayat", "history", "log"):
         limit = 15
@@ -198,19 +284,19 @@ async def do_jurnal(update: Update, args: list[str], deps,
         await deps.reply_long(
             msg,
             jurnalmod.format_journal_history(execs),
-            reply_markup=deps.home_markup() if from_menu else None,
+            reply_markup=_riwayat_jurnal_markup(),
         )
         return
 
     if sub in ("beli", "buy", "jual", "sell"):
         if len(args) < 4:
-            await msg.reply_text(_JURNAL_USAGE, parse_mode=ParseMode.HTML)
+            await msg.reply_text(_JURNAL_USAGE, parse_mode=ParseMode.HTML, reply_markup=j_kb)
             return
         t = _norm_ticker(args[1])
         if not t:
             await msg.reply_text(
                 f"Kode <code>{esc(args[1])}</code> tidak valid.\n\n{_JURNAL_USAGE}",
-                parse_mode=ParseMode.HTML,
+                parse_mode=ParseMode.HTML, reply_markup=j_kb,
             )
             return
         try:
@@ -218,21 +304,21 @@ async def do_jurnal(update: Update, args: list[str], deps,
         except ValueError:
             await msg.reply_text(
                 "Jumlah lot harus angka, mis. <code>/jurnal beli BBCA 5 9050 9000</code>.",
-                parse_mode=ParseMode.HTML,
+                parse_mode=ParseMode.HTML, reply_markup=j_kb,
             )
             return
         exec_px = deps._parse_rupiah(args[3])
         if exec_px is None:
             await msg.reply_text(
                 "Harga eksekusi harus angka, mis. <code>9050</code>.",
-                parse_mode=ParseMode.HTML,
+                parse_mode=ParseMode.HTML, reply_markup=j_kb,
             )
             return
         sig_px = deps._parse_rupiah(args[4]) if len(args) > 4 else None
         if len(args) > 4 and sig_px is None:
             await msg.reply_text(
                 "Harga sinyal opsional tidak valid, mis. <code>9000</code>.",
-                parse_mode=ParseMode.HTML,
+                parse_mode=ParseMode.HTML, reply_markup=j_kb,
             )
             return
         source = "manual"
@@ -265,14 +351,14 @@ async def do_jurnal(update: Update, args: list[str], deps,
     if sub in ("help", "bantuan", "?"):
         await deps.reply_long(
             msg, _JURNAL_USAGE,
-            reply_markup=deps.home_markup() if from_menu else None,
+            reply_markup=j_kb,
         )
         return
 
     if sub:
         await deps.reply_long(
             msg, f"Sub-perintah <code>{esc(sub)}</code> tidak dikenal.\n\n{_JURNAL_USAGE}",
-            reply_markup=deps.home_markup() if from_menu else None,
+            reply_markup=j_kb,
         )
         return
 
@@ -327,19 +413,16 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
 
     parts = cb_data.split(":", 2)
     if len(parts) != 3:
-        await msg.reply_text("❌ Tombol eksekusi tidak valid.")
+        await msg.reply_text("❌ Tombol eksekusi tidak valid.", reply_markup=deps.home_markup())
         return True
     _, kind, raw_ticker = parts
     ticker = _norm_ticker(raw_ticker)
     if not ticker or kind not in ("buy", "sell"):
-        await msg.reply_text("❌ Kode saham eksekusi tidak valid.")
+        await msg.reply_text("❌ Kode saham eksekusi tidak valid.", reply_markup=deps.home_markup())
         return True
     deps._pending_clear(chat_id)
 
-    cancel_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("❌ Batal", callback_data="exec:cancel"),
-        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
-    ]])
+    cancel_kb = _exec_cancel_markup()
     intent_k = "beli" if kind == "buy" else "jual"
     ctx = await asyncio.to_thread(
         store.get_signal_context, chat_id, ticker, intent=intent_k
@@ -381,14 +464,27 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
         return True
 
     positions = await asyncio.to_thread(store.real_positions, chat_id)
-    held = next((p for p in positions if p["ticker"] == ticker), None)
+    held = next(
+        (p for p in positions if p.get("ticker") == ticker and int(p.get("lots") or 0) > 0),
+        None,
+    )
     if not held:
+        not_held_kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(f"📝 Catat Beli {ticker}", callback_data=f"exec:buy:{ticker}"),
+                InlineKeyboardButton("🔴 Cek Jual", callback_data="guide:jual"),
+            ],
+            [
+                InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
+                InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+            ],
+        ])
         await msg.reply_text(
             f"ℹ️ Kamu belum punya posisi terbuka <b>{esc(ticker)}</b> di portofolio asli.\n"
-            f"Catat beli dulu lewat tombol <b>📝 Sudah beli di Stockbit</b> atau "
+            f"Catat beli dulu lewat tombol <b>📝 Catat Beli {esc(ticker)}</b> atau "
             f"<code>/jurnal beli {esc(ticker)} 5 9000</code>.",
             parse_mode=ParseMode.HTML,
-            reply_markup=deps.home_markup(),
+            reply_markup=not_held_kb,
         )
         return True
 
@@ -428,7 +524,10 @@ async def handle_pending_exec(
     ticker = _norm_ticker(raw_ticker)
     if not ticker:
         deps._pending_clear(chat_id)
-        await msg.reply_text("❌ Aksi eksekusi tidak valid; dibuka ulang dari menu.")
+        await msg.reply_text(
+            "❌ Aksi eksekusi tidak valid; dibuka ulang dari menu.",
+            reply_markup=deps.home_markup(),
+        )
         return True
 
     intent_p = "beli" if side == "exec_buy" else "jual"
@@ -455,6 +554,7 @@ async def handle_pending_exec(
             f"❌ Input eksekusi <b>{esc(ticker)}</b> belum terbaca.\n"
             f"Ketik <code>5 9050</code> {hint}, atau ketuk Batal.",
             parse_mode=ParseMode.HTML,
+            reply_markup=_exec_cancel_markup(),
         )
         return True
 

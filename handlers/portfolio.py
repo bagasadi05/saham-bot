@@ -32,6 +32,78 @@ _PORTO_USAGE = (
 )
 
 
+def _cb_ticker(raw: str | None) -> str | None:
+    """Normalkan kode emiten untuk callback Telegram (`[A-Z0-9]{2,10}`, tanpa `.JK`)."""
+    t = (raw or "").strip().upper()
+    if t.endswith(".JK"):
+        t = t[:-3]
+    return t if re.fullmatch(r"[A-Z0-9]{2,10}", t) else None
+
+
+def _empty_porto_markup() -> InlineKeyboardMarkup:
+    """Tombol pembuka saat portofolio masih kosong agar pemula tidak buntu."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🟢 Saham Cocok Dibeli", callback_data="guide:beli"),
+            InlineKeyboardButton("🔍 Cek Nilai", callback_data="guide:cek"),
+        ],
+        [
+            InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+            InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal"),
+        ],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def _batas_markup() -> InlineKeyboardMarkup:
+    """Tombol tindak lanjut setelah melihat/mengubah batas risiko portofolio."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
+            InlineKeyboardButton("💵 Ubah Modal", callback_data="sub:modal"),
+        ],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def _riwayat_markup() -> InlineKeyboardMarkup:
+    """Tombol tindak lanjut setelah melihat riwayat transaksi portofolio."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
+            InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal"),
+        ],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def _exec_followup_markup(
+    ticker: str | None,
+    *,
+    side: str,
+    lots_left: int | None = None,
+) -> InlineKeyboardMarkup:
+    """Tombol tindak lanjut setelah mencatat beli/jual lewat `/portofolio`."""
+    tk = _cb_ticker(ticker)
+    rows: list[list[InlineKeyboardButton]] = []
+    if tk and (side == "BELI" or (lots_left is not None and lots_left > 0)):
+        rows.append([
+            InlineKeyboardButton("🔔 Pasang Alarm", callback_data="manual:alert_add"),
+            InlineKeyboardButton(f"🤔 Cek Jual {tk}", callback_data=f"tick:jual:{tk}"),
+        ])
+    elif side == "JUAL":
+        rows.append([
+            InlineKeyboardButton("🟢 Saham Cocok Dibeli", callback_data="guide:beli"),
+            InlineKeyboardButton("🧾 Riwayat Jurnal", callback_data="run:jurnal_history"),
+        ])
+    rows.append([
+        InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal"),
+        InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
+    ])
+    rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
+
+
 def _quote_posisi(t: str) -> dict:
     """Harga & ATR terakhir untuk satu posisi (None kalau data gagal)."""
     try:
@@ -205,12 +277,13 @@ def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> st
 
 async def do(update, args: list[str], deps, *, from_menu: bool = False):
     """Portofolio asli: lihat, catat beli/jual, riwayat."""
+    del from_menu  # navigasi tindak lanjut selalu ditampilkan untuk semua jalur
     msg = update.effective_message
     chat_id = update.effective_chat.id
-    rm = deps.home_markup() if from_menu else None
     sub = (args[0].lower() if args else "")
 
     if sub in ("batas", "limit", "limits"):
+        batas_kb = _batas_markup()
         cur_pos, cur_sec = await asyncio.to_thread(store.get_risk_limits, chat_id)
         tail = args[1:]
         if not tail:
@@ -223,7 +296,7 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                 "Ubah: <code>/portofolio batas 20 35</code>\n"
                 "Reset ke bawaan: <code>/portofolio batas reset</code>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=rm,
+                reply_markup=batas_kb,
             )
             return
         if tail[0].lower() in ("reset", "default", "bawaan"):
@@ -232,7 +305,7 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                 f"♻️ Batas risiko dikembalikan ke bawaan: maks posisi "
                 f"<b>{p * 100:.0f}%</b>, maks sektor <b>{s * 100:.0f}%</b>.",
                 parse_mode=ParseMode.HTML,
-                reply_markup=rm,
+                reply_markup=batas_kb,
             )
             return
 
@@ -249,49 +322,52 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                 "Format tidak valid. Contoh: <code>/portofolio batas 20 35</code> "
                 "atau <code>/portofolio batas reset</code>.",
                 parse_mode=ParseMode.HTML,
-                reply_markup=rm,
+                reply_markup=batas_kb,
             )
             return
         try:
             p, s = await asyncio.to_thread(store.set_risk_limits, chat_id, new_pos, new_sec)
         except ValueError as e:
-            await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=rm)
+            await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=batas_kb)
             return
         await msg.reply_text(
             f"✅ Batas risiko diperbarui: maks 1 posisi <b>{p * 100:.0f}%</b> modal · "
             f"maks 1 sektor <b>{s * 100:.0f}%</b> modal.\n"
             "<i>Berlaku di /rencana, /cek, dan laporan /portofolio.</i>",
             parse_mode=ParseMode.HTML,
-            reply_markup=rm,
+            reply_markup=batas_kb,
         )
         return
 
     if sub in ("beli", "buy", "jual", "sell"):
+        nav_kb = _riwayat_markup()
         if len(args) < 4:
-            await msg.reply_text(_PORTO_USAGE, parse_mode=ParseMode.HTML)
+            await msg.reply_text(_PORTO_USAGE, parse_mode=ParseMode.HTML, reply_markup=nav_kb)
             return
         t = args[1].upper()
         t = t[:-3] if t.endswith(".JK") else t
         if not re.fullmatch(r"[A-Z]{2,6}", t):
             await msg.reply_text(
                 f"Kode <code>{esc(args[1])}</code> tidak valid.\n\n"
-                + _PORTO_USAGE, parse_mode=ParseMode.HTML)
+                + _PORTO_USAGE, parse_mode=ParseMode.HTML, reply_markup=nav_kb)
             return
         try:
             lots = int(args[2].replace(".", ""))
         except ValueError:
-            await msg.reply_text("Jumlah lot harus angka, mis. "
-                                 "<code>/portofolio beli BBCA 5 9000</code>.",
-                                 parse_mode=ParseMode.HTML)
+            await msg.reply_text(
+                "Jumlah lot harus angka, mis. "
+                "<code>/portofolio beli BBCA 5 9000</code>.",
+                parse_mode=ParseMode.HTML, reply_markup=nav_kb)
             return
         price = deps._parse_rupiah(args[3])
         if price is None:
-            await msg.reply_text("Harga harus angka, mis. "
-                                 "<code>9000</code> atau <code>9.000</code>.",
-                                 parse_mode=ParseMode.HTML)
+            await msg.reply_text(
+                "Harga harus angka, mis. "
+                "<code>9000</code> atau <code>9.000</code>.",
+                parse_mode=ParseMode.HTML, reply_markup=nav_kb)
             return
         if lots <= 0:
-            await msg.reply_text("Lot harus lebih dari 0.")
+            await msg.reply_text("Lot harus lebih dari 0.", reply_markup=nav_kb)
             return
         today = marketcal.now_wib().date().isoformat()
         try:
@@ -322,7 +398,9 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                     f"{deps._money(res['avg_price'])}\n"
                     f"<i>Tercatat di /portofolio &amp; /jurnal (fee beli ±0,15% belum masuk harga rata-rata).</i>\n\n"
                     "Lihat: /portofolio · /jurnal",
-                    parse_mode=ParseMode.HTML)
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_exec_followup_markup(t, side="BELI"),
+                )
             else:
                 tracked = await asyncio.to_thread(
                     store.open_execution_lots, chat_id, t)
@@ -357,16 +435,24 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                        f"{deps._money(res['avg_price'])}\n" if res["lots_left"]
                        else "Posisi tertutup.\n")
                     + "\nLihat: /portofolio · /jurnal",
-                    parse_mode=ParseMode.HTML)
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_exec_followup_markup(
+                        t, side="JUAL", lots_left=res.get("lots_left", 0),
+                    ),
+                )
         except ValueError as e:
-            await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML)
+            await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=nav_kb)
         return
 
     if sub in ("riwayat", "log", "history"):
+        riwayat_kb = _riwayat_markup()
         trades = await asyncio.to_thread(store.real_trades, chat_id, 10)
         if not trades:
-            await msg.reply_text("Belum ada transaksi asli yang dicatat.\n\n"
-                                 + _PORTO_USAGE, parse_mode=ParseMode.HTML)
+            await msg.reply_text(
+                "Belum ada transaksi asli yang dicatat.\n\n" + _PORTO_USAGE,
+                parse_mode=ParseMode.HTML,
+                reply_markup=riwayat_kb,
+            )
             return
         out = ["🧾 <b>Riwayat transaksi (uang sungguhan)</b>", ""]
         for tr in trades:
@@ -375,37 +461,50 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                        f"{tr['side']} {tr['lots']} lot @ "
                        f"{deps._money(tr['price'])}")
         out += ["", "Catat lagi: <code>/portofolio beli BBCA 5 9000</code>"]
-        await deps.reply_long(msg, "\n".join(out))
+        await deps.reply_long(msg, "\n".join(out), reply_markup=riwayat_kb)
         return
 
     positions = await asyncio.to_thread(store.real_positions, chat_id)
+    active = [p for p in positions if int(p.get("lots") or 0) > 0]
+    if not active:
+        await deps.reply_long(
+            msg,
+            "Belum ada posisi asli.\n\n" + _PORTO_USAGE,
+            reply_markup=_empty_porto_markup(),
+        )
+        return
     j_rows: list[list[InlineKeyboardButton]] = []
-    for p in positions[:4]:
-        tk = str(p.get("ticker") or "").upper()
-        if tk and int(p.get("lots") or 0) > 0:
+    for p in active[:4]:
+        tk = _cb_ticker(p.get("ticker"))
+        if tk:
             j_rows.append([
                 InlineKeyboardButton(f"🤔 Cek layak jual {tk}?", callback_data=f"tick:jual:{tk}"),
                 InlineKeyboardButton(f"📝 Sudah jual {tk} di Stockbit", callback_data=f"exec:sell:{tk}"),
             ])
-    j_rows.append([InlineKeyboardButton("📒 Jurnal Eksekusi", callback_data="run:jurnal")])
-    if from_menu:
-        j_rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
+    if len(active) > 4:
+        j_rows.append([
+            InlineKeyboardButton("🔴 Cek Posisi Lain", callback_data="pick:jual"),
+        ])
+    j_rows.append([
+        InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal"),
+        InlineKeyboardButton("💵 Modal", callback_data="sub:modal"),
+    ])
+    j_rows.append([
+        InlineKeyboardButton("🔄 Refresh", callback_data="run:portofolio"),
+        InlineKeyboardButton("🏠 Menu Utama", callback_data="menu"),
+    ])
     porto_kb = InlineKeyboardMarkup(j_rows)
-    if not positions:
-        await deps.reply_long(msg, "Belum ada posisi asli.\n\n" + _PORTO_USAGE,
-                              reply_markup=porto_kb if from_menu else rm)
-        return
     if not await deps.cooldown_ok(update, "portofolio"):
         return
     await update.effective_chat.send_action(ChatAction.TYPING)
-    quotes = await _porto_quotes([p["ticker"] for p in positions], deps)
+    quotes = await _porto_quotes([p["ticker"] for p in active], deps)
     open_execs = await asyncio.to_thread(store.open_executions_by_ticker, chat_id)
-    summary = portmod.summarize(positions, quotes, open_execs=open_execs)
+    summary = portmod.summarize(active, quotes, open_execs=open_execs)
     modal = await asyncio.to_thread(store.get_modal, chat_id)
     max_pos, max_sec = await asyncio.to_thread(store.get_risk_limits, chat_id)
     bench = await asyncio.to_thread(_bench_rets)
     risk = riskmod.portfolio_risk(
-        positions, quotes, bench,
+        active, quotes, bench,
         max_pos_pct=max_pos, max_sector_pct=max_sec,
     )
     await deps.reply_long(msg, _porto_text(summary, modal, deps, risk),
