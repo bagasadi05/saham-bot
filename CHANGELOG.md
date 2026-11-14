@@ -10,9 +10,14 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ## [Unreleased] — 2026-11-14
 
-Ringkasan: Track A (kontrol risiko rezim IHSG defensif + hysteresis turnover)
-dan Track B (ablasi & walk-forward multi-horizon 20/40/60 hari) diimplementasikan
-berbasis bukti offline.
+Ringkasan: Track A (kontrol risiko rezim IHSG defensif + hysteresis turnover),
+Track B (ablasi & walk-forward multi-horizon 20/40/60 hari), Track C (risiko
+portofolio P23/P24, jurnal eksekusi P28, forensik arus kas), serta **Wave 2A**
+(merge `8489697`: perbaikan akurasi ROE/mata uang non-IDR/penalti forensik,
+panduan exit Chandelier/Scale-out/Time-stop/ARB 7%, cache per-period &
+`repair=True`, perbaikan `Dockerfile` `COPY handlers/` & `vendor/`, serta
+sinkronisasi `core/relatif.py` & `tools/check_sync.py`). Checkpoint Wave 2A:
+**653 tes lulus** offline (`pytest -q`), `ruff check .` bersih.
 
 ### Ditambahkan
 
@@ -87,6 +92,15 @@ berbasis bukti offline.
     (`1/vol` dengan *water-filling cap*) ketika `>= 2` posisi memiliki riwayat
     return memadai, dan ditampilkan di laporan risiko `/portofolio`. Tes baru:
     `tests/test_risk_advanced.py`.
+- **Panduan exit/jual terpadu, BEI 2026 & diagnostik MAE/MFE (Wave 2A — `core/saran.py`, `core/pricing.py`, `core/jurnal.py`, `core/portofolio.py`, `core/store.py`)**:
+  - `saran.build_exit_guidance()`, `chandelier_trailing_stop()` (`High_max(22) - 3×ATR14` via `pandas_ta_classic.ce` + fallback murni Python, *ratcheting* monoton naik), `scale_out_plan()` (jual 50% di `TP1 = +1,5×ATR` + geser SL sisa lot ke `breakeven_stop` `BEP + 0,40%` biaya BEI), dan `time_stop_status()` (batas horizontal López de Prado `>= 20` hari bursa).
+  - Aturan **BEI 2026** di `core/pricing.py` & `saran.arb_gap_risk`: **Kep-00136/BEI/09-2026** (lantai papan reguler Rp1 sejak 28 Sep 2026; Rp50 dipertegas sebagai filter kualitas likuiditas/FCA) dan **Kep-00158/BEI/10-2026** (ARB asimetris 7% papan reguler, `arb_floor_price`, `check_arb_gap_risk`, `auto_reject_status`).
+  - `core/jurnal.py`: `compute_trade_excursions()`, `jurnal_diagnostics()`, dan `format_jurnal_diagnostics()` menghitung MAE (`mae_r`), MFE (`mfe_r`), capture ratio, dan R-multiple bruto & neto setelah biaya BEI `0,40%`.
+  - `core/store.py`: `add_real_position` & `reduce_real_position` mencatat otomatis ke `real_executions` (`record_exec=True`, `fee_rp`, `net_realized`, `net_realized_pct`); `signal_context` memisahkan kolom `intent` (`"beli"` vs `"jual"`). Tes baru: `tests/test_phase2_exit_risk.py`.
+- **Alat audit sinkronisasi & verifikasi fixture offline (Wave 2A — `tools/check_sync.py`, `tools/record_fixtures.py`, `research/*`)**:
+  - `tools/check_sync.py` memeriksa keselarasan `core/relatif.py` (`WEIGHTS` & `OOS_QUINTILES`) vs `data/validation.json`, kelengkapan `core.saran.LQ45` di `data/idx_universe.json`, umur artefak data, serta uji round-trip backup -> restore SQLite (`tools/backup_db.py` + `PRAGMA integrity_check`).
+  - `tools/record_fixtures.py` mendukung `--ohlcv-rows` dan `--verify` (audit struktur fixture offline).
+  - `research/portfolio.py` & `research/experiments.py` menambah **Probabilistic Sharpe Ratio (PSR)** (`probabilistic_sharpe`, `best_phase_psr`) dan pencatatan eksplisit `experiments_trials` (`320` trial vs `20` fase); `research/evaluate.py` & `core/relatif.py` menambah pita dispersi **P25–P75 IQR** (`summarize_quintile_bands`, `quintile_dispersion`). Tes baru: `tests/test_phase2_research_tools.py`.
 
 ### Diubah
 
@@ -117,6 +131,35 @@ berbasis bukti offline.
     masa tahan dicapai lewat hysteresis `hold=0,6` + `min_hold=2` (bukan ubah
     target model).
 
+### Diperbaiki (Wave 2A — merge `8489697`)
+
+- **Unit ROE desimal & mata uang laporan non-IDR (`core/fundamental.py`, `core/kualitas.py`, `core/cek.py`, `core/reports.py`)** —
+  `_fetch_uncached` mengonversi `returnOnEquity * 100.0` dengan tag `roe_unit="pct"` dan `_v=2`
+  (mencegah ROE desimal `0,18` terkena veto `ROE < 2%` di `/cek` dan `/sinyal beli bagus`,
+  sekaligus mencegah ROE kecil `0,2%`–`2,9%` dikali 100 dua kali); membaca `financialCurrency`
+  agar emiten berlaporan `USD` tidak dilabeli `Rp` secara buta; mengintegrasikan `forensic_penalty`
+  ke `score_fundamentals` & `powerscore.combine`; serta memisahkan valuasi `"Murah (PER & PBV)"`
+  vs `"Campuran"` dan menampilkan `trend_label` deskriptif dengan disclaimer `IC harian ±0,01`
+  (`tests/test_phase2_honesty.py`).
+- **Penyatuan SL `1×ATR`, rezim single-stock & masa tahan (`core/portofolio.py`, `core/rencana.py`, `core/saran.py`)** —
+  `portofolio.STOP_ATR` diselaraskan dari `2.0` ke `1.0` (`1×ATR` tick-rounded, memprioritaskan
+  `sl` eksekusi tersimpan dari `real_executions`); `rencana.budget_plan` & `finalize` menghormati
+  batas risiko kustom per chat, eksposur `real_positions`, dan pemangkasan `0,5×` saat rezim
+  IHSG `DEFENSIVE`; `saran.fill_pending` meneruskan `risk_scale` rezim dan `hold_review`
+  menghormati `MIN_HOLD_CYCLES = 2`.
+- **Cache disk per-period, `yfinance repair=True`, screener & `Dockerfile` (`core/data.py`, `core/screener.py`, `Dockerfile`, `.github/workflows/ci.yml`)** —
+  memisahkan cache disk berdasarkan `(symbol, interval, period)` agar unduhan `1mo` tidak
+  menimpa cache `1y`; mengaktifkan `repair=True` pada `yf.download` + provenance WIB
+  (`core/data_quality.py`); memfilter kualitas data & bar basi di `core/screener.py` serta
+  membulatkan `entry`/`sl`/`tp` ke fraksi tick BEI; memperbaiki bug fatal `Dockerfile` yang
+  sebelumnya tidak menyalin `COPY handlers/ ./handlers/` dan `COPY vendor/ ./vendor/`; serta
+  menambah `--cov=handlers` dan job `docker-smoke` di CI (`tests/test_phase2_data_infra.py`).
+- **Sinkronisasi `core/relatif.py` & akuntabilitas `/jejak` (`core/relatif.py`, `core/scorecard.py`)** —
+  menyelaraskan `WEIGHTS` & `OOS_QUINTILES` di `core/relatif.py` 100% ke `data/validation.json`;
+  mengevaluasi sinyal `JUAL` secara terpisah sebagai `TURUN`/`NAIK`/`DATAR` (`r_multiple=None`);
+  serta menambahkan `t_hac` Newey-West dan deteksi pergeseran eks-dividen (`div_adjusted`) pada
+  `scorecard.live_ic()`. Total tes pasca-merge Wave 2A (`8489697`): **653 tes lulus** offline.
+
 ---
 
 ## [Unreleased] — 2026-11-12
@@ -141,7 +184,8 @@ coverage 80–81%.
   (`ed90f42`, `core/cek.py`, `handlers/cek.py`)
 - **`/portofolio`** — portofolio **uang sungguhan** terpisah dari paper
   trading: `beli`, `jual`, `riwayat`; PnL, bobot, konsentrasi sektor, risiko
-  bila semua SL (2×ATR di harga sekarang) tersentuh. Skema store v3.
+  bila semua SL (awalnya 2×ATR pada `44318da`; diselaraskan ke **1×ATR** tick-rounded
+  + prioritas SL eksekusi tersimpan di Wave 2A) tersentuh. Skema store v3.
   (`44318da`, `core/portofolio.py`, `handlers/portfolio.py`)
 - **`/sinyal beli bagus`** + penanda kualitas fundamental (✅/⚠️/❔) pada
   kandidat BELI; fundamental hanya diambil untuk kandidat yang ditampilkan,
@@ -290,13 +334,18 @@ coverage 80–81%.
 - `tests/test_portofolio.py`: memastikan bagian risiko tampil.
 - `tests/test_cek_handler.py`: peringatan posisi di atas batas.
 
-Total: **567 tes lulus**, `ruff` bersih, coverage 82%.
+Total (saat komit P23/P24): **567 tes lulus**, `ruff` bersih, coverage 82%
+(checkpoint terbaru setelah Wave 2A `8489697`: **653 tes lulus** offline).
 
 ## Catatan kompatibilitas
 
-- Skema SQLite naik ke **v4** (v3: `real_positions`/`real_trades`; v4:
-  `zone_state`). Migrasi berjalan otomatis saat start; backup harian tetap
-  memakai API backup SQLite.
+- Skema SQLite kini berada di **`SCHEMA_VERSION = 6`** (`v3`: `real_positions`/`real_trades`;
+  `v4`: `zone_state`; `v5`: `signal_context` dengan kolom `intent` & `real_executions`;
+  `v6`: `chat_settings`). Migrasi berjalan otomatis dan idempoten saat start;
+  backup harian tetap memakai API backup SQLite WAL-safe (`tools/backup_db.py`) dan
+  diuji round-trip restore oleh `python tools/check_sync.py`.
+- `Dockerfile` kini menyalin `COPY handlers/ ./handlers/` dan `COPY vendor/ ./vendor/`
+  serta menyetel `BACKUP_DIR=/app/data/backups` (selaras dengan `docker-compose.yml`).
 - `bot.py` tetap menjadi entrypoint (`python bot.py`); Docker/run.sh tidak
   berubah. Nama-nama lama (`cmd_*`, `_do_*`, `_money`, `_sinyal_row`, dst.)
   masih tersedia sebagai wrapper/alias untuk tes dan pemanggil lama.

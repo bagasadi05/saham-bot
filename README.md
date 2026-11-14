@@ -46,11 +46,11 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 - **/rencana BBCA 5000000** — rencana beli **satu emiten** dengan anggaran sendiri: jumlah lot yang benar-benar terjangkau (fee ikut dihitung), total biaya, % modal, **rugi maksimal dalam rupiah kalau kena SL**, untung bersih di TP, dan rasio untung:rugi. Anggaran di bawah harga 1 lot dijawab jujur (harga 1 lot + fee), bukan 0 lot karangan. Aturan risiko 1% modal tetap ditampilkan sebagai pembanding: "5 lot = 2,4% modal, aturan hanya 3 lot".
 - **/paket** (alias **/stockbit**) — paket beli **multi-emiten** siap eksekusi dari snapshot `/scan`: kandidat BELI terbaik, saring **likuiditas ≥ Rp2 miliar/hari**, harga ≥ Rp50, bukan papan Pemantauan Khusus, veto fundamental/berita yang jelas bermasalah. Hasilnya **grade A/B/C** (kelengkapan syarat, bukan probabilitas), entry **limit**, SL 1×ATR, TP 2×ATR, **lot & rupiah sesuai modal `/modal`** (normal: risiko maks 1%/posisi, nilai posisi maks 20%/emiten, total alokasi maks 90%; saat **rezim IHSG defensif** `SMA50 < SMA200`: otomatis dipangkas setengah menjadi 0,5% / 10% / 45%, sisanya cash), plus panduan Stockbit dan aturan tahan top 60% (`±20–40` hari bursa). `/paket 5` untuk 5 kandidat, `/paket refresh` untuk membangun ulang cache. Kalau tidak ada yang lolos, bot mengatakan tidak ada — bukan memaksa beli.
 - **/cek BBCA** — ceklist **satu layar** sebelum menekan beli: tren harian+mingguan, valuasi vs sektor + **audit forensik arus kas / jebakan dividen** (`OCF`, `FCF`, `current ratio`, `payout ratio`), aliran asing (kalau data BEI tersedia), berita, agenda 14 hari, dan likuiditas — ditutup verdict **LAYAK / TUNGGU / HINDARI** dengan **Sudut Pandang Pro (Bull) vs Risiko (Bear)**. Bagian yang datanya kosong ditulis "tidak tersedia"; kalau terlalu banyak yang kosong, verdict-nya "TIDAK CUKUP DATA" (bukan HINDARI karangan).
-- **/portofolio** — buku catatan **uang sungguhan** (terpisah dari paper trading): `/portofolio beli BBCA 5 9000`, `/portofolio jual BBCA 2 9500`, `/portofolio riwayat`, `/portofolio batas [20 35|reset]` (atur batas maks posisi & sektor), dan `/portofolio` untuk PnL berjalan, bobot posisi, konsentrasi sektor, serta **risiko total bila semua SL (2×ATR di harga sekarang) tersentuh**.
+- **/portofolio** — buku catatan **uang sungguhan** (terpisah dari paper trading): `/portofolio beli BBCA 5 9000`, `/portofolio jual BBCA 2 9500`, `/portofolio riwayat`, `/portofolio batas [20 35|reset]` (atur batas maks posisi & sektor), dan `/portofolio` untuk PnL berjalan, bobot posisi, konsentrasi sektor, serta **risiko total bila semua SL (mengutamakan SL eksekusi tersimpan, fallback 1×ATR dibulatkan ke fraksi tick BEI) tersentuh**, dilengkapi **Chandelier trailing stop, rencana scale-out 50% di TP1 + BEP+0,40%, peringatan time-stop >=20 hari bursa, dan risiko gap ARB 7%**.
   Sejak 14 Nov 2026 juga menampilkan **volatilitas tahunan, drawdown berjalan,
   VaR 95% 1 hari, beta vs IHSG, korelasi, dan target bobot seimbang (*inverse-volatility*)** antar posisi (bagian
   "Risiko portofolio"). Bot tidak pernah menaruh order dan tidak menyimpan kredensial Stockbit.
-- **/jurnal** (alias **/journal**) — **jurnal eksekusi manual Stockbit** & realisasi nyata (terpisah antara **ASLI** vs **PAPER**): ketuk tombol **"Sudah beli di Stockbit"** setelah `/rencana`, `/cek`, `/beli`, atau `/sinyal KODE` (cukup ketik harga atau `<lot> <harga>`), atau catat lewat `/jurnal beli BBCA 5 9050 [sinyal]`, `/jurnal jual BBCA 5 9500 [sinyal]`, dan `/jurnal riwayat`. Bot menghitung **slippage nyata** terhadap harga sinyal, **win rate & profit factor realisasi** bersih setelah biaya BEI `0,40%` (`0,15%` beli + `0,25%` jual), serta ringkasan mingguan otomatis tiap Jumat `16:45 WIB` bagi akun `/auto on` yang sudah mencatat eksekusi. Data sinyal yang tidak tersedia tetap ditulis "tidak tersedia". Bot tidak pernah login ke Stockbit atau menaruh order.
+- **/jurnal** (alias **/journal**) — **jurnal eksekusi manual Stockbit** & realisasi nyata (terpisah antara **ASLI** vs **PAPER**): ketuk tombol **"Sudah beli di Stockbit"** setelah `/rencana`, `/cek`, `/beli`, atau `/sinyal KODE` (cukup ketik harga atau `<lot> <harga>`), atau catat lewat `/jurnal beli BBCA 5 9050 [sinyal]`, `/jurnal jual BBCA 5 9500 [sinyal]`, dan `/jurnal riwayat`. Bot menghitung **slippage nyata** terhadap harga sinyal, **win rate & profit factor realisasi** bersih setelah biaya BEI `0,40%` (`0,15%` beli + `0,25%` jual), diagnostik **MAE / MFE & R-multiple** neto (`core/jurnal.py`), serta ringkasan mingguan otomatis tiap Jumat `16:45 WIB` bagi akun `/auto on` yang sudah mencatat eksekusi. Data sinyal yang tidak tersedia tetap ditulis "tidak tersedia". Bot tidak pernah login ke Stockbit atau menaruh order.
 - **/validasi** — menampilkan hasil uji statistik yang tersimpan: IC skor lama (antar-emiten & dalam satu emiten), excess return per rating, IC walk-forward per tahun, kalibrasi kuintil OOS, dan hasil uji Kronos. Angkanya hasil `research/evaluate.py`, bukan klaim. Untuk hasil **sinyal yang benar-benar keluar** (bukan simulasi riset), pakai `/jejak`.
 - **/saran lq45** — pemindaian seluruh universe LQ45 (±45 emiten, **±1–2 menit** — 4 emiten diproses paralel, progres bertahap tiap 10 emiten).
 - **/modal 10000000** — atur modal latihan (default Rp10 juta); sizing tiap kandidat = **risiko 1% modal per trade** (dibulatkan ke bawah per lot 100) + nilai posisi.
@@ -61,7 +61,7 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 - **/banding BBCA BBRI BMRI** — tabel pembanding PER/PBV/ROE/dividend yield/return 1 thn/20 hari/PowerScore + fakta "paling murah/mahal menurut PBV" (deskriptif). Data pembanding yang gagal dilaporkan jujur.
 - **/agenda BBCA** — ex-date dividen (terakhir/berikutnya) + split & aksi korporasi dari Yahoo (bisa telat — cek juga situs emiten).
 - **/belajar RSI** — kamus istilah dalam bahasa sederhana (18 topik: RSI, MACD, MA20/50/200, Bollinger, ATR, OBV, StochRSI, PER, PBV, ROE, dividend yield, DER, volume, breakout, IHSG, PowerScore + alias).
-- **/jejak** (alias **/track**) — rekam jejak nyata: setiap snapshot harian kini disimpan di tabel `scan_history`, lalu setelah **20 hari bursa** (ubah dengan `SCORECARD_HORIZON`) bot menghitung hasilnya — return rata-rata, win-rate, dan **R-multiple** untuk BELI (berapa kali TP 2R, SL −1R, atau keluar waktu), dengan TAHAN sebagai pembanding pasar, plus **IC live** (korelasi peringkat vs hasil nyata) yang bisa dibandingkan dengan IC riset. Baris yang harga historisnya berubah karena split ditandai `ADJ` dan tidak dihitung. Angka ini pengukuran, bukan janji; sampel kecil mudah didominasi kebetulan.
+- **/jejak** (alias **/track**) — rekam jejak nyata: setiap snapshot harian kini disimpan di tabel `scan_history`, lalu setelah **20 hari bursa** (ubah dengan `SCORECARD_HORIZON`) bot menghitung hasilnya — return rata-rata, win-rate, dan **R-multiple** untuk BELI (berapa kali TP 2R, SL −1R, atau keluar waktu), evaluasi akuntabilitas terpisah untuk **JUAL** (`TURUN`/`NAIK`/`DATAR`, bukan instruksi short), dengan TAHAN sebagai pembanding pasar, plus **IC live** (korelasi peringkat vs hasil nyata beserta `t_hac` Newey-West) yang bisa dibandingkan dengan IC riset. Baris yang harga historisnya berubah karena split (>25%) ditandai `ADJ` dan tidak dihitung, sedangkan pergeseran eks-dividen (>0,5% pada data `auto_adjust=True`) ditandai `div_adjusted`. Angka ini pengukuran, bukan janji; sampel kecil mudah didominasi kebetulan.
 - **/beli BBCA** / **/jual BBCA** (atau ketik bebas `"BBCA beli gak?"`) — verdict + level SL/TP + rekam jejak backtest 5 thn (dari cache `/backtest`).
 - **/auto on** — aktifkan pemindaian otomatis: ringkasan `/saran` + rekap watchlist ±08:30 WIB, **pengingat ex-date dividen (H-3 & H-1)**, serta **alert perubahan band PowerScore** watchlist (default off).
 - **/status** — kesehatan bot: uptime, jumlah perintah/error, rata-rata waktu proses, isi store, cache harga, status bursa (khusus `ADMIN_IDS` bila diisi).
@@ -158,19 +158,28 @@ Deployment 24/7 (Docker/systemd/supervisor) → lihat **[deploy.md](deploy.md)**
 | `FULL_SCAN_PERIOD` | periode data batch screener | `1y` |
 | `FULL_SCAN_CHUNK` | jumlah ticker per batch Yahoo | `80` |
 | `FULL_SCAN_PAUSE` | jeda antar batch (detik) | `1.0` |
+| `FULL_SCAN_MAX_STALE_DAYS` | tolak emiten dengan bar terakhir basi > N hari bursa di `/scan` | `5` |
 | `SCORECARD_HORIZON` | jumlah hari bursa sebelum hasil sinyal `/jejak` dihitung | `20` |
-| `PLAN_MIN_VALUE` | minimum nilai transaksi harian (Rp) untuk `/rencana` | `2000000000` |
-| `PLAN_MIN_PRICE` | harga minimum kandidat `/rencana` | `50` |
+| `PLAN_MIN_VALUE` | minimum nilai transaksi harian (Rp) untuk `/rencana` & `/paket` | `2000000000` |
+| `PLAN_MIN_PRICE` | filter harga minimum kualitas likuiditas `/rencana` (lantai reguler BEI Rp1) | `50` |
 | `PLAN_MAX_POS_PCT` | nilai maksimum satu posisi terhadap modal | `0.20` |
 | `PLAN_MAX_PLANS` | jumlah rencana default (1–5) | `3` |
 | `PLAN_POOL` | kandidat yang diperkaya fundamental/berita | `16` |
-| `SAHAMBOT_CACHE` | folder cache harga (fallback saat Yahoo mati) | `temp/cache` |
+| `SAHAMBOT_CACHE` | folder cache harga per-period (fallback saat Yahoo mati) | `temp/cache` |
 | `SAHAMBOT_LOCAL_MODEL` | folder model sentimen lokal | `models/indo-fin-roberta` |
-| `STORE_DB` | database SQLite data pribadi (watchlist/alert/paper) | `store.db` |
+| `DOWNLOAD_CHUNK` | ukuran chunk unduhan model sentimen (MB) | `4` |
+| `STORE_DB` | database SQLite data pribadi (`SCHEMA_VERSION = 6`) | `store.db` |
 | `STORE_FILE` | `store.json` lama — dimigrasikan sekali lalu jadi `.migrated` | `store.json` |
+| `BACKUP_DIR` | folder cadangan harian SQLite (`tools/backup_db.py`) | `backups` |
+| `BACKUP_KEEP` | jumlah cadangan harian SQLite yang dipertahankan | `7` |
+| `BACKUP_AUTO` | cadangan otomatis SQLite tiap 23:30 WIB (`off` = mati) | `on` |
 | `HEARTBEAT_FILE` | file heartbeat untuk `HEALTHCHECK` Docker (kosong = nonaktif) | `heartbeat.txt` |
 | `MARKET_HOLIDAYS` | libur bursa tambahan, mis. `2026-03-19,2026-03-20` | kosong |
 | `MARKET_HOLIDAYS_FILE` | file JSON daftar libur tambahan | `market_holidays.json` |
+| `IDX_ARA_WINDOW_END` | tanggal akhir jendela aturan ARA BEI (ISO `YYYY-MM-DD`) | `2026-12-31` |
+| `IDX_ARB_WINDOW_END` | tanggal akhir jendela ARB asimetris 7% Kep-00158 (ISO `YYYY-MM-DD`) | `2026-12-31` |
+| `EODHD_API_KEY` | kunci API opsional fallback OHLCV `.JK` saat Yahoo gagal/429 | kosong (mati) |
+| `ALPHAVANTAGE_API_KEY` | kunci API opsional kedua fallback OHLCV `.JK` saat Yahoo gagal/429 | kosong (mati) |
 
 Saat Yahoo memblokir IP (429), bot otomatis pakai cache harga terakhir dan
 menandai laporan dengan ⚠️ + umur cache — jujur, tidak membual data segar.
@@ -207,7 +216,7 @@ menandai laporan dengan ⚠️ + umur cache — jujur, tidak membual data segar.
 
 ## Kejujuran hasil backtest (jarak: di database!)
 
-Hasil uji 5 tahun pada BBCA/TLKM/ANTM (nov 2026): **sinyal BUY berdiri sendiri
+Hasil uji 5 tahun pada BBCA/TLKM/ANTM (Nov 2026): **sinyal BUY berdiri sendiri
 masih belum profitable** setelah biaya (win-rate 29-32%, PF 0,48-0,64) — meski
 kalah lebih aman daripada buy & hold pada BBCA/TLKM yang sedang downtrend.
 Pemakaian paling sehat: **pelindung** (skip sinyal buruk, alarm pergerakan),
@@ -216,28 +225,34 @@ bukan mesin buy otomatis.
 ### Uji statistik 45 emiten (2017–2026, horizon 20 hari)
 
 Setelah skor diuji ulang secara cross-sectional + walk-forward
-(`research/`, ringkasnya di `/validasi`):
+(`research/`, ringkasnya di `/validasi` & `data/validation.json`):
 
 | Metrik | Hasil | Arti |
 |---|---|---|
-| IC skor antar-emiten | **+0,0115** (t=2,68) | praktis nol |
-| IC skor dalam satu emiten | **−0,0207** (t=−2,33) | sedikit berlawanan arah |
-| Excess STRONG BUY | +0,46% / 20 hari | tipis (menang 46%) |
-| Excess STRONG SELL | −0,01% / 20 hari | label ekstrem bawah tidak informatif |
-| Walk-forward 12 faktor | +0,047 / +0,048 / +0,025 / **−0,026** / +0,063 | 4 dari 5 tahun positif |
-| Kuintil OOS Q5 vs Q1 | +0,42% vs −0,24% | selisih 0,67% / 20 hari |
+| IC skor antar-emiten | **+0,0115** (`t=2,68` naif, **`t_hac=0,85`**) | praktis nol & tidak signifikan setelah koreksi Newey-West |
+| IC skor dalam satu emiten | **−0,0207** (`t=−2,33`) | sedikit berlawanan arah |
+| Excess STRONG BUY | **+0,461%** / 20 hari | tipis (menang 46,2%) |
+| Excess STRONG SELL | **−0,008%** / 20 hari | label ekstrem bawah tidak informatif |
+| Walk-forward 12 faktor (CV ridge) | **+0,0492 / +0,0490 / +0,0206 / −0,0250 / +0,0584** | rata-rata **+0,0304** vs bobot-sama **−0,0061** (4/5 tahun positif) |
+| Kuintil OOS Q5 vs Q1 | **+0,400%** vs **−0,204%** | selisih **+0,604%** / 20 hari (dispersi P25–P75 IQR dicatat di riset) |
+| Portofolio walk-forward (`hold=0,6`, `min_hold=2`, `sma50_200_half`) | turnover **21,7%** (2-arah **43,4%**) · eksposur **79,8%** · MDD **−20,0%** | alpha aktif bruto **+0,534%** → neto **+0,33%** (**16/20** fase positif, CI **[+0,243%; +0,522%]**, **DSR 0,86**) |
 
 Konsekuensinya di kode:
 
 1. **Skor teknikal tidak lagi dipakai memilih saham.** Di `/analisis` labelnya
-   tetap ada sebagai bacaan tren, dengan catatan eksplisit bahwa IC-nya ≈ nol.
+   ditampilkan sebagai `trend_label` deskriptif dengan disclaimer eksplisit bahwa
+   IC harian ≈ nol (`t_hac = 0,85`).
 2. **`/saran` memeringkat kandidat dengan skor relatif** 12 faktor
-   (`core/relatif.py`) — bobot dibekukan dari walk-forward, bukan PowerScore.
-   Kalau universe < 8 emiten (statistik cross-sectional tak berarti), bot
-   kembali ke PowerScore dan mengatakannya.
-3. **Tetap tipis.** IC 0,03 bukan mesin uang; biaya transaksi IDX (±0,5%
-   pulang-pergi) memakan sebagian besar selisih kuintil. Perlakukan sebagai
-   pemeringkat kandidat, bukan jaminan.
+   (`core/relatif.py`) — bobot dan kuintil OOS disinkronkan persis dengan
+   `data/validation.json` (dibekukan dari walk-forward CV, diverifikasi lewat
+   `python tools/check_sync.py`), bukan PowerScore. Kalau universe < 8 emiten
+   (statistik cross-sectional tak berarti), bot kembali ke PowerScore dan
+   mengatakannya.
+3. **Tetap tipis.** IC 0,0304 bukan mesin uang (`DSR 0,86 < 0,95` pada 20 fase
+   dan 320 trial ablasi `research/experiments.py`); biaya transaksi IDX (**0,40%
+   pulang-pergi**: `0,15%` beli + `0,25%` jual all-in) memakan sebagian selisih
+   kuintil, sehingga histeresis `hold=0,6` + `min_hold=2` wajib dipakai.
+   Perlakukan sebagai pemeringkat kandidat, bukan jaminan.
 
 ## 📚 Sumber terbuka yang mendukung bot ini
 
@@ -253,9 +268,11 @@ Konsekuensinya di kode:
 
 ```bash
 pip install -r requirements-dev.txt
-ruff check .      # lint
-pytest            # 500+ tes offline (tanpa Yahoo/Google News/HuggingFace)
-make coverage     # tes + gerbang coverage 75% (modul inti & bot.py)
+ruff check .                             # lint
+pytest -q                                # 653 tes offline (checkpoint Wave 2A 8489697; tanpa Yahoo/Google News/HF)
+python tools/check_sync.py               # audit sinkronisasi relatif.py <-> validation.json, LQ45, umur data & backup DB
+python tools/record_fixtures.py --verify # audit struktur fixture offline
+make coverage                            # tes + gerbang coverage 75% (core, handlers, bot, config)
 ```
 
 Atau lewat Makefile: `make install`, `make lint`, `make test`, `make docker`.
@@ -277,7 +294,8 @@ perubahan bentuk data upstream cepat ketahuan. Sampel itu sintetis; untuk
 merekam respons asli jalankan sekali di mesin berjaringan:
 
 ```bash
-python tools/record_fixtures.py --ticker BBCA
+python tools/record_fixtures.py --ticker BBCA --ohlcv-rows 120 --rows 5
+python tools/record_fixtures.py --verify
 ```
 
 **CI riset.** `.github/workflows/research.yml` menjalankan evaluasi IC

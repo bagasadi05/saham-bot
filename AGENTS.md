@@ -6,8 +6,9 @@ boleh dilanggar, peta kode, dan status terakhir. Riwayat perubahan ada di
 [`CHANGELOG.md`](CHANGELOG.md); rencana & status per fase ada di
 [`PLAN.md`](PLAN.md).
 
-Terakhir diperbarui: **2026-11-14** (P23/P24 risiko portofolio + P28 jurnal
-eksekusi manual; lihat `git log`).
+Terakhir diperbarui: **2026-11-14** (Wave 2A merge `8489697`: perbaikan akurasi
+fundamental/ROE/non-IDR, standar risiko & exit terpadu, ketahanan cache/Docker/CI,
+serta sinkronisasi riset & `tools/check_sync.py`; lihat `git log`).
 
 ---
 
@@ -17,8 +18,10 @@ eksekusi manual; lihat `git log`).
 python -m venv .venv
 .venv\Scripts\activate            # Windows; Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest -q                         # harus 586 passed, ~72 detik, offline
+pytest -q                         # harus 653 passed (checkpoint Wave 2A 8489697), offline
 ruff check .                      # harus bersih
+python tools/check_sync.py        # audit sinkronisasi riset, LQ45, umur data & backup DB
+python tools/record_fixtures.py --verify  # audit struktur fixture offline
 python bot.py                     # butuh BOT_TOKEN di .env
 ```
 
@@ -43,32 +46,50 @@ Kalau butuh data, pakai fixture di `tests/fixtures/` atau data sintetis dari
 ## 3. Peta arsitektur
 
 ```
-bot.py                  entrypoint + menu/aksi + markup + helper aplikasi
-core/                   logika domain (tanpa Telegram), bisa diuji offline
-  analysis.py           indikator, skor teknikal, snapshot
-  data.py               fetch Yahoo + cache + provenance
-  screener.py           scan seluruh pasar → snapshot SQLite
-  relatif.py            skor relatif 12 faktor (bobot beku)
-  saran.py              kandidat BUY, sizing, paper trading
-  rencana.py            level harga, paket & rencana anggaran
-  cek.py                aturan ceklist + verdict
-  kualitas.py           kualitas fundamental (PER/PBV/ROE) + cache harian
-  portofolio.py         ringkasan PnL/risiko portofolio asli
-  jurnal.py             jurnal eksekusi manual Stockbit, slippage & realisasi
-  risk.py               vol/drawdown/VaR/beta/korelasi/inv-vol + batas portofolio
+bot.py                  entrypoint + menu/aksi + markup + helper aplikasi (1.458 baris)
+core/                   logika domain (tanpa Telegram), 33 modul, bisa diuji offline
+  alerts.py             deteksi kondisi alert harga/indikator & zona beli watchlist
+  analysis.py           indikator teknikal, skor momentum, trend_label & snapshot
+  bandar.py             ringkasan saham/indeks/asing BEI (idx.co.id via cloudscraper)
+  banding.py            perbandingan emiten se-sektor & benchmark IHSG (20h/1th)
+  btcache.py            cache hasil simulasi backtest 5 tahun di disk
+  cek.py                aturan ceklist 6 bagian + verdict LAYAK/TUNGGU/HINDARI + Pro/Risiko
+  chart.py              render chart 4 panel matplotlib
+  data.py               fetch Yahoo (auto_adjust+repair) + fallback opt-in + cache per-period
+  data_quality.py       audit kualitas bar OHLCV & format provenance WIB
+  fundamental.py        valuasi, tren 4Q, normalize_roe (roe_unit="pct"), forensik arus kas
+  guards.py             cooldown per user + state input PENDING
+  jurnal.py             jurnal eksekusi manual Stockbit, slippage, MAE/MFE & R-multiple
+  kualitas.py           saringan kualitas fundamental (/sinyal beli bagus) + cache harian v2
+  learn.py              kamus edukasi indikator & rasio (/belajar)
+  logsetup.py           logging teks/JSON terstruktur (LOG_JSON=1)
+  marketcal.py          kalender bursa XIDX (exchange_calendars) & zona waktu WIB
+  news.py               berita Google News RSS (query ketat) & agregasi sentimen
+  news_ml.py            inferensi sentimen ML lokal indo-roBERTa (fallback lexicon)
+  portofolio.py         ringkasan PnL/risiko portofolio asli (SL 1×ATR / eksekusi + exit)
+  powerscore.py         kombinasi 3 pin (teknikal, fundamental + penalti forensik, berita)
+  pricing.py            fraksi tick BEI, batas ARA/ARB 2026 (Kep-00136 Rp1 & Kep-00158 7%)
+  regime.py             deteksi rezim kausal IHSG (^JKSE SMA50 vs SMA200)
+  relatif.py            skor relatif 12 faktor (bobot & kuintil OOS sinkron validation.json)
+  rencana.py            level harga, paket & rencana anggaran (/rencana, /paket)
+  reports.py            formatter mata uang (IDR vs non-IDR) & teks laporan (/analisis dll.)
+  risk.py               vol/drawdown/VaR/beta/korelasi/inv-vol + batas risiko portofolio
+  saran.py              kandidat BUY, sizing, paper trading & panduan exit (Chandelier/TP1/time-stop)
+  scorecard.py          evaluasi sinyal live (/jejak, BELI vs JUAL terpisah, live_ic t_hac)
+  screener.py           scan seluruh pasar BEI → filter kualitas/staleness → snapshot SQLite
   sektor.py             parser indeks sektor BEI (defensif)
-  store.py              SQLite: watchlist, alert, paper, scan_history,
-                        real_positions/real_trades, zone_state,
-                        signal_context, real_executions, chat_settings (v6)
-  guards.py             cooldown + PENDING
-  reports.py            teks laporan (/analisis dll.)
-  logsetup.py           logging teks/JSON (LOG_JSON=1)
-handlers/               handler Telegram, pola `deps`
+  store.py              SQLite (SCHEMA_VERSION = 6): watchlist, alert, paper, scan_history,
+                        real_positions/real_trades, zone_state, signal_context (intent),
+                        real_executions, chat_settings
+  textutil.py           formatter rupiah & parser nominal (parse_rupiah)
+  universe.py           pemuat daftar 944 emiten BEI (data/idx_universe.json) & papan pencatatan
+handlers/               12 modul handler Telegram, pola `deps`
   analisis, cek, info, jobs, jurnal, market, menu, portfolio, sektor, sinyal,
   trading, watchlist
-research/               harness riset (evaluate, portfolio, publish, horizons)
-tests/                  586 tes offline + fixtures/
-tools/                  skrip manual (build_universe, record_fixtures)
+research/               harness riset (evaluate, experiments, portfolio, publish,
+                        horizons, evaluate_kronos, bias)
+tests/                  653 tes offline (checkpoint Wave 2A 8489697) + fixtures/
+tools/                  skrip utilitas (backup_db, build_universe, check_sync, record_fixtures)
 ```
 
 ### Pola `deps` (penting)
@@ -119,12 +140,18 @@ dipanggil via `to_thread`.
 | Fase 4 (modularisasi, CI, backup, log, LICENSE) | selesai |
 | Uji chat di host | ⛔ diblokir akses token (lihat `deploy.md`) |
 | P23/P24 (risiko portofolio) | selesai; batas kustom (`/portofolio batas`) + bobot *inv-vol* |
-| P28 (jurnal eksekusi Stockbit & slippage) | selesai (tanpa auto-trading / kredensial) |
-| Audit forensik kas + Pro/Risiko (`/cek`, `/fundamental`) | selesai (`.agents/skills/idx-equity-research/`) |
+| P28 (jurnal eksekusi Stockbit & slippage) | selesai (tanpa auto-trading / kredensial; + MAE/MFE & R-multiple) |
+| Audit forensik kas + Pro/Risiko (`/cek`, `/fundamental`) | selesai (`.agents/skills/idx-equity-research/`, penalti skor & mata uang non-IDR) |
+| Wave 2A (akurasi, exit/risiko, infra/Docker, sync riset) | selesai di merge `8489697` (**653 passed** offline; `Dockerfile` menyalin `handlers/` & `vendor/`) |
 
-Angka riset terbaru (`data/validation.json`): turnover 50,6%; alpha neto
-+0,264% [CI +0,148; +0,390]; model 0,0304 vs bobot-sama −0,0061; DSR 0,881;
-IC skor `t_hac` 0,85 (tidak signifikan).
+Angka riset terbaru (`data/validation.json`, konfigurasi `--hold 0.6 --min-hold 2 --regime sma50_200_half --offline`, biaya BEI `0,40%` pulang-pergi):
+turnover satu arah **21,7%** (dua arah **43,4%**); eksposur **79,8%**; MDD **−20,0%**;
+alpha bruto aktif **+0,534%** (total **+0,416%**); alpha neto **+0,33%** (+0,330%,
+median +0,385%, **16/20** fase positif, CI 95% **[+0,243%; +0,522%]**);
+walk-forward model **0,0304** vs bobot-sama **−0,0061** (menang 4/5 tahun, kuintil OOS
+Q5 **+0,400%** vs Q1 **−0,204%**); **DSR 0,86** (`best_sr=0,279`, `sr0=0,142`,
+`n_trials=20` fase; `320` trial pada grid ablasi `research/experiments.py`);
+IC skor `t_hac` **0,85** (tidak signifikan).
 
 ## 6. Jangan dilakukan
 
@@ -152,7 +179,10 @@ IC skor `t_hac` 0,85 (tidak signifikan).
 
 1. Jalankan checklist chat di host (`/status`, `/sektor`, `/cek BBCA`,
    `/sinyal beli bagus`) dan tempel hasilnya ke `deploy.md`.
-2. Rekam fixture asli sekali: `python tools/record_fixtures.py --ticker BBCA`.
+2. Rekam fixture asli sekali di mesin berjaringan:
+   `python tools/record_fixtures.py --ticker BBCA --ohlcv-rows 120 --rows 5`
+   lalu verifikasi dengan `python tools/record_fixtures.py --verify` dan
+   `python tools/check_sync.py`.
 3. Bila ingin mengerjakan Fase 2.3, pilih sumber data dulu (IDX Stock List
    manual / EODHD / Sectors) lalu buat `research/bias.py` yang gagal keras
    tanpa tabel keanggotaan.

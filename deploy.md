@@ -107,9 +107,56 @@ menampilkan 6 bagian + kesimpulan; `/sinyal beli bagus` menampilkan penanda
 | Cek status | `docker compose ps` (lihat kolom STATUS: `healthy`/`unhealthy`) |
 | Cek isi bot | kirim `/status` di Telegram (uptime, error, isi store, cache) |
 
-Data `store.db` (watchlist/alert/paper trading, SQLite) disimpan di folder
-`data/` di dalam VPS — kebal terhadap rebuild container. Backup cukup
-menyalin folder itu:
+Data `store.db` (`SCHEMA_VERSION = 6`: watchlist, alert, paper trading,
+`scan_history`, `real_positions`/`real_trades`, `zone_state`, `signal_context`,
+`real_executions`, `chat_settings`) disimpan di folder `data/` di dalam VPS —
+kebal terhadap rebuild container.
+
+> **Catatan penting `Dockerfile` (diperbaiki 2026-11-14):** `Dockerfile` kini
+> menyalin lengkap `COPY handlers/ ./handlers/` dan `COPY vendor/ ./vendor/`
+> di samping `core/`, `tools/`, dan `bot.py`, serta menyetel
+> `BACKUP_DIR=/app/data/backups` (selaras dengan `docker-compose.yml`).
+> Pastikan membangun ulang image (`docker compose up -d --build`) jika VPS masih
+> menjalankan image lama sebelum perbaikan ini.
+
+### Cadangan & Uji Restore SQLite (`tools/backup_db.py` & `tools/check_sync.py`)
+
+Bot otomatis menjalankan backup SQLite harian (WAL-safe via `sqlite3.Connection.backup`
++ `PRAGMA integrity_check`, rotasi 7 berkas terakhir) tiap **23:30 WIB** ke
+`BACKUP_DIR` (`backups/` di lokal atau `/app/data/backups` di Docker).
+
+1. **Buat cadangan manual kapan saja (tanpa mematikan bot):**
+   ```bash
+   # Di host / virtualenv:
+   python tools/backup_db.py
+   # Atau di dalam container Docker:
+   docker compose exec bot python tools/backup_db.py /app/data/backups
+   ```
+2. **Uji otomatis round-trip backup -> restore (tanpa menyentuh DB produksi):**
+   ```bash
+   python tools/check_sync.py
+   # Memverifikasi [OK] backup_restore_roundtrip (membuat DB sampel v6,
+   # menjalankan backup_db.py, merestore ke berkas baru, dan mengecek PRAGMA integrity_check)
+   ```
+3. **Langkah restore manual ke `data/store.db` (jika perlu pemulihan):**
+   ```bash
+   # 1. Hentikan container agar tidak ada koneksi menulis ke WAL
+   docker compose stop
+
+   # 2. Verifikasi integritas berkas cadangan yang akan direstore
+   sqlite3 data/backups/store-YYYYMMDD-HHMMSS.db "PRAGMA integrity_check;"
+   # Harus mencetak: ok
+
+   # 3. Cadangkan berkas lama lalu salin berkas backup menjadi store.db
+   cp data/store.db data/store.db.pre-restore
+   rm -f data/store.db-wal data/store.db-shm
+   cp data/backups/store-YYYYMMDD-HHMMSS.db data/store.db
+
+   # 4. Nyalakan kembali bot & cek /status
+   docker compose start
+   ```
+
+Arsip seluruh folder `data/` juga bisa dibuat dengan `tar`:
 
 ```bash
 tar czf saham-data-$(date +%F).tgz data/     # saat container berhenti:
