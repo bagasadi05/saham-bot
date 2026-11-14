@@ -406,3 +406,36 @@ def test_alphavantage_premium_or_rate_limit_triggers_cooldown(tmp_path, monkeypa
 
     data.clear_cache()
     assert data._is_fallback_cooled_down("alphavantage") is False
+
+
+def test_download_model_fetch_handles_more_chunks_than_retry_budget(tmp_path, monkeypatch):
+    """Regresi: unduhan model besar (> tries * CHUNK) tidak boleh terpotong batas retry."""
+    import io
+    import urllib.request
+    import download_model
+
+    payload = b"X" * 25
+    monkeypatch.setattr(download_model, "CHUNK", 4)  # 7 chunk > tries=3
+
+    class _Resp(io.BytesIO):
+        def __init__(self, body: bytes, length: int):
+            super().__init__(body)
+            self.headers = {"Content-Length": str(length)}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            self.close()
+
+    def fake_urlopen(req, timeout=60):
+        rng = req.get_header("Range")
+        if not rng:
+            return _Resp(b"", len(payload))
+        start, end = [int(x) for x in rng.removeprefix("bytes=").split("-", 1)]
+        return _Resp(payload[start : end + 1], len(payload))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    out = tmp_path / "model.safetensors"
+    download_model.fetch("https://example.invalid/model.safetensors", str(out), tries=3)
+    assert out.read_bytes() == payload

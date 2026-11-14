@@ -30,7 +30,8 @@ def fetch(url: str, out: str, tries: int = 60):
             time.sleep(3)
     if not total:
         raise SystemExit(f"gagal ukur {url}")
-    for _ in range(tries):
+    failures = 0
+    while failures < tries:
         have = os.path.getsize(part) if os.path.exists(part) else 0
         if have >= total:
             os.replace(part, out)
@@ -40,13 +41,21 @@ def fetch(url: str, out: str, tries: int = 60):
         rreq = urllib.request.Request(
             url, headers={"User-Agent": UA, "Range": f"bytes={have}-{end}"})
         try:
+            wrote = 0
             with urllib.request.urlopen(rreq, timeout=120) as r, open(part, "ab") as f:
                 while True:
                     b = r.read(1024 * 256)
                     if not b:
                         break
                     f.write(b)
+                    wrote += len(b)
+            if wrote == 0:
+                failures += 1
+                time.sleep(2)
+            else:
+                failures = 0
         except Exception as e:
+            failures += 1
             print(f"  chunk putus di {os.path.getsize(part) if os.path.exists(part) else 0:,} ({e})", flush=True)
             time.sleep(2)
     # resume terakhir: kalau sudah >= total, finalkan

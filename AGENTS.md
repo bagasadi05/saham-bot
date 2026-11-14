@@ -7,8 +7,8 @@ boleh dilanggar, peta kode, dan status terakhir. Riwayat perubahan ada di
 [`PLAN.md`](PLAN.md).
 
 Terakhir diperbarui: **2026-11-14** (Wave 2A, Wave 2B, & perbaikan `yfinance` adaptif
-tanpa `scipy` + cooldown kuota/premium EODHD & Alpha Vantage + isolasi `.env` offline di `tests/`;
-lihat `git log`).
+tanpa `scipy`, cooldown kuota/premium EODHD & Alpha Vantage, isolasi `.env` offline di `tests/`,
+serta perbaikan chunk download di `download_model.py`; lihat `git log`).
 
 ---
 
@@ -18,7 +18,7 @@ lihat `git log`).
 python -m venv .venv
 .venv\Scripts\activate            # Windows; Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest -q                         # harus 669 passed (0 skipped, coverage 83% target CI), offline
+pytest -q                         # harus 670 passed (0 skipped, coverage 83% target CI), offline
 ruff check .                      # harus bersih
 python tools/check_sync.py        # audit sinkronisasi riset, LQ45, umur data & backup DB
 python tools/record_fixtures.py --verify  # audit struktur fixture offline
@@ -88,7 +88,7 @@ handlers/               12 modul handler Telegram, pola `deps`
   trading, watchlist
 research/               harness riset (evaluate, experiments, portfolio, publish,
                         horizons, evaluate_kronos, bias)
-tests/                  669 tes offline (0 skipped, coverage 83% target CI) + fixtures/
+tests/                  670 tes offline (0 skipped, coverage 83% target CI) + fixtures/
 tools/                  skrip utilitas (backup_db, build_universe, check_sync, record_fixtures)
 ```
 
@@ -144,7 +144,7 @@ dipanggil via `to_thread`.
 | Audit forensik kas + Pro/Risiko (`/cek`, `/fundamental`) | selesai (`.agents/skills/idx-equity-research/`, penalti skor & mata uang non-IDR) |
 | Wave 2A (akurasi, exit/risiko, infra/Docker, sync riset) | selesai di merge `8489697` (`653 passed` offline; `Dockerfile` menyalin `handlers/` & `vendor/`) |
 | Wave 2B (`handlers/bot` provenance & exit UX, skills & docs) | selesai (`666 passed` offline, coverage `core+handlers` **84%**, `bot.py` 1.737 baris) |
-| Hotfix `repair` adaptif tanpa `scipy` & cooldown EODHD/AV | selesai (**669 passed** offline, coverage target CI **83%**, EODHD & AV `.env` terverifikasi live) |
+| Hotfix `repair` adaptif tanpa `scipy`, cooldown EODHD/AV & `download_model` | selesai (**670 passed** offline, coverage target CI **83%**, EODHD & AV `.env` terverifikasi live) |
 
 Angka riset terbaru (`data/validation.json`, konfigurasi `--hold 0.6 --min-hold 2 --regime sma50_200_half --offline`, biaya BEI `0,40%` pulang-pergi):
 turnover satu arah **21,7%** (dua arah **43,4%**); eksposur **79,8%**; MDD **−20,0%**;

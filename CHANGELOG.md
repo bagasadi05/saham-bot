@@ -21,8 +21,8 @@ sinkronisasi `core/relatif.py` & `tools/check_sync.py`), dan **Wave 2B**
 beli & jual/exit portofolio-aware, exit alert otomatis portofolio asli di
 `scan_alerts`, diagnostik MAE/MFE `/jurnal`, target harga `/alert`, menu
 `Cek Jual / Tinjau Posisi`, serta sinkronisasi penuh `.agents/skills/` &
-dokumentasi proyek), plus hotfix `yfinance` adaptif tanpa `scipy` & cooldown
-kuota/premium EODHD & Alpha Vantage. Total verifikasi akhir: **669 tes lulus** offline
+dokumentasi proyek), plus hotfix `yfinance` adaptif tanpa `scipy`, cooldown
+kuota/premium EODHD & Alpha Vantage, dan perbaikan unduhan chunk `download_model.py`. Total verifikasi akhir: **670 tes lulus** offline
 (`0 skipped`, `0 failed`, coverage target CI `core+handlers+bot+config` **83%**, `bot.py` 1.737 baris),
 `ruff check .` bersih.
 
@@ -181,7 +181,9 @@ kuota/premium EODHD & Alpha Vantage. Total verifikasi akhir: **669 tes lulus** o
   `ALPHAVANTAGE_COOLDOWN_SECONDS=900`) saat HTTP `402`/`429` maupun respons
   `"Information"`/`"Note"` premium/rate-limit Alpha Vantage agar batch tidak spam kuota;
   serta `monkeypatch.delenv` di `tests/conftest.py` agar suite offline tetap terisolasi
-  meski `.env` lokal menyimpan API key live. Total terbaru: **669 tes lulus** offline
+  meski `.env` lokal menyimpan API key live; serta perbaikan loop `download_model.fetch`
+  agar hanya menghitung kegagalan (tidak memutus unduhan `model.safetensors` 498 MB pada
+  60×4 MB = 251 MB). Total terbaru: **670 tes lulus** offline
   (`0 skipped`, `ruff` bersih).
 - **Integrasi provenance WIB, `_verdict_jual` portofolio-aware & async SQLite (`core/reports.py`, `bot.py`, `handlers/*` — Wave 2B)** —
   `reports.provenance_line` meneruskan DataFrame ke `data_quality.format_provenance` tanpa
