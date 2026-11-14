@@ -42,6 +42,30 @@ berbasis bukti offline.
   pertanyaan (*Tanya: Layak Beli/Jual?*), dan seluruh hasil dari menu menyertakan
   tombol *Menu Utama* (`from_menu=True`). Urutan perintah `/` (`_post_init`)
   mendahulukan perintah pemula. Tes baru: `tests/test_menu_beginner.py`.
+- **Jurnal eksekusi manual Stockbit & slippage nyata — P28 (`core/jurnal.py`,
+  `handlers/jurnal.py`, `core/store.py` v5)** — mengukur realitas eksekusi
+  pemilik tanpa auto-trading / tanpa login Stockbit:
+  - Skema SQLite naik `v4 -> v5` (tabel `signal_context` & `real_executions`,
+    migrasi `_migrate_v5` idempoten) beserta helper atomik bersama
+    `_add_real_position_conn` & `_reduce_real_position_conn` agar pencatatan
+    beli/jual jurnal sinkron ke portofolio asli tanpa duplikasi logika.
+  - Konteks sinyal (harga sinyal, rencana lot, SL/TP, sumber) otomatis
+    disimpan saat memanggil `/rencana`, `/cek`, `/beli`, `/jual`, dan
+    `/sinyal KODE`; tombol **Sudah beli di Stockbit** (`exec:buy:<KODE>`)
+    memungkinkan konfirmasi cepat dengan mengetik `<harga>` atau `<lot> <harga>`.
+  - Perintah `/jurnal` (alias `/journal`, submenu *Fitur Lanjutan* & `/portofolio`):
+    `/jurnal beli`, `/jurnal jual`, `/jurnal riwayat`, slippage per transaksi
+    dan rata-rata (`+` mahal vs sinyal / `-` hemat, `"tidak tersedia"` bila
+    tanpa harga sinyal), win rate & profit factor realisasi bersih setelah biaya
+    BEI `0,40%`, serta tabel terpisah **Uang Sungguhan (ASLI)** vs **Paper
+    Trading (Latihan)**. `/portofolio jual` otomatis menutup entry jurnal yang
+    masih terbuka.
+  - Ringkasan jurnal mingguan (`handlers/jobs.weekly_journal_report`, Jumat
+    `16:45 WIB` pada hari bursa) dikirim hanya ke chat `/auto on` yang memiliki
+    catatan eksekusi.
+  - Pemarser nominal `parse_rupiah` disatukan di `core/textutil.py`. Tes baru:
+    `tests/test_jurnal.py` (**575 tes lulus**, coverage `core`+`handlers` `83%`,
+    `ruff` bersih).
 
 ### Diubah
 

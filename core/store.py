@@ -145,13 +145,49 @@ CREATE TABLE IF NOT EXISTS zone_state (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (chat_id, ticker)
 );
+-- P28: konteks sinyal terakhir & jurnal eksekusi manual Stockbit (terpisah dari paper).
+CREATE TABLE IF NOT EXISTS signal_context (
+    chat_id        TEXT NOT NULL,
+    ticker         TEXT NOT NULL,
+    source         TEXT NOT NULL,
+    signal_price   REAL NOT NULL,
+    sl             REAL,
+    tp             REAL,
+    suggested_lots INTEGER,
+    trade_date     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (chat_id, ticker)
+);
+CREATE TABLE IF NOT EXISTS real_executions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id        TEXT NOT NULL,
+    ticker         TEXT NOT NULL,
+    side           TEXT NOT NULL,
+    lots           INTEGER NOT NULL,
+    exec_price     REAL NOT NULL,
+    signal_price   REAL,
+    sl             REAL,
+    tp             REAL,
+    source         TEXT NOT NULL DEFAULT 'manual',
+    slippage_rp    REAL,
+    slippage_pct   REAL,
+    slippage_cost  REAL,
+    avg_entry      REAL,
+    gross_pnl      REAL,
+    net_pnl        REAL,
+    net_pnl_pct    REAL,
+    trade_date     TEXT NOT NULL,
+    created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_real_exec_chat
+    ON real_executions(chat_id, id DESC);
 """
 
 
 _init_lock = threading.Lock()
 _ready_for: str | None = None
 
-SCHEMA_VERSION = 4          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
+SCHEMA_VERSION = 5          # naikkan + tambah langkah di _MIGRATIONS bila skema berubah
 BACKUP_PREFIX = "store-"
 
 
@@ -209,7 +245,49 @@ def _migrate_v4(conn):
         """)
 
 
-_MIGRATIONS = {2: _migrate_v2, 3: _migrate_v3, 4: _migrate_v4}
+def _migrate_v5(conn):
+    """v5: konteks sinyal & jurnal eksekusi manual Stockbit (P28)."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS signal_context (
+            chat_id        TEXT NOT NULL,
+            ticker         TEXT NOT NULL,
+            source         TEXT NOT NULL,
+            signal_price   REAL NOT NULL,
+            sl             REAL,
+            tp             REAL,
+            suggested_lots INTEGER,
+            trade_date     TEXT NOT NULL,
+            updated_at     TEXT NOT NULL,
+            PRIMARY KEY (chat_id, ticker)
+        );
+        CREATE TABLE IF NOT EXISTS real_executions (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id        TEXT NOT NULL,
+            ticker         TEXT NOT NULL,
+            side           TEXT NOT NULL,
+            lots           INTEGER NOT NULL,
+            exec_price     REAL NOT NULL,
+            signal_price   REAL,
+            sl             REAL,
+            tp             REAL,
+            source         TEXT NOT NULL DEFAULT 'manual',
+            slippage_rp    REAL,
+            slippage_pct   REAL,
+            slippage_cost  REAL,
+            avg_entry      REAL,
+            gross_pnl      REAL,
+            net_pnl        REAL,
+            net_pnl_pct    REAL,
+            trade_date     TEXT NOT NULL,
+            created_at     TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_real_exec_chat
+            ON real_executions(chat_id, id DESC);
+        """)
+
+
+_MIGRATIONS = {2: _migrate_v2, 3: _migrate_v3, 4: _migrate_v4, 5: _migrate_v5}
 
 
 def _run_migrations(conn, current: int) -> int:
@@ -795,6 +873,67 @@ def _check_lot_price(lots, price) -> tuple[int, float]:
     return n, p
 
 
+def _add_real_position_conn(conn, chat_id: int | str, t: str, n: int, p: float,
+                            trade_date: str, sector: str | None,
+                            now: str) -> dict:
+    _ensure_chat(conn, chat_id)
+    row = conn.execute(
+        "SELECT lots, avg_price, sector FROM real_positions"
+        " WHERE chat_id=? AND ticker=?", (str(chat_id), t)).fetchone()
+    if row:
+        old_lots, old_avg = int(row["lots"]), float(row["avg_price"])
+        new_lots = old_lots + n
+        new_avg = (old_lots * old_avg + n * p) / new_lots
+        conn.execute(
+            "UPDATE real_positions SET lots=?, avg_price=?, "
+            "sector=COALESCE(?, sector), updated_at=?"
+            " WHERE chat_id=? AND ticker=?",
+            (new_lots, new_avg, sector, now, str(chat_id), t))
+    else:
+        new_lots, new_avg = n, p
+        conn.execute(
+            "INSERT INTO real_positions"
+            "(chat_id, ticker, lots, avg_price, sector, updated_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (str(chat_id), t, n, p, sector, now))
+    conn.execute(
+        "INSERT INTO real_trades"
+        "(chat_id, ticker, side, lots, price, trade_date, created_at)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (str(chat_id), t, "BELI", n, p, str(trade_date), now))
+    return {"ticker": t, "lots": new_lots, "avg_price": round(new_avg, 4)}
+
+
+def _reduce_real_position_conn(conn, chat_id: int | str, t: str, n: int, p: float,
+                               trade_date: str, now: str) -> dict:
+    row = conn.execute(
+        "SELECT lots, avg_price FROM real_positions"
+        " WHERE chat_id=? AND ticker=?", (str(chat_id), t)).fetchone()
+    if not row:
+        raise ValueError(f"tidak ada posisi {t} di portofolio asli")
+    held, avg = int(row["lots"]), float(row["avg_price"])
+    if n > held:
+        raise ValueError(f"kamu hanya punya {held} lot {t}")
+    left = held - n
+    if left:
+        conn.execute(
+            "UPDATE real_positions SET lots=?, updated_at=?"
+            " WHERE chat_id=? AND ticker=?",
+            (left, now, str(chat_id), t))
+    else:
+        conn.execute(
+            "DELETE FROM real_positions WHERE chat_id=? AND ticker=?",
+            (str(chat_id), t))
+    conn.execute(
+        "INSERT INTO real_trades"
+        "(chat_id, ticker, side, lots, price, trade_date, created_at)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (str(chat_id), t, "JUAL", n, p, str(trade_date), now))
+    return {"ticker": t, "lots_left": left, "avg_price": round(avg, 4),
+            "avg_raw": avg, "sold_lots": n,
+            "realized": round((p - avg) * n * 100)}
+
+
 def add_real_position(chat_id: int | str, ticker: str, lots: int,
                       price: float, trade_date: str,
                       sector: str | None = None) -> dict:
@@ -803,32 +942,8 @@ def add_real_position(chat_id: int | str, ticker: str, lots: int,
     t = str(ticker).upper()
     now = _stamp()
     with _db() as conn:
-        _ensure_chat(conn, chat_id)
-        row = conn.execute(
-            "SELECT lots, avg_price, sector FROM real_positions"
-            " WHERE chat_id=? AND ticker=?", (str(chat_id), t)).fetchone()
-        if row:
-            old_lots, old_avg = int(row["lots"]), float(row["avg_price"])
-            new_lots = old_lots + n
-            new_avg = (old_lots * old_avg + n * p) / new_lots
-            conn.execute(
-                "UPDATE real_positions SET lots=?, avg_price=?, "
-                "sector=COALESCE(?, sector), updated_at=?"
-                " WHERE chat_id=? AND ticker=?",
-                (new_lots, new_avg, sector, now, str(chat_id), t))
-        else:
-            new_lots, new_avg = n, p
-            conn.execute(
-                "INSERT INTO real_positions"
-                "(chat_id, ticker, lots, avg_price, sector, updated_at)"
-                " VALUES (?,?,?,?,?,?)",
-                (str(chat_id), t, n, p, sector, now))
-        conn.execute(
-            "INSERT INTO real_trades"
-            "(chat_id, ticker, side, lots, price, trade_date, created_at)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (str(chat_id), t, "BELI", n, p, str(trade_date), now))
-    return {"ticker": t, "lots": new_lots, "avg_price": round(new_avg, 4)}
+        return _add_real_position_conn(conn, chat_id, t, n, p,
+                                       trade_date, sector, now)
 
 
 def reduce_real_position(chat_id: int | str, ticker: str, lots: int,
@@ -838,32 +953,10 @@ def reduce_real_position(chat_id: int | str, ticker: str, lots: int,
     t = str(ticker).upper()
     now = _stamp()
     with _db() as conn:
-        row = conn.execute(
-            "SELECT lots, avg_price FROM real_positions"
-            " WHERE chat_id=? AND ticker=?", (str(chat_id), t)).fetchone()
-        if not row:
-            raise ValueError(f"tidak ada posisi {t} di portofolio asli")
-        held, avg = int(row["lots"]), float(row["avg_price"])
-        if n > held:
-            raise ValueError(f"kamu hanya punya {held} lot {t}")
-        left = held - n
-        if left:
-            conn.execute(
-                "UPDATE real_positions SET lots=?, updated_at=?"
-                " WHERE chat_id=? AND ticker=?",
-                (left, now, str(chat_id), t))
-        else:
-            conn.execute(
-                "DELETE FROM real_positions WHERE chat_id=? AND ticker=?",
-                (str(chat_id), t))
-        conn.execute(
-            "INSERT INTO real_trades"
-            "(chat_id, ticker, side, lots, price, trade_date, created_at)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (str(chat_id), t, "JUAL", n, p, str(trade_date), now))
-    return {"ticker": t, "lots_left": left, "avg_price": round(avg, 4),
-            "sold_lots": n,
-            "realized": round((p - avg) * n * 100)}
+        res = _reduce_real_position_conn(conn, chat_id, t, n, p,
+                                         trade_date, now)
+    res.pop("avg_raw", None)
+    return res
 
 
 def real_positions(chat_id: int | str) -> list[dict]:
@@ -906,3 +999,171 @@ def set_zone_state(chat_id: int | str, ticker: str, zone: str):
             " ON CONFLICT(chat_id, ticker) DO UPDATE SET"
             " zone=excluded.zone, updated_at=excluded.updated_at",
             (str(chat_id), str(ticker).upper(), str(zone or ""), _stamp()))
+
+
+# ------------------------------------------- P28: jurnal eksekusi manual
+def save_signal_context(
+    chat_id: int | str,
+    ticker: str,
+    source: str,
+    signal_price: float,
+    sl: float | None = None,
+    tp: float | None = None,
+    suggested_lots: int | None = None,
+    trade_date: str = "",
+) -> None:
+    """Simpan harga sinyal terbaru per (chat, ticker) untuk tombol konfirmasi."""
+    if signal_price is None or float(signal_price) <= 0:
+        return
+    t = str(ticker).upper()
+    with _db() as conn:
+        _ensure_chat(conn, chat_id)
+        conn.execute(
+            "INSERT INTO signal_context"
+            "(chat_id, ticker, source, signal_price, sl, tp, suggested_lots,"
+            " trade_date, updated_at) VALUES (?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(chat_id, ticker) DO UPDATE SET"
+            " source=excluded.source, signal_price=excluded.signal_price,"
+            " sl=excluded.sl, tp=excluded.tp,"
+            " suggested_lots=excluded.suggested_lots,"
+            " trade_date=excluded.trade_date, updated_at=excluded.updated_at",
+            (str(chat_id), t, str(source or "manual"), float(signal_price),
+             float(sl) if sl else None, float(tp) if tp else None,
+             int(suggested_lots) if suggested_lots and int(suggested_lots) > 0 else None,
+             str(trade_date or ""), _stamp()))
+
+
+def get_signal_context(chat_id: int | str, ticker: str) -> dict | None:
+    """Ambil acuan sinyal terakhir untuk ticker di chat ini."""
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT ticker, source, signal_price, sl, tp, suggested_lots,"
+            " trade_date, updated_at FROM signal_context"
+            " WHERE chat_id=? AND ticker=?",
+            (str(chat_id), str(ticker).upper())).fetchone()
+        return dict(row) if row else None
+
+
+def clear_signal_context(chat_id: int | str, ticker: str) -> None:
+    with _db() as conn:
+        conn.execute(
+            "DELETE FROM signal_context WHERE chat_id=? AND ticker=?",
+            (str(chat_id), str(ticker).upper()))
+
+
+def record_execution_buy(
+    chat_id: int | str,
+    ticker: str,
+    lots: int,
+    exec_price: float,
+    trade_date: str,
+    *,
+    signal_price: float | None = None,
+    sl: float | None = None,
+    tp: float | None = None,
+    source: str = "manual",
+    sector: str | None = None,
+) -> dict:
+    """Catat eksekusi BELI manual Stockbit + sinkron ke portofolio asli."""
+    from core import jurnal
+
+    n, p = _check_lot_price(lots, exec_price)
+    t = str(ticker).upper()
+    now = _stamp()
+    slip_rp, slip_pct, slip_cost = jurnal.calc_slippage("BELI", p, signal_price, n)
+    sig_val = float(signal_price) if signal_price and float(signal_price) > 0 else None
+    with _db() as conn:
+        pos = _add_real_position_conn(conn, chat_id, t, n, p,
+                                      trade_date, sector, now)
+        conn.execute(
+            "INSERT INTO real_executions"
+            "(chat_id, ticker, side, lots, exec_price, signal_price, sl, tp,"
+            " source, slippage_rp, slippage_pct, slippage_cost,"
+            " trade_date, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (str(chat_id), t, "BELI", n, p, sig_val,
+             float(sl) if sl else None, float(tp) if tp else None,
+             str(source or "manual"), slip_rp, slip_pct, slip_cost,
+             str(trade_date), now))
+        conn.execute(
+            "DELETE FROM signal_context WHERE chat_id=? AND ticker=?",
+            (str(chat_id), t))
+    return {
+        **pos, "exec_price": p, "bought_lots": n, "signal_price": sig_val,
+        "slippage_rp": slip_rp, "slippage_pct": slip_pct,
+        "slippage_cost": slip_cost, "source": str(source or "manual"),
+    }
+
+
+def record_execution_sell(
+    chat_id: int | str,
+    ticker: str,
+    lots: int,
+    exec_price: float,
+    trade_date: str,
+    *,
+    signal_price: float | None = None,
+    source: str = "manual",
+) -> dict:
+    """Catat eksekusi JUAL manual + realisasi bruto/neto setelah fee BEI."""
+    from core import jurnal
+
+    n, p = _check_lot_price(lots, exec_price)
+    t = str(ticker).upper()
+    now = _stamp()
+    slip_rp, slip_pct, slip_cost = jurnal.calc_slippage("JUAL", p, signal_price, n)
+    sig_val = float(signal_price) if signal_price and float(signal_price) > 0 else None
+    with _db() as conn:
+        pos = _reduce_real_position_conn(conn, chat_id, t, n, p,
+                                         trade_date, now)
+        avg_raw = float(pos.pop("avg_raw"))
+        gross_pnl, net_pnl, net_pnl_pct = jurnal.calc_realized_pnl(n, p, avg_raw)
+        conn.execute(
+            "INSERT INTO real_executions"
+            "(chat_id, ticker, side, lots, exec_price, signal_price, source,"
+            " slippage_rp, slippage_pct, slippage_cost, avg_entry,"
+            " gross_pnl, net_pnl, net_pnl_pct, trade_date, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (str(chat_id), t, "JUAL", n, p, sig_val, str(source or "manual"),
+             slip_rp, slip_pct, slip_cost, round(avg_raw, 4),
+             gross_pnl, net_pnl, net_pnl_pct, str(trade_date), now))
+        conn.execute(
+            "DELETE FROM signal_context WHERE chat_id=? AND ticker=?",
+            (str(chat_id), t))
+    return {
+        **pos, "exec_price": p, "signal_price": sig_val,
+        "slippage_rp": slip_rp, "slippage_pct": slip_pct,
+        "slippage_cost": slip_cost, "gross_pnl": gross_pnl,
+        "net_pnl": net_pnl, "net_pnl_pct": net_pnl_pct,
+        "source": str(source or "manual"),
+    }
+
+
+def real_executions(chat_id: int | str, limit: int = 50) -> list[dict]:
+    """Daftar catatan eksekusi asli terbaru (termasuk realisasi & slippage)."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT id, ticker, side, lots, exec_price, signal_price, sl, tp,"
+            " source, slippage_rp, slippage_pct, slippage_cost, avg_entry,"
+            " gross_pnl, net_pnl, net_pnl_pct, trade_date, created_at"
+            " FROM real_executions WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+            (str(chat_id), max(1, int(limit))))
+        return [dict(r) for r in rows]
+
+
+def open_execution_lots(chat_id: int | str, ticker: str) -> int:
+    """Sisa lot yang pernah dicatat di real_executions (BELI minus JUAL)."""
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(CASE WHEN side='BELI' THEN lots "
+            "WHEN side='JUAL' THEN -lots ELSE 0 END), 0) AS net_lots"
+            " FROM real_executions WHERE chat_id=? AND ticker=?",
+            (str(chat_id), str(ticker).upper())).fetchone()
+        return max(0, int(row["net_lots"])) if row else 0
+
+
+def execution_chats() -> list[str]:
+    """Daftar chat_id yang punya catatan di jurnal eksekusi asli."""
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT chat_id FROM real_executions").fetchall()
+        return [str(r["chat_id"]) for r in rows]

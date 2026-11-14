@@ -14,8 +14,8 @@ import pandas as pd
 from telegram.constants import ParseMode
 from telegram.ext import Application
 
-from core import (alerts, analysis, data, fundamental, marketcal, powerscore,
-                  saran as saranmod, store)
+from core import (alerts, analysis, data, fundamental, jurnal as jurnalmod,
+                  marketcal, powerscore, saran as saranmod, store)
 from core.reports import esc, fmt_rp
 from core.textutil import split_message
 
@@ -326,3 +326,36 @@ async def full_market_scan_job(app: Application, deps):
             except Exception:
                 log.exception("kirim screener harian ke %s gagal", cid)
                 break
+
+
+async def weekly_journal_report(app: Application, deps, *, force: bool = False):
+    """[P28] Laporan berkala mingguan (Jumat): realisasi asli vs paper."""
+    now = marketcal.now_wib()
+    if not force:
+        if now.weekday() != 4 or not marketcal.is_trading_day(now.date()):
+            return
+    auto_chats = set(await asyncio.to_thread(store.get_auto_chats))
+    exec_chats = set(await asyncio.to_thread(store.execution_chats))
+    targets = sorted(auto_chats & exec_chats)
+    title = f"📒 <b>LAPORAN BERKALA JURNAL — {now:%d %b %Y}</b>"
+    for cid in targets:
+        try:
+            execs = await asyncio.to_thread(store.real_executions, cid, 500)
+            if not execs:
+                continue
+            paper = await asyncio.to_thread(store.get_paper, cid)
+            positions = await asyncio.to_thread(store.real_positions, cid)
+            txt = jurnalmod.format_journal_report(
+                jurnalmod.summarize_executions(execs),
+                jurnalmod.summarize_paper_realized(paper),
+                open_real_count=len(positions),
+                periodic_title=title,
+            )
+            for part in split_message(txt):
+                await deps.send_with_retry(
+                    lambda c=int(cid), p=part: app.bot.send_message(
+                        c, p, parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True),
+                    what="kirim laporan berkala jurnal")
+        except Exception:
+            log.exception("laporan berkala jurnal gagal utk %s", cid)

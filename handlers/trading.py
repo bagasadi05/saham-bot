@@ -333,6 +333,26 @@ async def do_tanya(update: Update, deps, ticker: str, focus: str):
             weekly = analysis.weekly_trend(wdf, res["score"]["pct"])
         except Exception:
             weekly = None
+    snap = res.get("snap") or {}
+    ind = res.get("ind")
+    sig_px = snap.get("close")
+    atr = None
+    try:
+        if ind is not None and "atr14" in ind:
+            val = float(ind["atr14"].iloc[-1])
+            atr = val if val > 0 else None
+    except Exception:
+        atr = None
+    if sig_px and float(sig_px) > 0:
+        px = float(sig_px)
+        step = atr if atr else px * 0.03
+        sl_lvl = max(px - step, 1.0)
+        tp_lvl = px + 2.0 * step
+        await asyncio.to_thread(
+            store.save_signal_context,
+            update.effective_chat.id, t, f"tanya_{focus}", px,
+            sl_lvl, tp_lvl, None, marketcal.now_wib().date().isoformat(),
+        )
     await deps.reply_long(
         msg,
         deps.build_verdict(res, fsc, nsent, focus, bt_sum, weekly=weekly),

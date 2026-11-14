@@ -1,6 +1,8 @@
 """Utilitas teks untuk pesan Telegram."""
 from __future__ import annotations
 
+import re
+
 TELEGRAM_LIMIT = 4096
 
 
@@ -126,3 +128,35 @@ def split_message(text: str, limit: int = 4000) -> list[str]:
 
     flush()
     return parts
+
+
+def parse_rupiah(tok: str) -> float | None:
+    """Terima '5000000', '5.000.000', '5jt', '1,5jt', '500rb' -> rupiah.
+
+    Return None bila bukan angka yang masuk akal -- pemanggil membalas contoh
+    perintah, bukan menebak nominal.
+    """
+    s = (tok or "").strip().lower().replace("rp", "").replace(" ", "")
+    if not s:
+        return None
+    mult = 1.0
+    for suf, m in (("juta", 1e6), ("jt", 1e6), ("ribu", 1e3), ("rb", 1e3),
+                   ("k", 1e3)):
+        if s.endswith(suf) and s[:-len(suf)]:
+            s, mult = s[:-len(suf)], m
+            break
+    if not re.fullmatch(r"[0-9.,]+", s):
+        return None
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")          # 5.000.000,50
+    elif s.count(".") >= 2 or re.search(r"\.\d{3}$", s):
+        s = s.replace(".", "")                            # 5.000.000
+    elif s.count(",") >= 2 or re.search(r",\d{3}$", s):
+        s = s.replace(",", "")                            # 5,000,000
+    else:
+        s = s.replace(",", ".")
+    try:
+        val = float(s)
+    except ValueError:
+        return None
+    return val * mult if val > 0 else None

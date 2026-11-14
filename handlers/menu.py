@@ -111,11 +111,19 @@ def home_markup() -> InlineKeyboardMarkup:
 
 
 def result_markup(action: str, ticker: str) -> InlineKeyboardMarkup:
-    """Tombol di bawah hasil: perbarui data + kembali ke menu."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Perbarui", callback_data=f"refresh:{action}:{ticker}")],
-        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
-    ])
+    """Tombol di bawah hasil: konfirmasi Stockbit (bila relevan), perbarui, menu."""
+    rows = []
+    if action in ("cek", "rencana", "tanya_beli", "beli", "tanya_umum", "analisis"):
+        rows.append([InlineKeyboardButton(
+            "📝 Sudah beli di Stockbit", callback_data=f"exec:buy:{ticker}",
+        )])
+    elif action in ("jual", "tanya_jual"):
+        rows.append([InlineKeyboardButton(
+            "📝 Sudah jual di Stockbit", callback_data=f"exec:sell:{ticker}",
+        )])
+    rows.append([InlineKeyboardButton("🔄 Perbarui", callback_data=f"refresh:{action}:{ticker}")])
+    rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 def ticker_pick_markup(action: str,
@@ -287,8 +295,9 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
                  InlineKeyboardButton("🔄 Scan ±944 Saham", callback_data="run:scan")],
                 [InlineKeyboardButton("🔬 Validasi Riset", callback_data="run:validasi"),
                  InlineKeyboardButton("🧾 Jejak Sinyal", callback_data="run:jejak")],
-                [InlineKeyboardButton("📋 Semua Perintah (/)", callback_data="sub:allcmd"),
-                 InlineKeyboardButton("⬅️ Menu Utama", callback_data="menu")],
+                [InlineKeyboardButton("📒 Jurnal Eksekusi", callback_data="run:jurnal"),
+                 InlineKeyboardButton("📋 Semua Perintah (/)", callback_data="sub:allcmd")],
+                [InlineKeyboardButton("⬅️ Menu Utama", callback_data="menu")],
             ]),
         )
     if group == "allcmd":
@@ -308,7 +317,8 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
             "• <code>/sinyal</code> · <code>/sinyal beli bagus</code> — sinyal seluruh IDX\n"
             "• <code>/sektor</code> — rotasi kekuatan sektor BEI\n"
             "• <code>/modal 5000000</code> — atur modal rencana/latihan\n"
-            "• <code>/portofolio</code> — catat posisi nyata (<code>/portofolio beli BBCA 5 9000</code>)\n\n"
+            "• <code>/portofolio</code> — catat posisi nyata (<code>/portofolio beli BBCA 5 9000</code>)\n"
+            "• <code>/jurnal</code> — catat slippage Stockbit &amp; win rate realisasi\n\n"
             "<b>Pantau, Riset &amp; Lainnya:</b>\n"
             "• <code>/watch</code> · <code>/alert</code> · <code>/auto on</code> — pantau otomatis\n"
             "• <code>/skor</code> · <code>/berita</code> · <code>/fundamental</code> · "
@@ -372,6 +382,10 @@ async def run_menu_action(update: Update, action: str, tickers: list[str], deps)
         await deps._do_bandar(update, from_menu=True)
     elif action == "portofolio":
         await deps._do_portofolio(update, [], from_menu=True)
+    elif action == "jurnal":
+        await deps._do_jurnal(update, [], from_menu=True)
+    elif action == "jurnal_history":
+        await deps._do_jurnal(update, ["riwayat"], from_menu=True)
     elif action == "sektor":
         await deps._do_sektor(update, [], from_menu=True)
     elif action == "sinyal":
@@ -596,6 +610,10 @@ async def menu_callback(update: Update, ctx, deps):
         await deps.sinyal_handler.nav(update, cb_data, deps, ctx.job_queue)
         return
 
+    if cb_data.startswith("exec:"):
+        await deps.jurnal_handler.handle_exec_callback(update, cb_data, deps)
+        return
+
     if cb_data.startswith("run:"):
         action = cb_data.split(":", 1)[1]
         await _handle_run(update, msg, ctx, action, deps)
@@ -628,6 +646,10 @@ async def menu_text_input(update: Update, ctx, deps):
         return
 
     raw_text = (update.effective_message.text or "").strip()
+    if await deps.jurnal_handler.handle_pending_exec(
+        update, chat_id, action, raw_text, deps
+    ):
+        return
     if action == "modal":
         val = deps._parse_rupiah(raw_text)
         if val is None or not (100_000 <= val <= 10_000_000_000):

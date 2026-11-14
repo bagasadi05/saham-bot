@@ -14,8 +14,9 @@ from telegram import Update
 from telegram.constants import ParseMode
 
 from core import (analysis, bandar, banding, cek as cekmod, data, fundamental,
-                  marketcal, news, risk as riskmod, store, universe)
+                  marketcal, news, rencana, risk as riskmod, store, universe)
 from core.reports import esc
+from handlers import jurnal as jurnal_handler
 
 log = logging.getLogger("sahambuddy")
 
@@ -231,8 +232,24 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
     modal = await asyncio.to_thread(store.get_modal,
                                     update.effective_chat.id)
     out["warnings"].extend(riskmod.position_fit(t, positions, modal))
+    if out.get("price") and float(out["price"]) > 0:
+        atr_val = None
+        try:
+            ind = bahan["res"].get("ind")
+            if ind is not None and "atr14" in ind:
+                atr_val = float(ind["atr14"].iloc[-1])
+        except Exception:
+            atr_val = None
+        lv = rencana.price_levels({"price": float(out["price"]), "atr": atr_val})
+        today_iso = marketcal.now_wib().date().isoformat()
+        await asyncio.to_thread(
+            store.save_signal_context,
+            update.effective_chat.id, t, "cek", float(out["price"]),
+            lv.get("sl"), lv.get("tp"), None, today_iso,
+        )
+    kb = jurnal_handler.confirm_exec_markup("cek", t, deps, from_menu=from_menu)
     await deps.reply_long(
         msg,
         _cek_text(out, bahan["res"], deps),
-        reply_markup=deps.result_markup("cek", t) if from_menu else None,
+        reply_markup=kb,
     )

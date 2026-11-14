@@ -67,6 +67,7 @@ from handlers import analisis as analisis_handler
 from handlers import cek as cek_handler
 from handlers import info as info_handler
 from handlers import jobs as jobs_handler
+from handlers import jurnal as jurnal_handler
 from handlers import market as market_handler
 from handlers import menu as menu_handler
 from handlers import sektor as sektor_handler
@@ -547,6 +548,7 @@ async def _post_init(app: Application):
             BotCommand("jual", "Tanya: layak jual? mis. /jual BBCA"),
             BotCommand("belajar", "Kamus istilah saham (RSI, PER, PBV...)"),
             BotCommand("portofolio", "Catat & pantau portofolio asli"),
+            BotCommand("jurnal", "Jurnal eksekusi Stockbit & win rate realisasi"),
             BotCommand("watch", "Daftar saham pantauan (watchlist)"),
             BotCommand("alert", "Pasang alarm harga otomatis"),
             BotCommand("sinyal", "Sinyal pasar seluruh BEI (±944 emiten)"),
@@ -1183,6 +1185,16 @@ async def cmd_portofolio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_portofolio(update, tokens(update))
 
 
+async def _do_jurnal(update: Update, args: list[str], *, from_menu: bool = False):
+    await jurnal_handler.do_jurnal(update, args, sys.modules[__name__],
+                                   from_menu=from_menu)
+
+
+async def cmd_jurnal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Jurnal eksekusi Stockbit & realisasi (asli vs paper)."""
+    await jurnal_handler.cmd_jurnal(update, ctx, sys.modules[__name__])
+
+
 # ------------------------------- P14: ceklist (kode di handlers/cek.py)
 _CEK_ICON = cek_handler._CEK_ICON
 _CEK_VERDICT = cek_handler._CEK_VERDICT
@@ -1323,6 +1335,10 @@ async def full_market_scan_job(app: Application):
     await jobs_handler.full_market_scan_job(app, sys.modules[__name__])
 
 
+async def weekly_journal_report(app: Application):
+    await jobs_handler.weekly_journal_report(app, sys.modules[__name__])
+
+
 def build_application(token: str) -> Application:
     """Bangun `Application` dengan batas konkurensi & laju ke Bot API (D2).
 
@@ -1391,6 +1407,7 @@ def main():
     reg(["paket", "stockbit", "plan"], cmd_paket)
     reg(["cek", "checklist", "periksa"], cmd_cek)
     reg(["portofolio", "porto"], cmd_portofolio)
+    reg(["jurnal", "journal"], cmd_jurnal)
     reg(["sektor", "sector"], cmd_sektor)
     reg(["scan", "pindai"], cmd_scan)
     reg(["beli", "buy"], cmd_beli)
@@ -1422,6 +1439,10 @@ def main():
     job_queue.run_daily(full_market_scan_job,
                         time=_dt.time(16, 15, tzinfo=WIB),
                         name="full-market-scan")
+    # [P28] laporan berkala mingguan (Jumat 16:45 WIB) realisasi asli vs paper
+    job_queue.run_daily(weekly_journal_report,
+                        time=_dt.time(16, 45, tzinfo=WIB),
+                        name="weekly-journal")
     # heartbeat tiap 5 menit: dipakai healthcheck Docker untuk tahu bot masih hidup
     job_queue.run_repeating(heartbeat, interval=300, first=5, name="heartbeat")
     if config.BACKUP_AUTO and config.BACKUP_DIR:

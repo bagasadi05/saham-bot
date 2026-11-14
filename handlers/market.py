@@ -18,7 +18,8 @@ from telegram.constants import ChatAction, ParseMode
 from core import (bandar, marketcal, regime, rencana, reports,
                   risk as riskmod, screener, store, universe)
 from core.reports import esc
-from core.textutil import split_message
+from core.textutil import parse_rupiah, split_message
+from handlers import jurnal as jurnal_handler
 
 log = logging.getLogger("sahambuddy")
 
@@ -264,36 +265,7 @@ _RENCANA_USAGE = (
 )
 
 
-def _parse_rupiah(tok: str) -> float | None:
-    """Terima '5000000', '5.000.000', '5jt', '1,5jt', '500rb' → rupiah.
-
-    Return None bila bukan angka yang masuk akal — pemanggil membalas contoh
-    perintah, bukan menebak nominal.
-    """
-    s = (tok or "").strip().lower().replace("rp", "").replace(" ", "")
-    if not s:
-        return None
-    mult = 1.0
-    for suf, m in (("juta", 1e6), ("jt", 1e6), ("ribu", 1e3), ("rb", 1e3),
-                   ("k", 1e3)):
-        if s.endswith(suf) and s[:-len(suf)]:
-            s, mult = s[:-len(suf)], m
-            break
-    if not re.fullmatch(r"[0-9.,]+", s):
-        return None
-    if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".")          # 5.000.000,50
-    elif s.count(".") >= 2 or re.search(r"\.\d{3}$", s):
-        s = s.replace(".", "")                            # 5.000.000
-    elif s.count(",") >= 2 or re.search(r",\d{3}$", s):
-        s = s.replace(",", "")                            # 5,000,000
-    else:
-        s = s.replace(",", ".")
-    try:
-        val = float(s)
-    except ValueError:
-        return None
-    return val * mult if val > 0 else None
+_parse_rupiah = parse_rupiah
 
 
 def _snapshot_row(ticker: str) -> dict:
@@ -501,11 +473,22 @@ async def do_rencana(update: Update, args: list[str], deps,
             ]
             await deps.reply_long(msg, "\n".join(lines))
             return
+    today_iso = marketcal.now_wib().date().isoformat()
+    if plan.get("entry") and float(plan["entry"]) > 0:
+        await asyncio.to_thread(
+            store.save_signal_context,
+            chat_id, head, "rencana", float(plan["entry"]),
+            plan.get("sl"), plan.get("tp"),
+            plan.get("lots") or None, today_iso,
+        )
+    kb = jurnal_handler.confirm_exec_markup(
+        "rencana", head, deps, from_menu=from_menu,
+    )
     await deps.reply_long(
         msg,
         _rencana_single_text(plan, enriched, budget_from_modal=from_modal,
                              deps=deps),
-        reply_markup=deps.result_markup("rencana", head) if from_menu else None,
+        reply_markup=kb,
     )
 
 

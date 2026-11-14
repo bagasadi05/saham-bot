@@ -295,6 +295,8 @@ def section_markup(sig: str) -> InlineKeyboardMarkup:
 
 def detail_markup(ticker: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Sudah beli di Stockbit",
+                              callback_data=f"exec:buy:{ticker}")],
         [InlineKeyboardButton("📊 Analisis lengkap",
                               callback_data=f"sg:an:{ticker}")],
         [InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov")],
@@ -467,6 +469,14 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
                 reply_markup=deps.home_markup() if from_menu else None)
             return
         kval = await deps._kualitas_map([found["ticker"]])
+        sig_px = found.get("entry") or found.get("price")
+        if sig_px and float(sig_px) > 0:
+            await asyncio.to_thread(
+                store.save_signal_context,
+                update.effective_chat.id, found["ticker"], "sinyal",
+                float(sig_px), found.get("sl"), found.get("tp"), None,
+                str(meta.get("trade_date") or ""),
+            )
         await deps.reply_long(msg, _sinyal_detail(found, meta, deps,
                                                   kval.get(found["ticker"])),
                               reply_markup=_with_home(detail_markup(found["ticker"]), from_menu))

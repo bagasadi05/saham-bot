@@ -12,6 +12,7 @@ import asyncio
 import logging
 import re
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
 
 from core import (data, fundamental, marketcal, portofolio as portmod,
@@ -214,13 +215,29 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
                     "Lihat: /portofolio",
                     parse_mode=ParseMode.HTML)
             else:
-                res = await asyncio.to_thread(
-                    store.reduce_real_position, chat_id, t, lots, price, today)
+                tracked = await asyncio.to_thread(
+                    store.open_execution_lots, chat_id, t)
+                if tracked > 0:
+                    res = await asyncio.to_thread(
+                        store.record_execution_sell, chat_id, t, lots, price,
+                        today, source="portofolio")
+                    extra = (
+                        f"Realisasi bruto: {deps._money_delta(res['gross_pnl'])}\n"
+                        f"Realisasi neto (fee BEI 0,40%): "
+                        f"<b>{deps._money_delta(res['net_pnl'])}</b> "
+                        f"<i>(tercatat di /jurnal)</i>\n"
+                    )
+                else:
+                    res = await asyncio.to_thread(
+                        store.reduce_real_position, chat_id, t, lots, price, today)
+                    extra = (
+                        f"Realisasi (harga − rata-rata): "
+                        f"<b>{deps._money_delta(res['realized'])}</b>\n"
+                    )
                 await msg.reply_text(
                     f"✅ Tercatat <b>JUAL {esc(t)}</b> {lots} lot @ "
                     f"{deps._money(price)}\n"
-                    f"Realisasi (harga − rata-rata): "
-                    f"<b>{deps._money_delta(res['realized'])}</b>\n"
+                    + extra
                     + (f"Sisa {res['lots_left']} lot @ "
                        f"{deps._money(res['avg_price'])}\n" if res["lots_left"]
                        else "Posisi tertutup.\n")
@@ -247,9 +264,13 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
         return
 
     positions = await asyncio.to_thread(store.real_positions, chat_id)
+    j_rows = [[InlineKeyboardButton("📒 Jurnal Eksekusi", callback_data="run:jurnal")]]
+    if from_menu:
+        j_rows.append([InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")])
+    porto_kb = InlineKeyboardMarkup(j_rows)
     if not positions:
         await deps.reply_long(msg, "Belum ada posisi asli.\n\n" + _PORTO_USAGE,
-                              reply_markup=rm)
+                              reply_markup=porto_kb if from_menu else rm)
         return
     if not await deps.cooldown_ok(update, "portofolio"):
         return
@@ -260,4 +281,4 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
     bench = await asyncio.to_thread(_bench_rets)
     risk = riskmod.portfolio_risk(positions, quotes, bench)
     await deps.reply_long(msg, _porto_text(summary, modal, deps, risk),
-                          reply_markup=rm)
+                          reply_markup=porto_kb)

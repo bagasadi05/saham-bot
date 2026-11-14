@@ -315,8 +315,17 @@ tersedia (keputusan pemilik, 2026-11-12).
   melewati batas. Tanpa anggaran eksplisit, `/rencana` memakai 25% modal.
 - [ ] **P23 lanjutan** — batas dapat diubah pemilik lewat perintah
   terdokumentasi (sekarang konstanta di `core/risk.py`).
-- [ ] **P19–P22, P25–P31** — menunggu keputusan D0–D3 (sumber data, biaya,
-  kriteria paper trading, VPS) dan/atau item berikutnya di batch 6.
+- [x] **P28 — Jurnal eksekusi manual Stockbit & slippage nyata** (`core/jurnal.py`,
+  `handlers/jurnal.py`, `core/store.py` v5, `handlers/jobs.py`,
+  `handlers/menu.py`, `bot.py`) — konfirmasi 1-tap **"Sudah beli di Stockbit"**
+  setelah `/rencana`, `/cek`, `/beli`, dan `/sinyal KODE`, perintah `/jurnal`
+  (`beli`/`jual`/`riwayat`), slippage vs harga sinyal (`"tidak tersedia"` bila
+  tanpa acuan), win rate & profit factor realisasi setelah biaya BEI `0,40%`,
+  pemisahan tegas ASLI vs PAPER, sinkronisasi ke `/portofolio` & exit lewat
+  `/portofolio jual`, serta ringkasan mingguan Jumat `16:45 WIB` (`/auto on`).
+  Tanpa auto-trading, login Stockbit, atau kredensial.
+- [ ] **P19–P22, P25–P27, P29–P31** — menunggu keputusan D0–D3 (sumber data,
+  biaya, kriteria paper trading, VPS) dan/atau item berikutnya di batch 6.
 
 ---
 
