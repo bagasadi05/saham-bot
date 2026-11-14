@@ -519,6 +519,9 @@ def test_saran_scan_is_parallel_ordered_and_error_isolated(tmp_path, monkeypatch
     monkeypatch.setattr(bot, "SCAN_PAUSE", 0)
     monkeypatch.setattr(bot.saranmod, "queue_paper", lambda *a, **k: 0)
     monkeypatch.setattr(bot.saranmod, "update_paper", lambda *a, **k: [])
+    monkeypatch.setattr(bot.regime, "fetch_ihsg_regime",
+                        lambda: {"status": "BULL", "exposure_scale": 1.0,
+                                 "sma50": 7300.0, "sma200": 7000.0, "gap_pct": 4.3})
     universe = ["AAAA", "RUSAK", "BBBB", "CCCC", "DDDD", "EEEE"]
     txt = asyncio.run(bot.saran_scan_text(1, universe))
     assert txt and "AAAA" in txt
@@ -527,6 +530,12 @@ def test_saran_scan_is_parallel_ordered_and_error_isolated(tmp_path, monkeypatch
     assert active["max"] <= bot.SCAN_CONCURRENCY   # tapi tetap dibatasi
     assert sorted(finished) == ["AAAA", "BBBB", "CCCC", "DDDD", "EEEE"]
     assert finished.index("AAAA") < finished.index("EEEE")  # urutan universe dijaga
+
+    monkeypatch.setattr(bot.regime, "fetch_ihsg_regime",
+                        lambda: {"status": "DEFENSIVE", "exposure_scale": 0.5,
+                                 "sma50": 6800.0, "sma200": 7200.0, "gap_pct": -5.56})
+    txt_def = asyncio.run(bot.saran_scan_text(1, universe))
+    assert txt_def and "Rezim IHSG defensif" in txt_def and "risiko 0.5%/posisi" in txt_def
 
 
 # -------------------------------- Tier B: riwayat paper trading dibatasi ----

@@ -45,13 +45,14 @@ def downtrend_df():
 
 @pytest.fixture(autouse=True)
 def _isolated_caches():
-    from core import bandar, banding, data, fundamental, news
+    from core import bandar, banding, data, fundamental, news, regime
 
     data.clear_cache()
     fundamental.clear_cache()
     news.clear_cache()
     bandar.clear_cache()
     banding._mkt_cache.update({"ts": 0.0, "val": None})
+    regime.clear_cache()
     yield
     data.clear_cache()
 

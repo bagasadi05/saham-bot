@@ -115,3 +115,32 @@ def test_pick_mode_relatif_menghormati_batas_portofolio():
     out = saran.pick(analyzed, modal=10_000_000, open_recs=open_recs)
     assert out["mode"] == "relatif"
     assert out["picks"] == []  # Financials penuh (2/2), G4 sudah terbuka
+
+
+def test_pick_defensif_dan_hold_review():
+    good = dict(close=1000.0, sma50=1200.0, high20=1400.0, rsi14=70.0,
+                ret20d=5.0, macd_hist=10.0, volat20=0.01, ret1d=-2.0,
+                volume=2_000_000.0, sma20=1300.0, atr14=20.0)
+    bad = dict(close=1000.0, sma50=800.0, high20=1000.0, rsi14=30.0,
+               ret20d=-5.0, macd_hist=-10.0, volat20=0.05, ret1d=3.0,
+               volume=500_000.0, sma20=750.0, atr14=20.0)
+    analyzed = (
+        [{"res": _res_full(f"G{i}", 0, 1.0, **good), "fund_raw": {"sector": f"SG{i}"}}
+         for i in range(5)]
+        + [{"res": _res_full(f"B{i}", 90, 1.0, **bad), "fund_raw": {"sector": f"SB{i}"}}
+           for i in range(5)]
+    )
+    open_recs = {
+        "G0": {"status": "open", "sector": "SG0"},  # top quintile -> TAHAN
+        "B0": {"status": "open", "sector": "SB0"},  # bottom quintile -> ROTASI
+    }
+    def_reg = {"status": "DEFENSIVE", "exposure_scale": 0.5}
+    out = saran.pick(
+        analyzed, modal=10_000_000, open_recs=open_recs, market_regime=def_reg
+    )
+    assert out["exposure_scale"] == 0.5
+    assert out["picks"]
+    assert out["picks"][0]["budget"] == 50_000  # 0.5% x 10jt
+    actions = {h["ticker"]: h["action"] for h in out["hold_notes"]}
+    assert actions["G0"] == "TAHAN"
+    assert actions["B0"] == "ROTASI"

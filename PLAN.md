@@ -283,6 +283,24 @@ tersedia (keputusan pemilik, 2026-11-12).
 
 ---
 
+## Track A & B — Kontrol Risiko Rezim & Riset Turnover/Horizon (2026-11-14)
+
+- [x] **Filter rezim IHSG (`core/regime.py`)** — aturan kausal `^JKSE`
+  `SMA50 < SMA200` memangkas eksposur & risiko ke `50%` (`NA` bila `<200` bar).
+  Dipakai di `/paket` (`0,5%/10%/45%`), `/saran` (`0,5%` + tinjauan band tahan
+  top 60% `TAHAN`/`ROTASI`), serta simulasi `research/portfolio.py` &
+  `research/experiments.py`. Tes baru: `tests/test_regime.py`.
+- [x] **Riset turnover & horizon (`research/experiments.py`, `data/validation.json`)**
+  — `research/experiments.py --offline --horizons 20 40 60` menguji 16 varian
+  (320 trial) plus perbandingan walk-forward 20d/40d/60d. Bukti memvalidasi
+  untuk **tetap memakai horizon prediksi 20 hari** (WF IC `+0,0265` vs
+  `-0,0032` di 40d & `-0,0134` di 60d) sambil memangkas turnover & drawdown
+  lewat `hold=0,6` + `min_hold=2` + rezim `sma50_200_half` (MDD `-35,0% -> -20,0%`,
+  `alpha_active_gross +0,534%`, `alpha_net +0,330%`, `DSR 0,86 < 0,95`). Bobot
+  `core/relatif.py` tetap beku karena gerbang DSR `0,95` belum tembus.
+
+---
+
 ## Urutan kerja yang disarankan (setelah sesi ini)
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |

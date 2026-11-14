@@ -174,38 +174,47 @@ def _cek_text(out: dict, res: dict, deps) -> str:
     return "\n".join(out_lines)
 
 
-async def do(update: Update, args: list[str], deps):
+async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
     """Ceklist satu layar: /cek <KODE>."""
     msg = update.effective_message
+    rm = deps.home_markup() if from_menu else None
     if not args:
+        wl = (await asyncio.to_thread(store.get_watchlist, update.effective_chat.id)
+              if update.effective_chat else [])
         await msg.reply_text(
-            "Contoh: <code>/cek BBCA</code>\n\n"
-            "Isinya enam bagian — tren, valuasi vs sektor, aliran asing, "
-            "berita, agenda 14 hari, likuiditas — plus kesimpulan "
-            "LAYAK / TUNGGU / HINDARI.",
-            parse_mode=ParseMode.HTML)
+            "🛡️ <b>Cek Layak Beli (6 bagian)</b>\n"
+            "Contoh: <code>/cek BBCA</code> — atau ketuk salah satu saham di bawah:\n\n"
+            "Isinya: tren, valuasi vs sektor, aliran asing, berita, "
+            "agenda 14 hari, likuiditas + kesimpulan LAYAK / TUNGGU / HINDARI.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=deps.ticker_pick_markup("cek", wl))
         return
     t = args[0].upper()
     t = t[:-3] if t.endswith(".JK") else t
     if not re.fullmatch(r"[A-Z]{2,6}", t):
         await msg.reply_text(
             f"Kode <code>{esc(args[0])}</code> tidak valid. Contoh: "
-            "<code>/cek BBCA</code>", parse_mode=ParseMode.HTML)
+            "<code>/cek BBCA</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm)
         return
     if not await deps.cooldown_ok(update, "cek"):
         return
 
-    await msg.reply_text(f"⏳ Memeriksa {t} (6 bagian, ±10–25 detik)…")
+    if not from_menu:
+        await msg.reply_text(f"⏳ Memeriksa {t} (6 bagian, ±10–25 detik)…")
     try:
         bahan = await _cek_gather(t, update.effective_chat.id, deps)
     except ValueError as e:
-        await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML)
+        await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=rm)
         return
     except Exception:
         log.exception("cek %s gagal", t)
         await msg.reply_text(
             f"❌ Data {esc(t)} tidak tersedia saat ini. Coba lagi nanti — "
-            "tidak ada bagian yang saya karang.", parse_mode=ParseMode.HTML)
+            "tidak ada bagian yang saya karang.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm)
         return
 
     out = cekmod.build(res=bahan["res"], fund=bahan["fund"],
@@ -213,4 +222,8 @@ async def do(update: Update, args: list[str], deps):
                        bandar_row=bahan["bandar_row"], agenda=bahan["agenda"],
                        agenda_days=bahan["agenda_days"], peers=bahan["peers"],
                        value_avg20=bahan["value_avg20"], board=bahan["board"])
-    await deps.reply_long(msg, _cek_text(out, bahan["res"], deps))
+    await deps.reply_long(
+        msg,
+        _cek_text(out, bahan["res"], deps),
+        reply_markup=deps.result_markup("cek", t) if from_menu else None,
+    )

@@ -121,10 +121,11 @@ def _porto_text(summary: dict, modal: int, deps) -> str:
     return "\n".join(out)
 
 
-async def do(update, args: list[str], deps):
+async def do(update, args: list[str], deps, *, from_menu: bool = False):
     """Portofolio asli: lihat, catat beli/jual, riwayat."""
     msg = update.effective_message
     chat_id = update.effective_chat.id
+    rm = deps.home_markup() if from_menu else None
     sub = (args[0].lower() if args else "")
 
     if sub in ("beli", "buy", "jual", "sell"):
@@ -211,7 +212,8 @@ async def do(update, args: list[str], deps):
 
     positions = await asyncio.to_thread(store.real_positions, chat_id)
     if not positions:
-        await deps.reply_long(msg, "Belum ada posisi asli.\n\n" + _PORTO_USAGE)
+        await deps.reply_long(msg, "Belum ada posisi asli.\n\n" + _PORTO_USAGE,
+                              reply_markup=rm)
         return
     if not await deps.cooldown_ok(update, "portofolio"):
         return
@@ -219,4 +221,5 @@ async def do(update, args: list[str], deps):
     quotes = await _porto_quotes([p["ticker"] for p in positions], deps)
     summary = portmod.summarize(positions, quotes)
     modal = await asyncio.to_thread(store.get_modal, chat_id)
-    await deps.reply_long(msg, _porto_text(summary, modal, deps))
+    await deps.reply_long(msg, _porto_text(summary, modal, deps),
+                          reply_markup=rm)

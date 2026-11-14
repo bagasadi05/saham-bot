@@ -40,6 +40,36 @@ def last_macd_cross_note(score: dict) -> str:
     return f"\n⚠️ {esc(score['macd_note'])}" if score.get("macd_note") else ""
 
 
+def regime_banner(reg: dict | None) -> str:
+    """Satu baris konteks rezim IHSG (^JKSE SMA50 vs SMA200), jujur jika NA."""
+    if not reg or reg.get("status") == "NA":
+        reason = (reg or {}).get("reason") or "tidak tersedia"
+        return (
+            f"📊 Rezim IHSG (^JKSE): <i>tidak tersedia</i> "
+            f"({esc(reason)}; porsi normal 100%)."
+        )
+    status = reg.get("status")
+    sma50 = reg.get("sma50")
+    sma200 = reg.get("sma200")
+    gap = reg.get("gap_pct")
+    stale_tag = " · cache lama" if reg.get("stale") else ""
+    ma_txt = (
+        f"SMA50 {sma50:,.0f} vs SMA200 {sma200:,.0f}"
+        + (f" ({gap:+.2f}%)" if isinstance(gap, (int, float)) else "")
+        if isinstance(sma50, (int, float)) and isinstance(sma200, (int, float))
+        else ""
+    )
+    if status == "DEFENSIVE":
+        pct = int(round(float(reg.get("exposure_scale", 0.5)) * 100))
+        detail = f" · {ma_txt}" if ma_txt else ""
+        return (
+            f"🛡️ <b>Rezim IHSG defensif</b>{detail}{stale_tag} → "
+            f"risiko &amp; batas alokasi dipangkas ke <b>{pct}%</b> (sisanya cash)."
+        )
+    detail = f" ({ma_txt}{stale_tag})" if ma_txt else ""
+    return f"📊 Rezim IHSG: <b>konstruktif</b>{detail} — eksposur normal 100%."
+
+
 def market_context_line(res: dict, mkt: dict | None) -> str:
     """[P2 & P9] Konteks IHSG + pembanding se-sektor (angka, bukan opini)."""
     peers = (mkt.get("peers") if mkt else None) or res.get("sector_ctx")

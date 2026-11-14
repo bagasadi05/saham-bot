@@ -81,3 +81,34 @@ def test_run_records_hysteresis_setting():
     hyst = portfolio.run(oos, 1 / 3, 1, 0.6)
     assert hyst["hysteresis"] is True
     assert hyst["hold_quintile"] == 0.6
+
+
+def test_min_hold_locks_incumbent_and_regime_scales_exposure():
+    import numpy as np
+
+    from core import regime as regime_mod
+    from tests.conftest import make_prices
+
+    oos = _two_date_oos()
+    # min_hold=2 mengunci pemegang hari ke-1 (T1, T2) meskipun T6 & T5 naik ke atas pada hari ke-2
+    df_lock = portfolio.one_phase(oos, 1 / 3, 1, 0, hold=0.4, min_hold=2)
+    assert df_lock.iloc[1]["turnover"] == 0.0
+
+    # Regime defensif pada hari-2 memangkas eksposur 100% -> 50% dan menurunkan alpha vs full bench
+    ihsg_raw = make_prices(np.linspace(7600, 6200, 260), start="2023-01-02")
+    reg_df = regime_mod.ihsg_indicators(ihsg_raw)
+    d_bull = pd.Timestamp(oos["date"].iloc[0])
+    d_bear = pd.Timestamp(oos["date"].iloc[-1])
+    reg_df = reg_df.iloc[-2:].copy()
+    reg_df.index = pd.DatetimeIndex([d_bull, d_bear])
+    reg_df.loc[d_bull, ["sma50", "sma200"]] = [7200.0, 7000.0]
+    reg_df.loc[d_bear, ["sma50", "sma200"]] = [6800.0, 7000.0]
+
+    res = portfolio.run(
+        oos, 1 / 3, 1, hold=0.4, min_hold=2,
+        regime_mode="sma50_200_half", regime_df=reg_df,
+    )
+    assert res["min_hold"] == 2
+    assert res["regime"] == "sma50_200_half"
+    assert res["across_phases"]["avg_exposure_pct"] == 75.0
+    assert res["across_phases"]["alpha_active_gross_mean_pct"] is not None

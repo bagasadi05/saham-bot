@@ -46,7 +46,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import data
+from core import data, regime
 from config import IDX_BUY_FEE, IDX_SELL_FEE
 
 BUY_COST = IDX_BUY_FEE
@@ -74,6 +74,16 @@ def summarize(series: np.ndarray) -> dict:
         "cum_pct": round(cum * 100, 2),
         "win_rate": round(float((series > 0).mean()) * 100, 1),
     }
+
+
+def max_drawdown_pct(returns: np.ndarray) -> float:
+    """Drawdown puncak-ke-lembah maksimum dalam persen (negatif)."""
+    arr = np.asarray(returns, dtype=float)
+    if len(arr) == 0:
+        return 0.0
+    eq = np.cumprod(1.0 + arr)
+    peak = np.maximum.accumulate(eq)
+    return float((eq / peak - 1.0).min()) * 100.0
 
 
 def sharpe_ratio(x: np.ndarray) -> float | None:
@@ -160,21 +170,35 @@ def moving_block_bootstrap_ci(values, iters: int = 2000,
     }
 
 
-def ihsg_period_returns(step: int, period: str = "10y") -> pd.Series:
+def load_ihsg_raw(period: str = "10y", *, offline: bool = False) -> pd.DataFrame | None:
+    """Ambil OHLCV `^JKSE`, atau baca cache lokal hanya bila `offline=True`."""
+    if offline:
+        return data._load_cache("^JKSE", "1d")
+    try:
+        df = data.fetch_history("^JKSE", period=period, raw_symbol=True)
+        return df if (df is not None and not df.empty) else None
+    except Exception as e:  # noqa: BLE001
+        print(f"  ! IHSG: {e}")
+        return None
+
+
+def ihsg_period_returns(
+    step: int,
+    period: str = "10y",
+    *,
+    df: pd.DataFrame | None = None,
+    offline: bool = False,
+) -> pd.Series:
     """Return IHSG per `step` hari bursa, diindeks tanggal bar awal.
 
     Kosong kalau data indeks tidak tersedia — pemanggil wajib melaporkan
     "tidak ada pembanding", bukan mengarang angka.
     """
-    try:
-        df = data.fetch_history("^JKSE", period=period, raw_symbol=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"  ! IHSG: {e}")
+    src = df if df is not None else load_ihsg_raw(period=period, offline=offline)
+    if src is None or "close" not in src or len(src) <= step:
         return pd.Series(dtype=float)
-    if df is None or "close" not in df or len(df) <= step:
-        return pd.Series(dtype=float)
-    close = df["close"].astype(float).to_numpy()
-    idx = pd.to_datetime(df.index).normalize()
+    close = src["close"].astype(float).to_numpy()
+    idx = pd.to_datetime(src.index).normalize()
     ret = pd.Series(close[step:] / close[:-step] - 1.0, index=idx[:-step])
     return ret[~ret.index.duplicated(keep="last")]
 
@@ -198,51 +222,125 @@ def turnover_cost(prev: dict[str, float], cur: dict[str, float]) -> dict:
     }
 
 
-def _select(g: pd.DataFrame, prev_weights: dict[str, float],
-            take_frac: float, hold_frac: float) -> list[str]:
-    """Pilih nama: pemegang lama bertahan selama masih di dalam band tahan."""
+def select_names(
+    g: pd.DataFrame,
+    prev_age: dict[str, int],
+    take_frac: float,
+    hold_frac: float,
+    min_hold: int = 1,
+    score_col: str = "pred",
+) -> list[str]:
+    """Pilih nama top-q dengan hysteresis band tahan dan `min_hold` periode."""
     n_top = max(1, int(round(len(g) * take_frac)))
-    ranked = g.sort_values("pred", ascending=False)
-    pct = ranked["pred"].rank(pct=True)
+    ranked = g.sort_values(score_col, ascending=False)
+    pct = ranked[score_col].rank(pct=True)
     entry_pct = 1.0 - take_frac
     exit_pct = 1.0 - max(take_frac, hold_frac)
 
+    locked: list[str] = []
     held: list[str] = []
     entrants: list[str] = []
     for ticker, p in zip(ranked["ticker"], pct, strict=True):
-        if ticker in prev_weights and p >= exit_pct:
+        age = prev_age.get(ticker, 0)
+        if 0 < age < min_hold:
+            locked.append(ticker)
+        elif age > 0 and p >= exit_pct:
             held.append(ticker)
         elif p >= entry_pct:
             entrants.append(ticker)
-    return (held + entrants)[:n_top]
+    return (locked + held + entrants)[:n_top]
 
 
-def one_phase(oos: pd.DataFrame, q: float, step: int, offset: int,
-              hold: float | None = None,
-              ihsg: pd.Series | None = None) -> pd.DataFrame:
+def _select(
+    g: pd.DataFrame,
+    prev_weights: dict[str, float],
+    take_frac: float,
+    hold_frac: float,
+    *,
+    min_hold: int = 1,
+    score_col: str = "pred",
+    prev_age: dict[str, int] | None = None,
+) -> list[str]:
+    """Kompatibilitas pemanggil lama atas `select_names`."""
+    ages = prev_age if prev_age is not None else {t: 1 for t in prev_weights}
+    return select_names(
+        g, ages, take_frac, hold_frac, min_hold=min_hold, score_col=score_col
+    )
+
+
+def _regime_exposure(
+    d, regime_mode: str, regime_df: pd.DataFrame | None
+) -> float:
+    if regime_mode == "none" or regime_df is None or regime_df.empty:
+        return 1.0
+    key = pd.Timestamp(d).normalize()
+    if key not in regime_df.index:
+        return 1.0
+    row = regime_df.loc[key]
+    return regime.exposure_from_indicators(
+        row.get("close"),
+        row.get("sma50"),
+        row.get("sma200"),
+        row.get("vol20"),
+        mode=regime_mode,
+    )
+
+
+def one_phase(
+    oos: pd.DataFrame,
+    q: float,
+    step: int,
+    offset: int,
+    hold: float | None = None,
+    ihsg: pd.Series | None = None,
+    *,
+    min_hold: int = 1,
+    regime_mode: str = "none",
+    regime_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Satu fase rebalance. Return baris per periode (gross/net/bench/turnover)."""
+    if regime_mode not in regime.REGIME_MODES:
+        raise ValueError(f"mode regime tidak dikenal: {regime_mode}")
     dates = np.array(sorted(oos["date"].unique()))
     periods = list(dates[offset::step])
     hold_frac = q if hold is None else max(q, hold)
 
     prev: dict[str, float] = {}
+    prev_age: dict[str, int] = {}
     rows = []
     for d in periods:
         g = oos[oos["date"] == d].dropna(subset=["pred", "fwd"])
         if len(g) < 5:
             continue
-        names = _select(g, prev, q, hold_frac)
-        if not names:
-            prev = {}
-            continue
-        weight = 1.0 / len(names)
-        cur = {t: weight for t in names}
-        top = g[g["ticker"].isin(names)]
-        gross = float(top["fwd"].mean())
+        exp = _regime_exposure(d, regime_mode, regime_df)
         bench = float(g["fwd"].mean())          # universe equal weight
-        tc = turnover_cost(prev, cur)
         ranked = g.sort_values("pred", ascending=False)
-        bottom = float(ranked.tail(max(1, len(names)))["fwd"].mean())
+        n_tail = max(1, int(round(len(g) * q)))
+
+        if exp <= 0.0:
+            cur: dict[str, float] = {}
+            new_age: dict[str, int] = {}
+            gross = 0.0
+            active_alpha = np.nan
+        else:
+            names = _select(
+                g, prev, q, hold_frac, min_hold=min_hold, prev_age=prev_age
+            )
+            if not names:
+                prev = {}
+                prev_age = {}
+                continue
+            weight = exp / len(names)
+            cur = {t: weight for t in names}
+            new_age = {t: prev_age.get(t, 0) + 1 for t in names}
+            top = g[g["ticker"].isin(names)]
+            active_ret = float(top["fwd"].mean())
+            gross = active_ret * exp
+            active_alpha = active_ret - bench
+            n_tail = len(names)
+
+        tc = turnover_cost(prev, cur)
+        bottom = float(ranked.tail(n_tail)["fwd"].mean())
         r_ihsg = np.nan
         if ihsg is not None and len(ihsg):
             key = pd.Timestamp(d).normalize()
@@ -252,39 +350,73 @@ def one_phase(oos: pd.DataFrame, q: float, step: int, offset: int,
         rows.append({
             "date": str(pd.Timestamp(d).date()),
             "n": int(len(g)),
+            "exposure": exp,
             "gross": gross, "bench": bench, "ihsg": r_ihsg,
             "net": gross - tc["cost"], "cost": tc["cost"],
             "buy": tc["buy"], "sell": tc["sell"],
             "turnover": tc["turnover"], "turnover_two_way": tc["two_way"],
+            "active_alpha": active_alpha,
             "bottom": bottom,
         })
         prev = cur
+        prev_age = new_age
     return pd.DataFrame(rows)
 
 
-def run(oos: pd.DataFrame, q: float, step: int,
-        hold: float | None = None,
-        ihsg: pd.Series | None = None) -> dict:
+def run(
+    oos: pd.DataFrame,
+    q: float,
+    step: int,
+    hold: float | None = None,
+    ihsg: pd.Series | None = None,
+    *,
+    min_hold: int = 1,
+    regime_mode: str = "none",
+    regime_df: pd.DataFrame | None = None,
+) -> dict:
+    if regime_mode not in regime.REGIME_MODES:
+        raise ValueError(f"mode regime tidak dikenal: {regime_mode}")
     phases = []
     nets: list[np.ndarray] = []
+    mdds: list[float] = []
+    srs: list[float] = []
+    exps: list[float] = []
+    act_alphas: list[float] = []
     for off in range(step):
-        df = one_phase(oos, q, step, off, hold, ihsg)
+        df = one_phase(
+            oos, q, step, off, hold, ihsg,
+            min_hold=min_hold, regime_mode=regime_mode, regime_df=regime_df,
+        )
         if df.empty:
             continue
-        nets.append(df["net"].to_numpy())
+        arr_net = df["net"].to_numpy(dtype=float)
+        nets.append(arr_net)
+        mdd = max_drawdown_pct(arr_net)
+        mdds.append(mdd)
+        sr = sharpe_ratio(arr_net)
+        if sr is not None:
+            srs.append(sr)
+        exp_mean = float(df["exposure"].mean()) * 100.0
+        exps.append(exp_mean)
+        act_valid = df["active_alpha"].dropna().to_numpy(dtype=float)
+        if len(act_valid):
+            act_alphas.append(float(act_valid.mean()) * 100.0)
+
         alpha_gross = (df["gross"] - df["bench"]).to_numpy()
         alpha_net = (df["net"] - df["bench"]).to_numpy()
         ih = df["ihsg"].to_numpy(dtype=float)
-        vs_ihsg = (df["net"].to_numpy(dtype=float) - ih)[~np.isnan(ih)]
+        vs_ihsg = (arr_net - ih)[~np.isnan(ih)]
         phases.append({
             "offset": off,
             "n_periods": int(len(df)),
             "start": df["date"].iloc[0], "end": df["date"].iloc[-1],
+            "exposure_pct": round(exp_mean, 1),
+            "max_drawdown_pct": round(mdd, 1),
             "turnover_pct": round(float(df["turnover"].mean()) * 100, 1),
             "turnover_two_way_pct": round(
                 float(df["turnover_two_way"].mean()) * 100, 1),
             "gross": summarize(df["gross"].to_numpy()),
-            "net": summarize(df["net"].to_numpy()),
+            "net": summarize(arr_net),
             "alpha_gross": summarize(alpha_gross),
             "alpha_net": summarize(alpha_net),
             "alpha_vs_ihsg": (
@@ -317,6 +449,8 @@ def run(oos: pd.DataFrame, q: float, step: int,
         "quintile": q,
         "hold_quintile": q if hold is None else max(q, hold),
         "hysteresis": bool(hold is not None and hold > q),
+        "min_hold": int(min_hold),
+        "regime": regime_mode,
         "cost_per_round_trip_pct": round(ROUND_TRIP * 100, 2),
         "phases": phases,
         "across_phases": {
@@ -328,8 +462,14 @@ def run(oos: pd.DataFrame, q: float, step: int,
             "alpha_net_median_pct": round(float(np.median(n)), 3),
             "alpha_net_min_pct": round(float(n.min()), 3),
             "alpha_net_max_pct": round(float(n.max()), 3),
+            "alpha_active_gross_mean_pct": (
+                round(float(np.mean(act_alphas)), 3) if act_alphas else None
+            ),
             "phases_net_positive": int((n > 0).sum()),
             "phase_t_mean": round(float(ts.mean()), 2) if len(ts) else None,
+            "avg_exposure_pct": round(float(np.mean(exps)), 1),
+            "max_drawdown_mean_pct": round(float(np.mean(mdds)), 1),
+            "sharpe_mean": round(float(np.mean(srs)), 3) if srs else None,
             "alpha_vs_ihsg_mean_pct": round(float(ih.mean()), 3) if len(ih) else None,
             "phases_vs_ihsg_positive": int((ih > 0).sum()) if len(ih) else None,
             "n_phases_vs_ihsg": int(len(ih)),
@@ -345,31 +485,50 @@ def run(oos: pd.DataFrame, q: float, step: int,
     }
 
 
-def main():
+def main(argv: list[str] | None = None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--quintile", type=float, default=0.2,
                     help="fraksi universe yang dibeli (0.2 = kuintil teratas)")
     ap.add_argument("--step", type=int, default=20,
                     help="jarak rebalance dalam hari bursa (default 20)")
     ap.add_argument("--hold", type=float, default=None,
-                    help="batas tahan (mis. 0.4 = tetap pegang selama masih "
-                         "top 40%%); default sama dengan --quintile")
+                    help="batas tahan (mis. 0.6 = tetap pegang selama masih "
+                         "top 60%%); default sama dengan --quintile")
+    ap.add_argument("--min-hold", type=int, default=1,
+                    help="minimal periode tahan sebelum keluar (default 1)")
+    ap.add_argument("--regime", choices=regime.REGIME_MODES, default="none",
+                    help="filter rezim ^JKSE kausal (mis. sma50_200_half)")
+    ap.add_argument("--offline", action="store_true",
+                    help="ambil ^JKSE dari cache lokal tanpa memanggil Yahoo")
     ap.add_argument("--no-ihsg", action="store_true",
                     help="lewati pembanding IHSG (mis. saat offline)")
     ap.add_argument("--src", default=os.path.join("temp", "research",
                                                   "oos_predictions.pkl"))
     ap.add_argument("--out", default=os.path.join("temp", "research"))
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if not os.path.exists(args.src):
         raise SystemExit(
             f"{args.src} belum ada — jalankan research/evaluate.py dulu "
             "(sekarang menyimpan prediksi OOS).")
     oos = pd.read_pickle(args.src)
-    ihsg = None if args.no_ihsg else ihsg_period_returns(args.step)
+    need_ihsg = (not args.no_ihsg) or args.regime != "none"
+    ihsg_raw = load_ihsg_raw(offline=args.offline) if need_ihsg else None
+    ihsg = (
+        pd.Series(dtype=float) if args.no_ihsg
+        else ihsg_period_returns(args.step, df=ihsg_raw, offline=args.offline)
+    )
     if not args.no_ihsg and not len(ihsg):
         print("  ! IHSG tidak tersedia — pembanding dilewati, bukan dikarang")
-    res = run(oos, args.quintile, args.step, args.hold, ihsg)
+    regime_df = (
+        regime.ihsg_indicators(ihsg_raw)
+        if (args.regime != "none" and ihsg_raw is not None)
+        else None
+    )
+    res = run(
+        oos, args.quintile, args.step, args.hold, ihsg,
+        min_hold=args.min_hold, regime_mode=args.regime, regime_df=regime_df,
+    )
     if "error" in res:
         raise SystemExit(res["error"])
 
@@ -380,18 +539,24 @@ def main():
 
     a = res["across_phases"]
     print(f"\nPortofolio kuintil teratas · rebalance tiap {args.step} hari bursa")
-    print(f"{res['n_phases']} fase · turnover satu arah {res['avg_turnover_pct']}%"
+    print(f"{res['n_phases']} fase · eksposur {a['avg_exposure_pct']}%"
+          f" · turnover satu arah {res['avg_turnover_pct']}%"
           f" (dua arah {res['avg_turnover_two_way_pct']}%)"
           f" · biaya pulang-pergi {res['cost_per_round_trip_pct']}%")
-    if res["hysteresis"]:
-        print(f"hysteresis aktif: masuk top {args.quintile * 100:.0f}%, "
-              f"tahan sampai top {res['hold_quintile'] * 100:.0f}%\n")
+    if res["hysteresis"] or res["min_hold"] > 1 or res["regime"] != "none":
+        print(f"aturan aktif: masuk top {args.quintile * 100:.0f}%, "
+              f"tahan top {res['hold_quintile'] * 100:.0f}%, "
+              f"min_hold={res['min_hold']}, regime={res['regime']}\n")
     print(f"alpha bruto antar-fase : rata-rata {a['alpha_gross_mean_pct']:+.3f}%"
           f" · median {a['alpha_gross_median_pct']:+.3f}%"
           f" · rentang [{a['alpha_gross_min_pct']:+.2f}, {a['alpha_gross_max_pct']:+.2f}]")
     print(f"alpha neto antar-fase  : rata-rata {a['alpha_net_mean_pct']:+.3f}%"
           f" · median {a['alpha_net_median_pct']:+.3f}%"
           f" · rentang [{a['alpha_net_min_pct']:+.2f}, {a['alpha_net_max_pct']:+.2f}]")
+    if a.get("alpha_active_gross_mean_pct") is not None and res["regime"] != "none":
+        print(f"alpha aktif bruto      : rata-rata {a['alpha_active_gross_mean_pct']:+.3f}%"
+              f" (terpisah dari kas rezim)")
+    print(f"MDD rata-rata antar-fase: {a['max_drawdown_mean_pct']:+.1f}% · Sharpe {a['sharpe_mean']}")
     print(f"fase dengan alpha neto > 0: {a['phases_net_positive']}/{res['n_phases']}"
           f" · rata-rata t = {a['phase_t_mean']}")
     ci = res.get("ci95_alpha_net") or {}

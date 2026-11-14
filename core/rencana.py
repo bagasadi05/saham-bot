@@ -17,7 +17,7 @@ import math
 import os
 from collections import Counter
 
-from core import fundamental, pricing, saran, universe
+from core import fundamental, pricing, regime, saran, universe
 
 def _env_num(name: str, default: float, cast=float):
     try:
@@ -317,7 +317,7 @@ def price_levels(c: dict) -> dict:
     }
 
 
-def make_plan(c: dict, modal: float) -> dict:
+def make_plan(c: dict, modal: float, *, risk_scale: float = 1.0) -> dict:
     """Hitung entry/SL/TP, lot, biaya, dan risiko untuk satu kandidat."""
     lv = price_levels(c)
     entry, sl, tp = lv["entry"], lv["sl"], lv["tp"]
@@ -325,13 +325,20 @@ def make_plan(c: dict, modal: float) -> dict:
     chase_above = lv["chase_above"]
     risk_per_share = lv["risk_per_share"]
 
-    ps = saran.position_size(modal, entry, sl)
-    cap_lots = int((modal * MAX_POS_PCT) // (entry * 100)) if entry > 0 else 0
-    lots = max(0, min(int(ps["lots"]), cap_lots))
+    scale = max(0.1, min(1.0, float(risk_scale)))
+    eff_risk_pct = 0.01 * scale
+    eff_max_pos_pct = MAX_POS_PCT * scale
+    ps = saran.position_size(
+        modal, entry, sl, risk_pct=eff_risk_pct, max_pos_pct=eff_max_pos_pct
+    )
+    lots = max(0, int(ps["lots"]))
     shares = lots * 100
     value = shares * entry
     real_risk = shares * risk_per_share
-    min_modal = max(risk_per_share * 10_000, entry * 500)
+    min_modal = max(
+        risk_per_share * (100.0 / eff_risk_pct),
+        entry * (100.0 / eff_max_pos_pct),
+    )
     min_modal = int(math.ceil(min_modal / 100_000.0) * 100_000)
     rr = lv["rr"]
 
@@ -353,7 +360,7 @@ def make_plan(c: dict, modal: float) -> dict:
         "value": round(value),
         "buy_cost": round(value * (1 + saran.BUY_FEE)),
         "real_risk": round(real_risk),
-        "risk_budget": round(modal * 0.01),
+        "risk_budget": round(modal * eff_risk_pct),
         "risk_pct": round(real_risk / modal * 100, 2) if modal else 0.0,
         "net_tp_pct": round(saran.pnl_pct(entry, tp), 2),
         "min_modal": min_modal,
@@ -465,16 +472,21 @@ def budget_plan(c: dict, budget: float, modal: float | None = None) -> dict:
 
 
 def finalize(enriched: list[dict], modal: float,
-             max_plans: int | None = None) -> dict:
-    """Veto kualitas + batas sektor/modal → daftar rencana final."""
+             max_plans: int | None = None,
+             *, market_regime: dict | None = None) -> dict:
+    """Veto kualitas + batas sektor/modal/rezim IHSG → daftar rencana final."""
     limit = max(1, min(5, int(max_plans or MAX_PLANS)))
+    scale = regime.effective_scale(market_regime)
+    total_pct = MAX_TOTAL_PCT * scale
+    pos_pct = MAX_POS_PCT * scale
     picks: list[dict] = []
     rejected: Counter = Counter()
     sectors: Counter = Counter()
-    budget = modal * MAX_TOTAL_PCT
+    budget = modal * total_pct
     spent = 0.0
     ranked = sorted(enriched, key=lambda c: (-(_f(c.get("rel_pct")) or 0),
                                              c.get("ticker") or ""))
+    over_label = f"total alokasi >{int(round(total_pct * 100))}% modal"
     for c in ranked:
         if c.get("vetoes"):
             for v in c["vetoes"]:
@@ -484,12 +496,12 @@ def finalize(enriched: list[dict], modal: float,
         if sector and sectors[sector] >= MAX_PER_SECTOR:
             rejected["konsentrasi sektor (>2)"] += 1
             continue
-        plan = make_plan(c, modal)
+        plan = make_plan(c, modal, risk_scale=scale)
         if plan["lots"] <= 0:
             rejected["modal kurang untuk 1 lot"] += 1
             continue
         if spent + plan["buy_cost"] > budget:
-            rejected["total alokasi >90% modal"] += 1
+            rejected[over_label] += 1
             continue
         picks.append(plan)
         spent += plan["buy_cost"]
@@ -497,5 +509,15 @@ def finalize(enriched: list[dict], modal: float,
             sectors[sector] += 1
         if len(picks) >= limit:
             break
-    return {"picks": picks, "rejected": rejected, "pool": len(enriched),
-            "modal": round(modal), "limit": limit}
+    return {
+        "picks": picks,
+        "rejected": rejected,
+        "pool": len(enriched),
+        "modal": round(modal),
+        "limit": limit,
+        "regime": market_regime,
+        "exposure_scale": scale,
+        "max_pos_pct": round(pos_pct * 100, 1),
+        "max_total_pct": round(total_pct * 100, 1),
+        "risk_pct_limit": round(1.0 * scale, 2),
+    }

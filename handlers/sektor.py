@@ -69,11 +69,12 @@ def _sektor_text(summary: dict, deps) -> str:
     return "\n".join(head)
 
 
-async def do(update, args: list[str], deps):
+async def do(update, args: list[str], deps, *, from_menu: bool = False):
     """Tampilkan rotasi sektor BEI: /sektor."""
     if not await deps.cooldown_ok(update, "sektor"):
         return
     msg = update.effective_message
+    rm = deps.home_markup() if from_menu else None
     await update.effective_chat.send_action(ChatAction.TYPING)
     try:
         rows = await asyncio.to_thread(bandar.get_index_summary)
@@ -88,7 +89,7 @@ async def do(update, args: list[str], deps):
             "Alternatif: <code>/sinyal beli bagus</code> (snapshot lokal).",
             "",
             deps._SINYAL_DISCLAIMER,
-        ]))
+        ]), reply_markup=rm)
         return
     except Exception:
         log.exception("gagal ambil indeks sektor")
@@ -97,6 +98,7 @@ async def do(update, args: list[str], deps):
             "Coba lagi nanti — tidak ada angka yang saya karang.",
             "",
             deps._SINYAL_DISCLAIMER,
-        ]))
+        ]), reply_markup=rm)
         return
-    await deps.reply_long(msg, _sektor_text(sektormod.summarize(rows), deps))
+    await deps.reply_long(msg, _sektor_text(sektormod.summarize(rows), deps),
+                          reply_markup=rm)

@@ -399,13 +399,22 @@ async def nav(update: Update, cb_data: str, deps, job_queue=None):
         return
 
 
-async def do(update: Update, args: list[str], deps):
+def _with_home(kb: InlineKeyboardMarkup, from_menu: bool) -> InlineKeyboardMarkup:
+    if not from_menu:
+        return kb
+    return InlineKeyboardMarkup(
+        list(kb.inline_keyboard)
+        + [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")]]
+    )
+
+
+async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
     rows = await asyncio.to_thread(store.load_market_scan)
     meta = await asyncio.to_thread(store.market_scan_meta)
     if not rows:
         await update.effective_message.reply_text(
             _EMPTY_TEXT, parse_mode=ParseMode.HTML,
-            reply_markup=empty_markup())
+            reply_markup=_with_home(empty_markup(), from_menu))
         return
 
     if not await deps.cooldown_ok(update, "sinyal"):
@@ -427,7 +436,7 @@ async def do(update: Update, args: list[str], deps):
         kval = await deps._kualitas_map([r["ticker"] for r in buys[:6]])
         await deps.reply_long(msg, _sinyal_section(rows, "BELI", meta, deps,
                                                    kval),
-                              reply_markup=section_markup("BELI"))
+                              reply_markup=_with_home(section_markup("BELI"), from_menu))
         return
     if arg in ("beli bagus", "bagus", "bagus beli", "beli berkualitas"):
         buys = [r for r in rows if r["signal"] == "BELI"]
@@ -435,16 +444,17 @@ async def do(update: Update, args: list[str], deps):
         if not buys:
             await msg.reply_text(
                 "🟢 Tidak ada kandidat BELI di snapshot hari ini — jadi tidak "
-                "ada yang bisa disaring.", parse_mode=ParseMode.HTML)
+                "ada yang bisa disaring.", parse_mode=ParseMode.HTML,
+                reply_markup=_with_home(section_markup("BELI"), from_menu))
             return
         pool = buys[:BELI_BAGUS_POOL]
         kval = await deps._kualitas_map([r["ticker"] for r in pool])
         await deps.reply_long(msg, _beli_bagus_text(pool, meta, deps, kval),
-                              reply_markup=bagus_markup())
+                              reply_markup=_with_home(bagus_markup(), from_menu))
         return
     if arg in ("jual", "sell", "hindari"):
         await deps.reply_long(msg, _sinyal_section(rows, "JUAL", meta, deps),
-                              reply_markup=section_markup("JUAL"))
+                              reply_markup=_with_home(section_markup("JUAL"), from_menu))
         return
     if re.fullmatch(r"[A-Za-z]{4}", arg):
         found = next((r for r in rows if r["ticker"] == arg.upper()), None)
@@ -453,14 +463,15 @@ async def do(update: Update, args: list[str], deps):
                 f"Kode <b>{esc(arg.upper())}</b> tidak ada di snapshot "
                 f"(mungkin delisted/suspensi, atau tidak ada data harga cukup).\n"
                 f"Coba <code>/analisis {esc(arg.upper())}</code> untuk cek "
-                "langsung.", parse_mode=ParseMode.HTML)
+                "langsung.", parse_mode=ParseMode.HTML,
+                reply_markup=deps.home_markup() if from_menu else None)
             return
         kval = await deps._kualitas_map([found["ticker"]])
         await deps.reply_long(msg, _sinyal_detail(found, meta, deps,
                                                   kval.get(found["ticker"])),
-                              reply_markup=detail_markup(found["ticker"]))
+                              reply_markup=_with_home(detail_markup(found["ticker"]), from_menu))
         return
     await deps.reply_long(msg, await _overview_text(rows, meta, deps),
-                          reply_markup=overview_markup())
+                          reply_markup=_with_home(overview_markup(), from_menu))
 
 

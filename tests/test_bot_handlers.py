@@ -669,6 +669,9 @@ def test_rencana_menyusun_lalu_memakai_cache(monkeypatch):
                 "meta": meta, "pool": 1}
 
     monkeypatch.setattr(bot, "_build_plan_payload", fake_build)
+    monkeypatch.setattr(bot.regime, "fetch_ihsg_regime",
+                        lambda: {"status": "BULL", "exposure_scale": 1.0,
+                                 "sma50": 7300.0, "sma200": 7000.0, "gap_pct": 4.3})
     upd = _FakeUpdate("/paket")
     asyncio.run(bot.cmd_paket(upd, _ctx()))
     replies = [t for t, _ in upd.effective_message.replies]
@@ -688,6 +691,25 @@ def test_rencana_menyusun_lalu_memakai_cache(monkeypatch):
                    .effective_message.replies)
 
 
+def test_paket_menampilkan_rezim_defensif(monkeypatch):
+    _seed_scan()
+
+    async def fake_build(rows, meta):
+        return {"enriched": [_plan_enriched()], "rejected": {},
+                "meta": meta, "pool": 1}
+
+    monkeypatch.setattr(bot, "_build_plan_payload", fake_build)
+    monkeypatch.setattr(bot.regime, "fetch_ihsg_regime",
+                        lambda: {"status": "DEFENSIVE", "exposure_scale": 0.5,
+                                 "sma50": 6800.0, "sma200": 7200.0, "gap_pct": -5.56})
+    upd = _FakeUpdate("/paket")
+    asyncio.run(bot.cmd_paket(upd, _ctx()))
+    final = upd.effective_message.replies[-1][0]
+    assert "defensif" in final.lower()
+    assert "risiko maks <b>0.5%</b>" in final
+    assert "total maks <b>45%</b>" in final
+
+
 def test_rencana_teks_tanpa_kandidat_jujur():
     _seed_scan()
     text = bot._rencana_text(
@@ -697,6 +719,20 @@ def test_rencana_teks_tanpa_kandidat_jujur():
     assert "Tidak ada kandidat" in text
     assert "likuiditas" in text.lower()
     assert "/sinyal beli" in text
+
+
+def test_rencana_teks_tanpa_kandidat_rezim_defensif():
+    _seed_scan()
+    text = bot._rencana_text(
+        {"picks": [], "rejected": {}, "modal": 10_000_000,
+         "regime": {"status": "DEFENSIVE", "exposure_scale": 0.5,
+                    "sma50": 5831.0, "sma200": 6694.0, "gap_pct": -12.89}},
+        {"rejected": {"bukan sinyal BELI": 12}}, store.market_scan_meta())
+    assert "risiko maks <b>0.5%</b>" in text
+    assert "nilai posisi maks <b>10%</b>" in text
+    assert "total maks <b>45%</b>" in text
+    assert "defensif" in text.lower()
+    assert "Tidak ada kandidat" in text
 
 
 def test_format_rupiah_rencana_gaya_indonesia():

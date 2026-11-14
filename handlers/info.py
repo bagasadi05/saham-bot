@@ -25,44 +25,16 @@ log = logging.getLogger("sahambuddy")
 
 async def do_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     await update.effective_message.reply_text(
-        "👋 Halo! Aku <b>SahamBuddy</b> — bot analisis saham Indonesia "
-        "(teknikal + fundamental + sentimen berita + data resmi BEI).\n\n"
-        "Menu utama:\n"
-        "• <b>/analisis BBCA</b> — PowerScore, tren mingguan, se-sektor, chart & berita\n"
-        "• <b>/skor TLKM BBRI</b> — ringkasan cepat\n"
-        "• <b>/berita BBCA</b> — 7 berita terbaru + sentimen (ML lokal)\n"
-        "• <b>/fundamental BBRI</b> — PER/PBV/ROE/dividen/DER + tren 4 kuartal\n"
-        "• <b>/saran</b> — pemindaian harian: kandidat BUY + entry/SL/TP + "
-        "ukuran posisi (1% modal), dilacak otomatis; <b>/saran list</b>, "
-        "<b>/saran lq45</b>, ubah modal: <b>/modal 10000000</b>\n"
-        "• <b>/sinyal</b> — sinyal BELI/JUAL <b>seluruh pasar IDX</b> "
-        "(±944 emiten): <b>/sinyal beli</b>, <b>/sinyal beli bagus</b> "
-        "(lolos saringan kualitas), <b>/sinyal jual</b>, <b>/sinyal BBCA</b>, "
-        "<b>/sinyal csv</b>; perbarui: <b>/scan</b>\n"
-        "• <b>/rencana BBCA 5000000</b> — rencana beli <b>satu emiten</b>: "
-        "lot yang terjangkau, biaya, % modal, rugi maksimal, RR\n"
-        "• <b>/paket</b> — paket beli <b>multi-emiten siap Stockbit</b> dari "
-        "hasil <b>/scan</b>: kandidat paling likuid &amp; berkualitas\n"
-        "• <b>/cek BBCA</b> — ceklist <b>satu layar</b>: tren, valuasi, "
-        "asing, berita, agenda, likuiditas + kesimpulan\n"
-        "• <b>/portofolio</b> — posisi <b>uang sungguhan</b>: PnL, bobot, "
-        "sektor, risiko SL; catat: <b>/portofolio beli BBCA 5 9000</b>\n"
-        "• <b>/bandar</b> — IHSG resmi BEI + top movers; <b>/bandar BBCA</b>\n"
-        "• <b>/sektor</b> — rotasi sektor BEI: sektor terkuat & terlemah hari ini\n"
-        "• <b>/banding BBCA BBRI</b> — tabel PER/PBV/ROE/return + konteks IHSG\n"
-        "• <b>/agenda BBCA</b> — ex-date dividen & aksi korporasi\n"
-        "• <b>/backtest BBCA</b> — akurasi statistik + simulasi transaksi\n"
-        "• <b>/watch add ANTM</b> / <b>/alert add BBCA jump</b> — alarm otomatis\n"
-        "• <b>/belajar RSI</b> — kamus istilah: cara baca + jebakan umumnya\n"
-        "• <b>/validasi</b> — hasil uji statistik skor (IC, walk-forward, Kronos)\n"
-        "• <b>/jejak</b> — track record nyata: hasil sinyal BELI/JUAL setelah "
-        "N hari bursa\n"
-        "• <b>/beli BBCA</b> / <b>/jual BBCA</b> — tanya layak beli/jual (+ konteks backtest)\n"
-        "• <b>/auto on</b> — ringkasan harian ±08:30 WIB + pengingat band/dividen\n"
-        "• <b>/id</b> — lihat ID Telegram kamu (untuk <code>ALLOWED_USER_IDS</code>)\n\n"
-        "⚠️ Bukan saran investasi — selalu DYOR!",
+        deps._menu_text(),
         parse_mode=ParseMode.HTML,
         reply_markup=deps.main_menu_markup())
+
+
+async def do_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+    await update.effective_message.reply_text(
+        deps._help_text(),
+        parse_mode=ParseMode.HTML,
+        reply_markup=deps.help_markup())
 
 
 async def do_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
@@ -77,16 +49,20 @@ async def do_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     )
 
 
-async def do_validasi(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+async def do_validasi(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps,
+                      *, from_menu: bool = False):
     """Tampilkan hasil uji statistik yang tersimpan (tanpa hitung ulang)."""
+    rm = deps.home_markup() if from_menu else None
     v = await asyncio.to_thread(deps.load_validation)
     if v is None:
         await update.effective_message.reply_text(
             "Belum ada data validasi. Jalankan <code>python research/evaluate.py</code> "
-            "lalu <code>python research/publish.py</code>.", parse_mode=ParseMode.HTML)
+            "lalu <code>python research/publish.py</code>.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm)
         return
-    await update.effective_message.reply_text(deps.format_validasi(v),
-                                              parse_mode=ParseMode.HTML)
+    await deps.reply_long(update.effective_message, deps.format_validasi(v),
+                          reply_markup=rm)
 
 
 async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
@@ -352,13 +328,16 @@ async def cmd_agenda(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         "\n".join(lines), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-async def cmd_jejak(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+async def cmd_jejak(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps,
+                    *, from_menu: bool = False):
     """Jejak sinyal: hasil nyata BELI/JUAL setelah horizon hari bursa."""
+    rm = deps.home_markup() if from_menu else None
     since = (marketcal.now_wib().date() - timedelta(days=365)).isoformat()
     rows = await asyncio.to_thread(store.closed_scan_history, since)
     counts = await asyncio.to_thread(store.scan_history_counts)
     await deps.reply_long(update.effective_message,
-                     scorecard.format_summary(scorecard.summarize(rows), counts))
+                     scorecard.format_summary(scorecard.summarize(rows), counts),
+                     reply_markup=rm)
 
 
 async def cmd_belajar(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
@@ -367,16 +346,20 @@ async def cmd_belajar(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     if not args:
         await update.effective_message.reply_text(
             "🎓 <b>Belajar istilah IHSG</b>\n"
-            "Pilih topik: <code>/belajar &lt;topik&gt;</code>\n\n"
-            f"{learn.list_topics()}\n\n"
-            "Contoh: <code>/belajar RSI</code>, <code>/belajar PBV</code>",
-            parse_mode=ParseMode.HTML)
+            "Ketuk istilah di bawah atau ketik: <code>/belajar &lt;topik&gt;</code>\n"
+            "Pilih topik: <code>/belajar RSI</code>, <code>/belajar PBV</code>\n\n"
+            f"{learn.list_topics()}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=deps.belajar_markup())
         return
     txt = learn.learn(args[0])
     if txt is None:
         await update.effective_message.reply_text(
             "❓ Topik tidak dikenal. Kirim <code>/belajar</code> saja "
-            "buat lihat daftar topiknya.", parse_mode=ParseMode.HTML)
+            "buat lihat daftar topiknya.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=deps.belajar_markup())
         return
     await update.effective_message.reply_text(
-        txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        txt, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        reply_markup=deps.belajar_detail_markup())

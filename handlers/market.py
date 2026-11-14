@@ -15,7 +15,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction, ParseMode
 
-from core import bandar, marketcal, rencana, screener, store, universe
+from core import bandar, marketcal, regime, rencana, reports, screener, store, universe
 from core.reports import esc
 from core.textutil import split_message
 
@@ -85,14 +85,21 @@ def _plan_card(p: dict, idx: int, deps) -> str:
 def _rencana_text(result: dict, payload: dict, meta: dict, deps) -> str:
     picks = result.get("picks") or []
     modal = result.get("modal") or 0
+    reg = result.get("regime")
+    scale = regime.effective_scale(reg)
+    risk_lim = result.get("risk_pct_limit") or round(1.0 * scale, 2)
+    pos_lim = result.get("max_pos_pct") or round(rencana.MAX_POS_PCT * scale * 100, 1)
+    tot_lim = result.get("max_total_pct") or round(rencana.MAX_TOTAL_PCT * scale * 100, 1)
     out = [
         "🎯 <b>RENCANA BELI — SIAP STOCKBIT</b>",
         f"<i>{esc(deps._scan_when(meta))}</i>",
-        f"Modal rencana <b>{deps._money(modal)}</b> · risiko maks <b>1%</b>/posisi · "
-        f"nilai posisi maks <b>{int(rencana.MAX_POS_PCT * 100)}%</b>/emiten · "
-        f"total maks <b>{int(rencana.MAX_TOTAL_PCT * 100)}%</b> modal",
-        "",
+        f"Modal rencana <b>{deps._money(modal)}</b> · risiko maks <b>{risk_lim:g}%</b>/posisi · "
+        f"nilai posisi maks <b>{pos_lim:g}%</b>/emiten · "
+        f"total maks <b>{tot_lim:g}%</b> modal",
     ]
+    if reg is not None:
+        out.append(reports.regime_banner(reg))
+    out.append("")
     rejected = deps._reject_summary(payload.get("rejected"), result.get("rejected"))
     if not picks:
         out += [
@@ -135,6 +142,8 @@ def _rencana_text(result: dict, payload: dict, meta: dict, deps) -> str:
         "stop order otomatis, eksekusi manual saat alert berbunyi.",
         "4. Fee beli/jual (±0,15%/±0,25%) sudah diperhitungkan; "
         "cek fee akunmu di Stockbit.",
+        "5. Tahan posisi selama skor relatif masih top 60% (±20–40 hari bursa) "
+        "sebelum rotasi agar tidak tergerus biaya 0,40%.",
         "",
         "Grade A/B/C = kelengkapan syarat, <b>bukan probabilitas</b>. Yang "
         "tervalidasi hanya peringkat relatif (IC ±0,03); saringan likuiditas/"
@@ -172,8 +181,10 @@ async def build_plan_payload(rows: list[dict], meta: dict, deps) -> dict:
             "built_at": _dt.datetime.now().isoformat(timespec="seconds")}
 
 
-async def do_paket(update: Update, args: list[str], deps):
+async def do_paket(update: Update, args: list[str], deps,
+                   *, from_menu: bool = False):
     """Paket beli MULTI-emiten dari snapshot /scan: /paket [1-5|refresh]."""
+    rm = deps.home_markup() if from_menu else None
     rows = await asyncio.to_thread(store.load_market_scan)
     meta = await asyncio.to_thread(store.market_scan_meta)
     if not rows:
@@ -183,11 +194,14 @@ async def do_paket(update: Update, args: list[str], deps):
             "<code>/paket</code> menyusun paket beli siap Stockbit.\n\n"
             "Untuk satu emiten tanpa menunggu scan: "
             "<code>/rencana BBCA 5000000</code>.",
-            parse_mode=ParseMode.HTML)
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm)
         return
 
     if not await deps.cooldown_ok(update, "rencana"):
         return
+
+    reg = await asyncio.to_thread(getattr(deps, "regime", regime).fetch_ihsg_regime)
 
     top = rencana.MAX_PLANS
     force = False
@@ -207,9 +221,11 @@ async def do_paket(update: Update, args: list[str], deps):
         if not cands:
             await deps.reply_long(update.effective_message, _rencana_text(
                 {"picks": [], "rejected": {},
+                 "regime": reg,
                  "modal": await asyncio.to_thread(
                      store.get_modal, update.effective_chat.id)},
-                {"rejected": dict(pre_rejected)}, meta, deps))
+                {"rejected": dict(pre_rejected)}, meta, deps),
+                reply_markup=rm)
             return
         await update.effective_message.reply_text(
             f"⏳ Menyusun rencana dari <b>{len(cands)} kandidat</b> teratas "
@@ -220,16 +236,20 @@ async def do_paket(update: Update, args: list[str], deps):
             await update.effective_message.reply_text(
                 "❌ Gagal mengambil data fundamental/berita untuk kandidat. "
                 "Coba lagi nanti atau <code>/paket refresh</code>.",
-                parse_mode=ParseMode.HTML)
+                parse_mode=ParseMode.HTML,
+                reply_markup=rm)
             return
         await asyncio.to_thread(store.save_plan_cache, key, payload,
                                 meta.get("trade_date", ""))
 
     modal = await asyncio.to_thread(store.get_modal,
                                     update.effective_chat.id)
-    result = rencana.finalize(payload.get("enriched") or [], modal, top)
+    result = rencana.finalize(
+        payload.get("enriched") or [], modal, top, market_regime=reg
+    )
     await deps.reply_long(update.effective_message,
-                     _rencana_text(result, payload, meta, deps))
+                     _rencana_text(result, payload, meta, deps),
+                     reply_markup=rm)
 
 
 _RENCANA_USAGE = (
@@ -363,12 +383,14 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
     return "\n".join(out)
 
 
-async def do_rencana(update: Update, args: list[str], deps):
+async def do_rencana(update: Update, args: list[str], deps,
+                     *, from_menu: bool = False):
     """Rencana beli SATU emiten: /rencana <KODE> [anggaran]."""
     msg = update.effective_message
     chat_id = update.effective_chat.id
+    rm = deps.home_markup() if from_menu else None
     if not args:
-        await deps.reply_long(msg, _RENCANA_USAGE)
+        await deps.reply_long(msg, _RENCANA_USAGE, reply_markup=rm)
         return
     head = args[0].upper()
     head = head[:-3] if head.endswith(".JK") else head
@@ -378,10 +400,12 @@ async def do_rencana(update: Update, args: list[str], deps):
             "<code>/rencana BBCA 5000000</code>.\n"
             "Paket beberapa emiten sekaligus ada di <code>/paket</code> "
             "(butuh <code>/scan</code> dulu).",
-            parse_mode=ParseMode.HTML)
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm)
         return
     if not re.fullmatch(r"[A-Z]{2,6}", head):
-        await deps.reply_long(msg, "Kode emiten tidak valid.\n\n" + _RENCANA_USAGE)
+        await deps.reply_long(msg, "Kode emiten tidak valid.\n\n" + _RENCANA_USAGE,
+                              reply_markup=rm)
         return
 
     budget: float | None = None
@@ -391,7 +415,8 @@ async def do_rencana(update: Update, args: list[str], deps):
             await deps.reply_long(
                 msg,
                 f"Anggaran <code>{esc(args[1])}</code> tidak saya mengerti.\n\n"
-                + _RENCANA_USAGE)
+                + _RENCANA_USAGE,
+                reply_markup=rm)
             return
 
     modal = await asyncio.to_thread(store.get_modal, chat_id)
@@ -403,14 +428,16 @@ async def do_rencana(update: Update, args: list[str], deps):
             msg,
             "Anggaran belum ada. Tulis nominalnya, mis. "
             "<code>/rencana BBCA 5000000</code>, atau set modal: "
-            "<code>/modal 10000000</code>.\n\n" + _RENCANA_USAGE)
+            "<code>/modal 10000000</code>.\n\n" + _RENCANA_USAGE,
+            reply_markup=rm)
         return
 
     # Cooldown setelah validasi: salah ketik tidak boleh memakan jatah.
     if not await deps.cooldown_ok(update, "rencana"):
         return
 
-    await msg.reply_text(f"⏳ Menghitung rencana {head} (±5–15 detik)…")
+    if not from_menu:
+        await msg.reply_text(f"⏳ Menghitung rencana {head} (±5–15 detik)…")
     try:
         analyzed = await deps.gather_candidate(head)
     except Exception:
@@ -421,7 +448,8 @@ async def do_rencana(update: Update, args: list[str], deps):
             f"❌ Data harga {esc(head)} tidak tersedia (delisted, suspensi, "
             "atau sumber sedang down). Coba lagi nanti — tidak ada angka "
             "yang saya karang.",
-            parse_mode=ParseMode.HTML)
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm)
         return
 
     row = await asyncio.to_thread(_snapshot_row, head)
@@ -439,12 +467,16 @@ async def do_rencana(update: Update, args: list[str], deps):
         await msg.reply_text(
             f"❌ Data teknikal {esc(head)} tidak cukup untuk menyusun level "
             "(riwayat harga terlalu pendek).",
-            parse_mode=ParseMode.HTML)
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm)
         return
     plan = rencana.budget_plan(enriched, budget, modal)
-    await deps.reply_long(msg, _rencana_single_text(plan, enriched,
-                                               budget_from_modal=from_modal,
-                                               deps=deps))
+    await deps.reply_long(
+        msg,
+        _rencana_single_text(plan, enriched, budget_from_modal=from_modal,
+                             deps=deps),
+        reply_markup=deps.result_markup("rencana", head) if from_menu else None,
+    )
 
 
 async def run_scan_job(ctx: ContextTypes.DEFAULT_TYPE, deps):
@@ -501,7 +533,9 @@ async def scan_with_guard(force: bool, deps, *,
         deps._screener_running = False
 
 
-async def do_scan(update: Update, args: list[str], job_queue, deps):
+async def do_scan(update: Update, args: list[str], job_queue, deps,
+                  *, from_menu: bool = False):
+    rm = deps.home_markup() if from_menu else None
     force = any(a.lower() in ("paksa", "force", "ulang", "refresh")
                 for a in args)
     meta = await asyncio.to_thread(store.market_scan_meta)
@@ -512,11 +546,13 @@ async def do_scan(update: Update, args: list[str], job_queue, deps):
                          await deps._scan_summary_text({"cached": True,
                                              "meta": meta,
                                              "counts": counts},
-                                            "📡 <b>Screener pasar</b>"))
+                                            "📡 <b>Screener pasar</b>"),
+                         reply_markup=rm)
         return
     if deps._screener_running:
         await update.effective_message.reply_text(
-            "⏳ Scan pasar masih berjalan. Tunggu sampai selesai, ya.")
+            "⏳ Scan pasar masih berjalan. Tunggu sampai selesai, ya.",
+            reply_markup=rm)
         return
     # Cooldown baru setelah snapshot/status dicek: meminta data yang sudah ada
     # atau kena "sedang berjalan" tidak boleh memakan jatah cooldown.
@@ -528,7 +564,8 @@ async def do_scan(update: Update, args: list[str], job_queue, deps):
         await update.effective_message.reply_text(
             f"⏳ Memindai <b>{n} emiten</b> BEI secara borongan (3–6 menit).\n"
             "Hasil dikirim otomatis ke chat ini. Kamu bisa lanjut pakai perintah lain.",
-            parse_mode=ParseMode.HTML)
+            parse_mode=ParseMode.HTML,
+            reply_markup=rm)
         job_queue.run_once(deps._run_scan_job, when=0.5,
                            data={"chat_id": update.effective_chat.id},
                            name=f"scan-{update.effective_chat.id}")
@@ -539,7 +576,8 @@ async def do_scan(update: Update, args: list[str], job_queue, deps):
 
 
 async def do_bandar(update: Update, deps,
-                    ticker: str | None = None):
+                    ticker: str | None = None,
+                    *, from_menu: bool = False):
     if not await deps.cooldown_ok(update, "bandar"):
         return
     msg = update.effective_message

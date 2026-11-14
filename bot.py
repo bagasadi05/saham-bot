@@ -29,7 +29,7 @@ from datetime import date
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (AIORateLimiter, Application, CallbackQueryHandler,
                           CommandHandler, ContextTypes, MessageHandler,
@@ -37,22 +37,24 @@ from telegram.ext import (AIORateLimiter, Application, CallbackQueryHandler,
 from telegram.error import BadRequest, NetworkError, TimedOut
 
 import config
-from core import (alerts, analysis, btcache, data,
+from core import (analysis, btcache, data,
                   logsetup,
                   data_quality, fundamental, marketcal, news,
                   powerscore,
                   scorecard, screener, saran as saranmod, store)  # noqa: F401 (dipatch tes)
 from core import bandar  # noqa: F401 - dipatch tes
 from core import banding  # noqa: F401 - dipatch tes
+from core import regime  # noqa: F401 - dipatch tes
 from core import textutil
 from core.textutil import split_message
-from core.guards import (_pending_clear,
-                        _pending_get, _pending_set)
 from core import guards as core_guards
 # Alias state yang sama: tes memanipulasi bot.PENDING / bot._last_used.
 cooldown_ok = core_guards.cooldown_ok
 PENDING = core_guards.PENDING
 PENDING_TTL = core_guards.PENDING_TTL
+_pending_clear = core_guards._pending_clear
+_pending_get = core_guards._pending_get
+_pending_set = core_guards._pending_set
 _pending_prune = core_guards._pending_prune
 _pending_ts = core_guards._pending_ts
 _last_used = core_guards._last_used
@@ -66,6 +68,7 @@ from handlers import cek as cek_handler
 from handlers import info as info_handler
 from handlers import jobs as jobs_handler
 from handlers import market as market_handler
+from handlers import menu as menu_handler
 from handlers import sektor as sektor_handler
 from handlers import sinyal as sinyal_handler
 from handlers import trading as trading_handler
@@ -443,160 +446,62 @@ def build_verdict(res: dict, fund: dict | None, news_sent: dict | None,
 
 
 # ---------------------------------------------------------------- menu interaktif
-# /start menampilkan tombol; semua fitur bisa dipakai tanpa mengetik perintah.
-# Alur: tombol aksi -> (pilih emiten dari tombol cepat / ketik manual) -> hasil.
-# Pesan teks biasa hanya diproses kalau chat sedang menunggu input emiten
-# (PENDING), selebihnya diabaikan supaya tidak mengganggu perintah lain.
+# Logika tombol & alur ramah pemula ada di handlers/menu.py; alias & wrapper
+# tetap diekspor di sini agar monkeypatch pada modul `bot` bekerja mulus.
 
-POPULAR_TICKERS = ["BBCA", "BBRI", "TLKM", "BMRI", "ANTM", "ASII"]
+POPULAR_TICKERS = menu_handler.POPULAR_TICKERS
+NEED_TICKER = menu_handler.NEED_TICKER
+_MANUAL_PROMPT = menu_handler._MANUAL_PROMPT
 
-# aksi yang butuh emiten -> label tombolnya
-NEED_TICKER = {
-    "analisis": "📊 Analisis",
-    "skor": "⚡ Skor",
-    "berita": "📰 Berita",
-    "fundamental": "💰 Fundamental",
-    "backtest": "📈 Backtest",
-    "beli": "🛒 Beli",
-    "jual": "💰 Jual",
-    "sinyal_detail": "📡 Detail sinyal",
-}
-
-# chat_id -> aksi yang sedang menunggu input emiten
+# chat_id -> aksi yang sedang menunggu input emiten / modal
 # diisi dari ALLOWED_USER_IDS di main(); kosong = siapa pun boleh
 ALLOWED_IDS: set[int] = set()
 
 
 def main_menu_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Analisis", callback_data="pick:analisis"),
-         InlineKeyboardButton("⚡ Skor", callback_data="pick:skor")],
-        [InlineKeyboardButton("📰 Berita", callback_data="pick:berita"),
-         InlineKeyboardButton("💰 Fundamental", callback_data="pick:fundamental")],
-        [InlineKeyboardButton("💡 Saran", callback_data="run:saran"),
-         InlineKeyboardButton("📈 Backtest", callback_data="pick:backtest")],
-        [InlineKeyboardButton("📡 Sinyal", callback_data="run:sinyal"),
-         InlineKeyboardButton("🎯 Paket Beli", callback_data="run:paket"),
-         InlineKeyboardButton("🔄 Scan", callback_data="run:scan")],
-        [InlineKeyboardButton("🛒 Beli", callback_data="pick:beli"),
-         InlineKeyboardButton("💰 Jual", callback_data="pick:jual")],
-        [InlineKeyboardButton("👀 Watchlist", callback_data="run:watch"),
-         InlineKeyboardButton("🔔 Alert", callback_data="run:alert")],
-        [InlineKeyboardButton("🏦 Bandar", callback_data="run:bandar"),
-         InlineKeyboardButton("❓ Bantuan", callback_data="run:help")],
-    ])
+    return menu_handler.main_menu_markup()
 
 
 def home_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")]])
+    return menu_handler.home_markup()
 
 
 def result_markup(action: str, ticker: str) -> InlineKeyboardMarkup:
-    """Tombol di bawah hasil: perbarui data + kembali ke menu."""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Perbarui", callback_data=f"refresh:{action}:{ticker}")],
-        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
-    ])
+    return menu_handler.result_markup(action, ticker)
 
 
 def ticker_pick_markup(action: str, watchlist: list[str] | None = None) -> InlineKeyboardMarkup:
-    rows = []
-    wl = [t for t in (watchlist or []) if t not in POPULAR_TICKERS][:6]
-    if wl:
-        for i in range(0, len(wl), 3):
-            rows.append([InlineKeyboardButton(f"⭐ {t}", callback_data=f"tick:{action}:{t}")
-                         for t in wl[i:i + 3]])
-    for i in range(0, len(POPULAR_TICKERS), 3):
-        rows.append([InlineKeyboardButton(t, callback_data=f"tick:{action}:{t}")
-                     for t in POPULAR_TICKERS[i:i + 3]])
-    rows.append([InlineKeyboardButton("✏️ Ketik manual", callback_data=f"manual:{action}")])
-    rows.append([InlineKeyboardButton("⬅️ Kembali", callback_data="menu")])
-    return InlineKeyboardMarkup(rows)
+    return menu_handler.ticker_pick_markup(action, watchlist)
 
 
 def watch_menu_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Lihat", callback_data="run:watch_list"),
-         InlineKeyboardButton("➕ Tambah", callback_data="manual:watch_add")],
-        [InlineKeyboardButton("🗑 Hapus", callback_data="manual:watch_del")],
-        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
-    ])
+    return menu_handler.watch_menu_markup()
 
 
 def alert_menu_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Lihat", callback_data="run:alert_list"),
-         InlineKeyboardButton("➕ Tambah", callback_data="manual:alert_add")],
-        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
-    ])
+    return menu_handler.alert_menu_markup()
 
 
-_MANUAL_PROMPT = {
-    "analisis": "Ketik kode emiten untuk dianalisis (contoh: <code>BBCA</code>, atau beberapa dipisah spasi: <code>BBCA TLKM</code>):",
-    "skor": "Ketik kode emiten untuk skor cepat (contoh: <code>BBCA TLKM BBRI</code>):",
-    "berita": "Ketik kode emiten untuk beritanya (contoh: <code>BBCA</code>):",
-    "fundamental": "Ketik kode emiten untuk fundamentalnya (contoh: <code>BBRI</code>):",
-    "backtest": "Ketik kode emiten untuk di-backtest (contoh: <code>BBCA</code>):",
-    "beli": "Mau beli emiten apa? Ketik kodenya (contoh: <code>BBCA</code>):",
-    "jual": "Mau jual emiten apa? Ketik kodenya (contoh: <code>TLKM</code>):",
-    "sinyal_detail": "Ketik kode emiten untuk detail sinyalnya (contoh: <code>BBCA</code>):",
-    "watch_add": "Ketik kode emiten yang mau ditambah ke watchlist (contoh: <code>ANTM</code>):",
-    "watch_del": "Ketik kode emiten yang mau dihapus dari watchlist:",
-    "alert_add": "Ketik kode emiten untuk alarm:",
-}
+def belajar_markup() -> InlineKeyboardMarkup:
+    return menu_handler.belajar_markup()
 
-# Daftar jenis alert di prompt selalu mengikuti core/alerts.py.
-_MANUAL_PROMPT["alert_add"] = (
-    "Ketik kode emiten untuk alarm (jenis default: "
-    + ", ".join(sorted(alerts.ALL_KINDS)) + "):")
+
+def belajar_detail_markup() -> InlineKeyboardMarkup:
+    return menu_handler.belajar_detail_markup()
+
+
+def help_markup() -> InlineKeyboardMarkup:
+    return menu_handler.help_markup()
+
+
+def modal_menu_markup() -> InlineKeyboardMarkup:
+    return menu_handler.modal_menu_markup()
 
 
 async def run_menu_action(update: Update, action: str, tickers: list[str]):
     """Jalankan satu aksi menu. Dipakai tombol maupun input teks."""
-    if action == "analisis":
-        await _do_analisis(update, tickers)
-    elif action == "skor":
-        await _do_skor(update, tickers, from_menu=True)
-    elif action == "berita":
-        await _do_berita(update, tickers[0])
-    elif action == "fundamental":
-        await _do_fundamental(update, tickers[0])
-    elif action == "backtest":
-        await _do_backtest(update, tickers[0], from_menu=True)
-    elif action == "beli":
-        await _do_tanya(update, tickers[0], "beli")
-    elif action == "jual":
-        await _do_tanya(update, tickers[0], "jual")
-    elif action == "tanya_beli":
-        await _do_tanya(update, tickers[0], "beli")
-    elif action == "tanya_jual":
-        await _do_tanya(update, tickers[0], "jual")
-    elif action == "tanya_umum":
-        await _do_tanya(update, tickers[0], "umum")
-    elif action == "sinyal_detail":
-        await _do_sinyal(update, tickers[:1])
-    elif action == "saran":
-        await _do_saran(update, from_menu=True)
-    elif action == "saran_list":
-        await _do_saran(update, list_only=True, from_menu=True)
-    elif action == "watch_list":
-        await _do_watch_list(update)
-    elif action == "watch_add":
-        await _do_watch_add(update, tickers[0], from_menu=True)
-    elif action == "watch_del":
-        await _do_watch_del(update, tickers[0], from_menu=True)
-    elif action == "alert_list":
-        await _do_alert_list(update, from_menu=True)
-    elif action == "alert_add":
-        await _do_alert_add(update, tickers[0], from_menu=True)
-    elif action == "bandar":
-        await _do_bandar(update)
-    else:
-        await update.effective_message.reply_text(
-            "Aksi tidak dikenal. Buka /start untuk menu.",
-            reply_markup=home_markup(),
-        )
+    await menu_handler.run_menu_action(update, action, tickers,
+                                       sys.modules[__name__])
 
 
 async def _safe_edit(msg, text, **kw):
@@ -610,210 +515,56 @@ async def _safe_edit(msg, text, **kw):
 
 
 async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if ALLOWED_IDS and (not q.from_user or q.from_user.id not in ALLOWED_IDS):
-        await q.answer("⛔ Bot ini privat.", show_alert=True)
-        return
-    await q.answer()
-    cb_data = q.data or ""
-    msg = q.message
-    if not msg:
-        return
-    chat_id = update.effective_chat.id
-    if cb_data == "menu":
-        _pending_clear(chat_id)
-        await _safe_edit(
-            msg, _menu_text(), parse_mode=ParseMode.HTML, reply_markup=main_menu_markup())
-        return
-    if cb_data.startswith("pick:"):
-        action = cb_data.split(":", 1)[1]
-        label = NEED_TICKER.get(action, action)
-        _pending_clear(chat_id)
-        await _safe_edit(
-            msg,
-            f"{esc(label)} — pilih emiten:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=ticker_pick_markup(
-                action, await asyncio.to_thread(store.get_watchlist,
-                                                chat_id)),
-        )
-        return
-    if cb_data.startswith("manual:"):
-        action = cb_data.split(":", 1)[1]
-        _pending_set(chat_id, action)
-        await _safe_edit(
-            msg,
-            _MANUAL_PROMPT.get(action, "Ketik kode emiten:"),
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Batal", callback_data="menu")]]
-            ),
-        )
-        return
-    if cb_data.startswith("tick:"):
-        parts = cb_data.split(":", 2)
-        if len(parts) != 3 or not parts[2]:
-            await _safe_edit(
-                msg, "❌ Tombol tidak valid — buka ulang menu.", reply_markup=home_markup())
-            return
-        _, action, ticker = parts
-        _pending_clear(chat_id)
-        await _safe_edit(
-            msg,
-            f"⏳ Memproses <b>{esc(ticker)}</b>...",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_markup(),
-        )
-        await run_menu_action(update, action, [ticker])
-        return
-    if cb_data.startswith("refresh:"):
-        parts = cb_data.split(":", 2)
-        if len(parts) != 3 or not parts[2]:
-            await _safe_edit(
-                msg, "❌ Tombol tidak valid — buka ulang menu.", reply_markup=home_markup())
-            return
-        _, action, ticker = parts
-        _pending_clear(chat_id)
-        await _safe_edit(
-            msg,
-            f"⏳ Memperbarui <b>{esc(ticker)}</b>...",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_markup(),
-        )
-        await run_menu_action(update, action, [ticker])
-        return
-    if cb_data.startswith("sg:"):
-        _pending_clear(chat_id)
-        await sinyal_handler.nav(update, cb_data, sys.modules[__name__],
-                                 ctx.job_queue)
-        return
-    if cb_data.startswith("run:"):
-        action = cb_data.split(":", 1)[1]
-        if action == "watch":
-            await _safe_edit(
-                msg,
-                "👀 <b>Watchlist</b> — pilih:",
-                parse_mode=ParseMode.HTML,
-                reply_markup=watch_menu_markup(),
-            )
-        elif action == "alert":
-            await _safe_edit(
-                msg,
-                "🔔 <b>Alert</b> — pilih:",
-                parse_mode=ParseMode.HTML,
-                reply_markup=alert_menu_markup(),
-            )
-        elif action == "help":
-            await _safe_edit(
-                msg, _menu_text(), parse_mode=ParseMode.HTML, reply_markup=main_menu_markup())
-        elif action == "saran":
-            await _safe_edit(
-                msg,
-                "🔍 Memindai emiten (teknikal+fundamental+berita), 1-2 menit...",
-                reply_markup=home_markup(),
-            )
-            await run_menu_action(update, "saran", [])
-        elif action == "bandar":
-            await _safe_edit(msg, "⏳ Mengambil data BEI...", reply_markup=home_markup())
-            await run_menu_action(update, "bandar", [])
-        elif action == "sinyal":
-            await _do_sinyal(update, [])
-        elif action == "paket":
-            await _do_paket(update, [])
-        elif action == "scan":
-            await _do_scan(update, [], ctx.job_queue)
-        else:
-            await run_menu_action(update, action, [])
-        return
+    await menu_handler.menu_callback(update, ctx, sys.modules[__name__])
 
 
 async def menu_text_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Teks biasa: hanya diproses kalau chat sedang menunggu input emiten,
-    atau kalau teksnya pertanyaan beli/jual ('BBCA beli gak?')."""
-    chat_id = update.effective_chat.id
-    action = _pending_get(chat_id)
-    if not action:
-        if ALLOWED_IDS and update.effective_user.id not in ALLOWED_IDS:
-            return
-        parsed = parse_tanya(update.effective_message.text or "")
-        if parsed:
-            focus, ticker = parsed
-            if ticker:
-                await _do_tanya(update, ticker, focus)
-            else:
-                pick_action = "beli" if focus != "jual" else "jual"
-                label = "🛒 Beli" if pick_action == "beli" else "💰 Jual"
-                wl = await asyncio.to_thread(store.get_watchlist,
-                                             chat_id)
-                await update.effective_message.reply_text(
-                    f"{label} — pilih emiten:",
-                    reply_markup=ticker_pick_markup(pick_action, wl))
-        return
-    if ALLOWED_IDS and update.effective_user.id not in ALLOWED_IDS:
-        _pending_clear(chat_id)
-        return
-    text = (update.effective_message.text or "").strip().upper()
-    raw_tokens = [t for t in text.replace(",", " ").split() if t]
-    tickers = []
-    for tok in raw_tokens:
-        clean = tok[:-3] if tok.endswith(".JK") else tok
-        if clean.isalnum() and 2 <= len(clean) <= 6:
-            tickers.append(clean)
-        else:
-            tickers = []
-            break
-    if not tickers:
-        await update.effective_message.reply_text(
-            "❌ Kode emiten tidak valid. Contoh: <code>BBCA</code> (atau <code>BBCA TLKM</code>).",
-            parse_mode=ParseMode.HTML)
-        return
-    _pending_clear(chat_id)
-    await run_menu_action(update, action, tickers[:5])
+    await menu_handler.menu_text_input(update, ctx, sys.modules[__name__])
 
 
 def _menu_text() -> str:
-    return (
-        "👋 Halo! Aku <b>SahamBuddy</b> — bot analisis saham Indonesia "
-        "(teknikal + fundamental + sentimen berita + data resmi BEI).\n\n"
-        "Pilih dari tombol di bawah — atau ketik perintah langsung, mis. "
-        "<code>/analisis BBCA</code>.\n\n"
-        "⚠️ Bukan saran investasi — selalu DYOR!")
+    return menu_handler.menu_text()
+
+
+def _help_text() -> str:
+    return menu_handler.help_text()
 
 
 async def _post_init(app: Application):
-    """Daftarkan daftar perintah di menu '/' Telegram."""
+    """Daftarkan daftar perintah di menu '/' Telegram (pemula di atas)."""
     from telegram import BotCommand
     try:
         await app.bot.set_my_commands([
-            BotCommand("start", "Menu utama (tombol interaktif)"),
-            BotCommand("menu", "Menu utama (tombol interaktif)"),
-            BotCommand("analisis", "Analisis emiten, mis. /analisis BBCA"),
-            BotCommand("skor", "Ringkasan skor cepat"),
-            BotCommand("berita", "Berita + sentimen emiten"),
-            BotCommand("fundamental", "PER/PBV/ROE/dividen/DER"),
-            BotCommand("saran", "Kandidat BUY harian + paper trading"),
-            BotCommand("sinyal", "Sinyal BELI/JUAL seluruh pasar IDX"),
-            BotCommand("rencana", "Rencana beli 1 emiten + anggaran"),
-            BotCommand("paket", "Paket beli multi-emiten siap Stockbit"),
-            BotCommand("cek", "Ceklist sebelum beli: /cek BBCA"),
-            BotCommand("portofolio", "Portofolio asli (uang sungguhan)"),
-            BotCommand("sektor", "Rotasi & kekuatan sektor BEI"),
-            BotCommand("scan", "Pindai seluruh pasar sekarang (±3–6 menit)"),
+            BotCommand("start", "Buka menu utama (tombol)"),
+            BotCommand("help", "Panduan pemula (3 langkah mulai)"),
+            BotCommand("cek", "Cek 6 poin layak beli: /cek BBCA"),
+            BotCommand("analisis", "Grafik & analisis lengkap: /analisis BBCA"),
+            BotCommand("rencana", "Hitung lot & batas rugi: /rencana BBCA 5jt"),
+            BotCommand("modal", "Atur modal rencana & latihan"),
+            BotCommand("saran", "Ide saham harian + ukuran aman"),
+            BotCommand("paket", "Paket beberapa saham siap Stockbit"),
             BotCommand("beli", "Tanya: layak beli? mis. /beli BBCA"),
             BotCommand("jual", "Tanya: layak jual? mis. /jual BBCA"),
+            BotCommand("belajar", "Kamus istilah saham (RSI, PER, PBV...)"),
+            BotCommand("portofolio", "Catat & pantau portofolio asli"),
+            BotCommand("watch", "Daftar saham pantauan (watchlist)"),
+            BotCommand("alert", "Pasang alarm harga otomatis"),
+            BotCommand("sinyal", "Sinyal pasar seluruh BEI (±944 emiten)"),
+            BotCommand("sektor", "Sektor industri terkuat & terlemah"),
+            BotCommand("skor", "Nilai cepat kondisi saham"),
+            BotCommand("berita", "Berita terbaru + sentimen"),
+            BotCommand("fundamental", "Valuasi & kesehatan keuangan"),
+            BotCommand("banding", "Bandingkan 2–4 saham sekaligus"),
+            BotCommand("agenda", "Jadwal dividen & aksi korporasi"),
             BotCommand("bandar", "Data resmi BEI / IHSG"),
-            BotCommand("banding", "Bandingkan 2–4 emiten"),
-            BotCommand("agenda", "Ex-date dividen & aksi korporasi"),
-            BotCommand("modal", "Atur modal latihan"),
-            BotCommand("auto", "Ringkasan & pengingat otomatis (/auto on)"),
-            BotCommand("belajar", "Kamus istilah"),
-            BotCommand("validasi", "Hasil uji statistik skor"),
-            BotCommand("backtest", "Backtest 5 tahun emiten"),
-            BotCommand("watch", "Kelola watchlist"),
-            BotCommand("alert", "Kelola alarm harga"),
-            BotCommand("status", "Kesehatan bot (admin)"),
+            BotCommand("scan", "Pindai seluruh pasar sekarang (±3–6 menit)"),
+            BotCommand("auto", "Ringkasan otomatis pagi (/auto on)"),
+            BotCommand("backtest", "Uji histori aturan sinyal 5 tahun"),
+            BotCommand("validasi", "Hasil uji statistik model"),
+            BotCommand("jejak", "Rekam jejak hasil sinyal nyata"),
+            BotCommand("menu", "Buka menu utama (tombol)"),
             BotCommand("id", "Lihat ID Telegram kamu"),
-            BotCommand("help", "Panduan"),
+            BotCommand("status", "Status kesehatan bot (admin)"),
         ])
     except Exception:
         log.warning("gagal mendaftarkan menu perintah", exc_info=True)
@@ -958,9 +709,26 @@ def format_validasi(v: dict) -> str:
         L.append(f"  {p['phases_net_positive']}/{p['n_phases']} fase positif · "
                  f"median neto {p['alpha_net_median_pct']:+.2f}%")
         if p.get("hysteresis"):
-            L.append(f"  hysteresis: masuk top {p.get('quintile', 0) * 100:.0f}%, "
-                     f"tahan sampai top {p.get('hold_quintile', 0) * 100:.0f}% "
+            extra = [f"masuk top {p.get('quintile', 0) * 100:.0f}%",
+                     f"tahan sampai top {p.get('hold_quintile', 0) * 100:.0f}%"]
+            if (p.get("min_hold") or 1) > 1:
+                extra.append(f"min_hold={p['min_hold']} siklus")
+            if p.get("regime") and p["regime"] != "none":
+                extra.append(f"regime={p['regime']}")
+            L.append(f"  hysteresis: {', '.join(extra)} "
                      f"(turnover dua arah {p.get('avg_turnover_two_way_pct')}%)")
+        elif (p.get("min_hold") or 1) > 1 or p.get("regime", "none") != "none":
+            L.append(f"  aturan: min_hold={p.get('min_hold', 1)}, "
+                     f"regime={p.get('regime', 'none')}")
+        if p.get("max_drawdown_mean_pct") is not None:
+            act_txt = (
+                f" · alpha aktif {p['alpha_active_gross_mean_pct']:+.2f}%"
+                if p.get("alpha_active_gross_mean_pct") is not None
+                and p.get("regime", "none") != "none"
+                else ""
+            )
+            L.append(f"  MDD rata-rata {p['max_drawdown_mean_pct']:+.1f}% · "
+                     f"eksposur {p.get('avg_exposure_pct', 100.0):.1f}%{act_txt}")
         dsr = p.get("deflated_sharpe") or {}
         if dsr.get("dsr") is not None:
             L.append(f"  Deflated Sharpe {dsr['dsr']} "
@@ -1020,9 +788,15 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await info_handler.do_start(update, ctx, sys.modules[__name__])
 
 
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await info_handler.do_help(update, ctx, sys.modules[__name__])
+
+
 # --------------------------- bandar / agenda / jejak / belajar (handlers/)
-async def _do_bandar(update: Update, ticker: str | None = None):
-    await market_handler.do_bandar(update, sys.modules[__name__], ticker=ticker)
+async def _do_bandar(update: Update, ticker: str | None = None,
+                     *, from_menu: bool = False):
+    await market_handler.do_bandar(update, sys.modules[__name__],
+                                   ticker=ticker, from_menu=from_menu)
 
 
 async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1031,6 +805,11 @@ async def cmd_bandar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_agenda(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await info_handler.cmd_agenda(update, ctx, sys.modules[__name__])
+
+
+async def _do_jejak(update: Update, *, from_menu: bool = False):
+    await info_handler.cmd_jejak(update, None, sys.modules[__name__],
+                                 from_menu=from_menu)
 
 
 async def cmd_jejak(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1043,6 +822,11 @@ async def cmd_belajar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await info_handler.do_id(update, ctx, sys.modules[__name__])
+
+
+async def _do_validasi(update: Update, *, from_menu: bool = False):
+    await info_handler.do_validasi(update, None, sys.modules[__name__],
+                                   from_menu=from_menu)
 
 
 async def cmd_validasi(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1258,8 +1042,9 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool) -> str
         deps=sys.modules[__name__])
 
 
-async def _do_paket(update: Update, args: list[str]):
-    await market_handler.do_paket(update, args, sys.modules[__name__])
+async def _do_paket(update: Update, args: list[str], *, from_menu: bool = False):
+    await market_handler.do_paket(update, args, sys.modules[__name__],
+                                  from_menu=from_menu)
 
 
 async def cmd_paket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1267,8 +1052,9 @@ async def cmd_paket(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_paket(update, tokens(update))
 
 
-async def _do_rencana(update: Update, args: list[str]):
-    await market_handler.do_rencana(update, args, sys.modules[__name__])
+async def _do_rencana(update: Update, args: list[str], *, from_menu: bool = False):
+    await market_handler.do_rencana(update, args, sys.modules[__name__],
+                                    from_menu=from_menu)
 
 
 async def cmd_rencana(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1286,9 +1072,10 @@ async def _scan_with_guard(force: bool, *, owns_flag: bool = False) -> dict | No
                                                 owns_flag=owns_flag)
 
 
-async def _do_scan(update: Update, args: list[str], job_queue):
+async def _do_scan(update: Update, args: list[str], job_queue,
+                   *, from_menu: bool = False):
     await market_handler.do_scan(update, args, job_queue,
-                                 sys.modules[__name__])
+                                 sys.modules[__name__], from_menu=from_menu)
 
 
 async def cmd_scan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1308,8 +1095,9 @@ async def _kualitas_map(tickers: list[str]) -> dict[str, dict]:
     return await sinyal_handler.kualitas_map(tickers, sys.modules[__name__])
 
 
-async def _do_sinyal(update: Update, args: list[str]):
-    await sinyal_handler.do(update, args, sys.modules[__name__])
+async def _do_sinyal(update: Update, args: list[str], *, from_menu: bool = False):
+    await sinyal_handler.do(update, args, sys.modules[__name__],
+                            from_menu=from_menu)
 
 
 async def cmd_sinyal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1385,8 +1173,9 @@ def _porto_text(summary: dict, modal: int) -> str:
                                          sys.modules[__name__])
 
 
-async def _do_portofolio(update: Update, args: list[str]):
-    await portfolio_handler.do(update, args, sys.modules[__name__])
+async def _do_portofolio(update: Update, args: list[str], *, from_menu: bool = False):
+    await portfolio_handler.do(update, args, sys.modules[__name__],
+                               from_menu=from_menu)
 
 
 async def cmd_portofolio(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1410,8 +1199,9 @@ def _cek_text(out: dict, res: dict) -> str:
     return cek_handler._cek_text(out, res, sys.modules[__name__])
 
 
-async def _do_cek(update: Update, args: list[str]):
-    await cek_handler.do(update, args, sys.modules[__name__])
+async def _do_cek(update: Update, args: list[str], *, from_menu: bool = False):
+    await cek_handler.do(update, args, sys.modules[__name__],
+                         from_menu=from_menu)
 
 
 async def cmd_cek(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1420,8 +1210,9 @@ async def cmd_cek(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ------------------------------- P18: rotasi sektor (kode di handlers/sektor.py)
-async def _do_sektor(update: Update, args: list[str]):
-    await sektor_handler.do(update, args, sys.modules[__name__])
+async def _do_sektor(update: Update, args: list[str], *, from_menu: bool = False):
+    await sektor_handler.do(update, args, sys.modules[__name__],
+                            from_menu=from_menu)
 
 
 async def cmd_sektor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1587,7 +1378,7 @@ def main():
     def reg(names, fn):
         app.add_handler(CommandHandler(names, timed(fn), filters=user_filter))
     reg(["start", "menu"], cmd_start)
-    reg("help", cmd_start)
+    reg("help", cmd_help)
     reg(["analisa", "analysis", "analisis"], cmd_analisis)
     reg("skor", cmd_skor)
     reg(["berita", "news"], cmd_berita)

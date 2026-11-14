@@ -15,6 +15,12 @@ meringkasnya ke `data/validation.json`).
 # 2) Diagnostik horizon 5/10/20/60 hari
 .\.venv\Scripts\python.exe research\horizons.py
 
+# 2b) Simulasi portofolio setelah biaya IDX (+ hysteresis, min_hold, rezim IHSG)
+.\.venv\Scripts\python.exe research\portfolio.py --hold 0.6 --min-hold 2 --regime sma50_200_half --offline
+
+# 2c) Uji ablasi + perbandingan walk-forward horizon 20/40/60 hari (offline)
+.\.venv\Scripts\python.exe research\experiments.py --offline --horizons 20 40 60
+
 # 3) Uji Kronos (butuh torch + model HF ±100 MB) — ±25 menit
 .\.venv\Scripts\python.exe research\evaluate_kronos.py --tickers 20 --every 42
 

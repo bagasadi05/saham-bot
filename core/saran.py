@@ -14,7 +14,7 @@ from datetime import date
 import pandas as pd
 
 from config import IDX_BUY_FEE, IDX_SELL_FEE
-from core import marketcal, powerscore, pricing, relatif, store
+from core import marketcal, powerscore, pricing, regime, relatif, store
 
 log = logging.getLogger("sahambuddy.saran")
 
@@ -39,6 +39,8 @@ MAX_OPEN = 5            # maksimal posisi latihan terbuka (risiko total)
 MAX_PER_SECTOR = 2      # konsentrasi per sektor
 MAX_HOLD_DAYS = 20      # hari bursa (≈ 28 hari kalender)
 MAX_QUEUE_AGE_DAYS = 10  # sinyal basi: batalkan kalau open berikutnya tak kunjung ada
+HOLD_BAND_PCT = 40.0    # top 60% (rel_pct >= 40): band tahan hysteresis kurangi turnover
+MIN_HOLD_CYCLES = 2     # ~40 hari bursa: masa tahan referensi riset
 TRAP_RET20D = 15.0      # skip jebakan momentum (temuan backtest)
 CLOSED_SHOWN = 10       # posisi selesai yang ditampilkan di /saran list
 
@@ -64,7 +66,8 @@ def target_price(entry: float, atr: float) -> float:
 
 
 def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
-                    modal: int | None = None, fund_raw: dict | None = None) -> dict:
+                    modal: int | None = None, fund_raw: dict | None = None,
+                    *, risk_scale: float = 1.0) -> dict:
     """Satu kandidat terkurasi (bagian dari /saran)."""
     tech = res["score"]["pct"]
     fund_pct = fund["pct"] if fund else None
@@ -95,25 +98,30 @@ def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
         "tp": target_price(entry, atr_v),
         "date": None,  # diisi saat entry terisi
     }
-    # [P5] ukuran posisi: risiko 1% modal per trade
+    # [P5] ukuran posisi: risiko 1% modal per trade (0,5x saat IHSG defensif)
     if modal:
-        c.update(position_size(modal, entry, c["sl"]))
+        c.update(position_size(modal, entry, c["sl"], risk_pct=0.01 * risk_scale))
     return c
 
 
-def position_size(modal: float, entry: float, sl: float) -> dict:
+def position_size(modal: float, entry: float, sl: float,
+                  risk_pct: float = 0.01, max_pos_pct: float = 1.0) -> dict:
     """Risiko 1% modal per trade: min. lot 100 lembar (floor).
 
     Nilai posisi dibatasi modal — risiko per lembar yang sangat kecil tidak
     boleh menghasilkan saran beli melebihi uang yang ada. lots bisa 0
-    (risiko/lembar melebihi 1% modal) → sinyal dilewati.
+    (risiko/lembar melebihi batas risiko modal) → sinyal dilewati.
     """
     entry, sl, modal = float(entry), float(sl), float(modal)
+    if modal <= 0 or entry <= 0:
+        return {"risk": 0.0, "budget": 0, "shares": 0, "lots": 0,
+                "value": 0, "real_risk": 0}
     risk = max(entry - sl, 0.0)
-    budget = modal * 0.01                 # 1% modal
+    budget = modal * max(0.0, float(risk_pct))
     shares = budget / risk if risk > 0 else 0.0
     lots = int(shares // 100)
-    max_lots = int(modal // (entry * 100)) if entry > 0 else 0
+    cap_pct = max(0.0, min(1.0, float(max_pos_pct)))
+    max_lots = int((modal * cap_pct) // (entry * 100)) if entry > 0 else 0
     lots = max(0, min(lots, max_lots))
     shares = lots * 100                   # konsisten: lembar = lot × 100
     value = shares * entry
@@ -130,8 +138,35 @@ def pnl_pct(entry: float, exit_price: float) -> float:
     return ((exit_price * (1 - SELL_FEE)) / (entry * (1 + BUY_FEE)) - 1) * 100
 
 
+def hold_review(open_recs: dict[str, dict], by_ticker: dict[str, dict]) -> list[dict]:
+    """Tinjau posisi terbuka terhadap band tahan top 60% (hysteresis turnover)."""
+    notes: list[dict] = []
+    for ticker, rec in sorted((open_recs or {}).items()):
+        if rec.get("status") not in ("open", "pending"):
+            continue
+        it = by_ticker.get(ticker)
+        if not it or not it.get("rel_ok") or it.get("rel_pct") is None:
+            continue
+        rel_pct = float(it["rel_pct"])
+        action = "TAHAN" if rel_pct >= HOLD_BAND_PCT else "ROTASI"
+        reason = (
+            "masih di top 60% (hemat biaya rotasi 0,40%)"
+            if action == "TAHAN"
+            else "keluar dari top 60% — kandidat rotasi"
+        )
+        notes.append({
+            "ticker": ticker,
+            "rel_pct": rel_pct,
+            "rel_quintil": it.get("rel_quintil"),
+            "action": action,
+            "reason": reason,
+        })
+    return notes
+
+
 def pick(analyzed: list[dict], modal: int | None = None,
-         open_recs: dict[str, dict] | None = None) -> dict:
+         open_recs: dict[str, dict] | None = None,
+         *, market_regime: dict | None = None) -> dict:
     """Ranking hasil analisis → kandidat BUY & daftar HINDARI.
 
     Sejak evaluasi OOS (research/evaluation.md), urutan kandidat memakai skor
@@ -144,13 +179,21 @@ def pick(analyzed: list[dict], modal: int | None = None,
     open_count = len(open_recs)
     sector_count: Counter = Counter(
         r.get("sector") for r in open_recs.values() if r.get("sector"))
+    scale = regime.effective_scale(market_regime)
 
     cands = []
     skipped: list[str] = []
     for a in analyzed:
         try:
-            cands.append(build_candidate(a["res"], a.get("fund"), a.get("nsent"),
-                                         modal, a.get("fund_raw")))
+            c = build_candidate(
+                a["res"], a.get("fund"), a.get("nsent"),
+                modal, a.get("fund_raw"),
+            )
+            if modal and scale != 1.0 and "entry" in c and "sl" in c:
+                c.update(position_size(
+                    modal, c["entry"], c["sl"], risk_pct=0.01 * scale
+                ))
+            cands.append(c)
         except Exception:
             ticker = str((a.get("res") or {}).get("ticker") or "?")
             skipped.append(ticker)
@@ -167,6 +210,7 @@ def pick(analyzed: list[dict], modal: int | None = None,
         c["rel_quintil"] = it.get("rel_quintil")
         c["rel_ok"] = bool(it.get("rel_ok"))
 
+    hold_notes = hold_review(open_recs, by_ticker)
     use_rel = sum(1 for c in cands if c["rel_ok"]) >= relatif.MIN_UNIVERSE
     if use_rel:
         pool = [c for c in cands if c["rel_ok"] and c["rel_pct"] is not None]
@@ -203,7 +247,8 @@ def pick(analyzed: list[dict], modal: int | None = None,
 
     return {"picks": buys, "avoid": avoid, "mode": mode,
             "open_count": open_count, "max_open": MAX_OPEN,
-            "skipped": skipped}
+            "skipped": skipped, "hold_notes": hold_notes,
+            "exposure_scale": scale, "regime": market_regime}
 
 
 def queue_paper(chat_id: int | str, picks: list[dict], trade_date) -> int:

@@ -15,7 +15,7 @@ from telegram.ext import ContextTypes
 
 import backtest as btmod
 from core import (analysis, btcache, data, fundamental, marketcal, news,
-                  saran as saranmod, store)
+                  regime, reports, saran as saranmod, store)
 
 log = logging.getLogger("sahambuddy")
 
@@ -132,17 +132,21 @@ async def saran_scan_text(chat_id: int, deps,
     paper = await asyncio.to_thread(store.get_paper, chat_id)
     open_recs = {t: r for t, r in paper.items()
                  if r.get("status") in ("open", "pending")}
-    result = saranmod.pick(analyzed, modal, open_recs)  # sizing pakai modal latihan
+    reg = await asyncio.to_thread(getattr(deps, "regime", regime).fetch_ihsg_regime)
+    result = saranmod.pick(analyzed, modal, open_recs, market_regime=reg)
     paper_msgs = saranmod.update_paper(chat_id, latest)  # notifikasi TP/SL posisi lama
 
+    scale = result.get("exposure_scale", 1.0)
+    risk_txt = f"{scale:g}"
     today = marketcal.now_wib().date()
     lines = [f"🧭 <b>RINGKASAN SARAN HARIAN — {pd.Timestamp.now(tz=deps.WIB):%d %b %Y}</b>",
              "Skema: entry di open sesi berikutnya | SL 1×ATR | TP 2×ATR | "
              f"biaya beli {saranmod.BUY_FEE * 100:.2f}% & jual "
              f"{saranmod.SELL_FEE * 100:.2f}% | modal latihan {saranmod.fmt(modal)} "
-             "(ubah: /modal 10000000)\n",
-             f"Posisi latihan terbuka: {result['open_count']}/{result['max_open']} "
-             f"(maks {saranmod.MAX_PER_SECTOR} per sektor)\n"]
+             "(ubah: /modal 10000000)",
+             reports.regime_banner(reg),
+             f"\nPosisi latihan terbuka: {result['open_count']}/{result['max_open']} "
+             f"(maks {saranmod.MAX_PER_SECTOR} per sektor · risiko {risk_txt}%/posisi)\n"]
     if result["picks"]:
         saranmod.queue_paper(chat_id, result["picks"], today)
         label = ("Kandidat (urut skor relatif antar-emiten — IC OOS +0,03, "
@@ -164,22 +168,31 @@ async def saran_scan_text(chat_id: int, deps,
                 f"{rel_txt}\n"
                 f"      Entry {saranmod.fmt(c['entry'])} | SL {saranmod.fmt(c['sl'])} | "
                 f"TP {saranmod.fmt(c['tp'])}")
-            # [P5] ukuran posisi: risiko 1% modal, floor ke lot 100
+            # [P5] ukuran posisi: risiko 1% modal (0,5% saat IHSG defensif), floor lot 100
             if "lots" in c:
                 if c["lots"] > 0:
                     lines.append(
-                        f"      💼 Ukuran (risiko 1% modal): {c['lots']} lot "
+                        f"      💼 Ukuran (risiko {risk_txt}% modal): {c['lots']} lot "
                         f"({c['shares']} lembar) ≈ {saranmod.fmt(c['value'])} | "
                         f"risiko nyata {saranmod.fmt(c['real_risk'])}")
                 else:
                     lines.append(
-                        "      💼 Ukuran: <i>risiko/lembar melebihi 1% modal — "
+                        f"      💼 Ukuran: <i>risiko/lembar melebihi {risk_txt}% modal — "
                         "butuh minimal 1 lot; naikkan modal (mis. "
                         f"{saranmod.fmt(min(int(modal) * 3, 100_000_000))}) "
                         "atau lewati ini</i>")
     else:
         lines.append("Tidak ada kandidat layak BUY hari ini "
                      "(semua skor tak mencukupi / terkena filter jebakan momentum).")
+    hold_notes = result.get("hold_notes") or []
+    if hold_notes:
+        lines.append("\n📌 <b>TINJAU POSISI TERBUKA (band tahan top 60%):</b>")
+        for h in hold_notes:
+            icon = "🟢" if h["action"] == "TAHAN" else "🔁"
+            lines.append(
+                f"  {icon} <b>{deps.esc(h['ticker'])}</b> "
+                f"relatif {h['rel_pct']:.0f}/100 → <b>{h['action']}</b> ({deps.esc(h['reason'])})"
+            )
     lines.append("\n🚫 HINDARI (terlemah):")
     for c in result["avoid"]:
         rel_txt = (f"relatif {c['rel_pct']:.0f}/100"
@@ -197,7 +210,9 @@ async def saran_scan_text(chat_id: int, deps,
     if paper_msgs:
         lines.append("")
         lines.extend(paper_msgs)
-    lines.append("\n⚠️ Alat bantu latihan, bukan saran formal. DYOR!")
+    lines.append("\n⏱️ Evaluasi rotasi tiap ±20–40 hari bursa; tahan posisi selama "
+                 "skor relatif ≥40/100 (top 60%) agar biaya 0,40% tidak menggerus hasil.")
+    lines.append("⚠️ Alat bantu latihan, bukan saran formal. DYOR!")
     return "\n".join(lines)
 
 
@@ -332,7 +347,7 @@ async def cmd_beli(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         wl = await asyncio.to_thread(store.get_watchlist,
                                      update.effective_chat.id)
         await update.effective_message.reply_text(
-            "🛒 Beli — pilih emiten:",
+            "🤔 Tanya: Layak Beli? — pilih saham (tidak membeli otomatis):",
             reply_markup=deps.ticker_pick_markup("beli", wl))
         return
     await do_tanya(update, deps, args[0], "beli")
@@ -345,7 +360,7 @@ async def cmd_jual(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         wl = await asyncio.to_thread(store.get_watchlist,
                                      update.effective_chat.id)
         await update.effective_message.reply_text(
-            "💰 Jual — pilih emiten:",
+            "🤔 Tanya: Layak Jual? — pilih saham yang kamu pegang:",
             reply_markup=deps.ticker_pick_markup("jual", wl))
         return
     await do_tanya(update, deps, args[0], "jual")

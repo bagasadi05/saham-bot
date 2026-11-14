@@ -8,6 +8,72 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ---
 
+## [Unreleased] — 2026-11-14
+
+Ringkasan: Track A (kontrol risiko rezim IHSG defensif + hysteresis turnover)
+dan Track B (ablasi & walk-forward multi-horizon 20/40/60 hari) diimplementasikan
+berbasis bukti offline.
+
+### Ditambahkan
+
+- **Filter rezim pasar kausal `core/regime.py`** — mendeteksi fase IHSG (`^JKSE`
+  `SMA50` vs `SMA200`, murni kausal bar `<= t`). Bila `SMA50 < SMA200`,
+  `exposure_scale` menjadi `0,5` (`DEFENSIVE`); bila data `<200` bar atau
+  Yahoo gagal, dilaporkan jujur sebagai `NA` (`"tidak tersedia"`,
+  `exposure_scale=1,0`, tidak dikarang). Tes: `tests/test_regime.py`.
+- **Harness ablasi & multi-horizon `research/experiments.py`** — menguji
+  16 varian / 320 trial (`hold`, `min_hold`, EMA skor, invers volatilitas,
+  ukuran kuintil, filter rezim IHSG) serta perbandingan walk-forward horizon
+  `--horizons 20 40 60` (`run_horizon_comparison`) beserta akuntansi DSR jujur
+  dan sensitivitas slippage (`+0..+60 bps`). Tes: `tests/test_experiments.py`.
+- **Skill riset lokal** — `.agents/skills/idx-quant-research/` berisi aturan
+  gerbang kausalitas, biaya BEI all-in `0,40%`, pemisahan alpha aktif vs beta
+  kas, dan gate `DSR >= 0,95`.
+- **Menu ramah pemula (`handlers/menu.py`, `bot.py`, `handlers/info.py`)** —
+  merombak `/start` & `/menu` dari daftar 22 perintah teknis menjadi menu utama
+  berbasis tujuan (8 tombol terkelompok: *Cek Layak Beli*, *Analisis Lengkap*,
+  *Ide & Sinyal*, *Hitung Modal & Lot*, *Watchlist & Alarm*, *Portofolio Saya*,
+  *Belajar Istilah*, *Panduan Pemula* + laci *Fitur Lanjutan*).
+- **Alur pemula interaktif (`handlers/menu.py`)** — `/help` terpisah menjadi
+  panduan *3 Langkah Mulai* + tombol 1-tap *Coba Cek BBCA*, kamus `/belajar`
+  mendukung tombol istilah langsung (`PER`, `PBV`, `ROE`, `RSI`, `MACD`,
+  `MA50`, `ATR`, `IHSG`, `PowerScore`), pengatur `/modal` punya tombol cepat
+  (`Rp 2/5/10/25 Juta` + ketik manual), label `/beli`/`/jual` diperjelas sebagai
+  pertanyaan (*Tanya: Layak Beli/Jual?*), dan seluruh hasil dari menu menyertakan
+  tombol *Menu Utama* (`from_menu=True`). Urutan perintah `/` (`_post_init`)
+  mendahulukan perintah pemula. Tes baru: `tests/test_menu_beginner.py`.
+
+### Diubah
+
+- **`/paket` (`core/rencana.py`, `handlers/market.py`)** — menyuntikkan
+  rezim IHSG saat memfinalisasi paket beli: saat `DEFENSIVE`, risiko maks/posisi
+  dipangkas `1% -> 0,5%`, batas per emiten `20% -> 10%`, dan batas alokasi total
+  `90% -> 45%` (sisanya cash), disertai banner rezim dan panduan menahan
+  posisi top 60% (`±20–40` hari bursa) untuk menekan biaya `0,40%`.
+- **`/saran` (`core/saran.py`, `handlers/trading.py`)** — menyelaraskan
+  sizing risiko (`1% -> 0,5%` saat `DEFENSIVE`), menambah `hold_review`
+  (`TAHAN` bila posisi terbuka masih `rel_pct >= 40` / top 60%, `ROTASI`
+  bila turun di bawahnya), serta banner rezim di ringkasan scan harian.
+- **`research/portfolio.py` & `data/validation.json`** — berbagi logika
+  `select_names`/`max_drawdown_pct`/`core.regime`, menambah `--min-hold`,
+  `--regime`, dan `--offline`. Regenerasi `data/validation.json` via
+  `portfolio.py --hold 0.6 --min-hold 2 --regime sma50_200_half --offline`
+  dan `research/publish.py`:
+  - `avg_turnover_pct` turun `50,6% -> 21,7%`, `max_drawdown_mean_pct` turun
+    `-35,0% -> -20,0%`, `sharpe_mean 0,174`, `avg_exposure_pct 79,8%`.
+  - `alpha_net_mean_pct +0,330%` (`16/20` fase positif, `CI [+0,243; +0,522]`)
+    dengan `alpha_active_gross_mean_pct +0,534%` (terpisah dari kas rezim)
+    dan `DSR 0,86` (`n_trials=20`, tetap `< 0,95`; bobot `core/relatif.py`
+    dipertahankan beku).
+  - Uji `--horizons 20 40 60` (`research/experiments.py --offline --horizons 20 40 60`):
+    melatih ulang 12 faktor pada `40d`/`60d` menurunkan WF IC dari `+0,0265`
+    (`20d`, `t_hac 1,80`) menjadi `-0,0032` (`40d`) dan `-0,0134` (`60d`,
+    `t_hac -0,48`), sehingga horizon prediksi dibiarkan `20d` dan efisiensi
+    masa tahan dicapai lewat hysteresis `hold=0,6` + `min_hold=2` (bukan ubah
+    target model).
+
+---
+
 ## [Unreleased] — 2026-11-12
 
 Ringkasan: seluruh backlog produk (P12–P18) selesai, riset dikalibrasi ulang,

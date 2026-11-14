@@ -45,3 +45,21 @@ def test_portfolio_lama_tanpa_field_baru_tetap_jalan():
     assert "hysteresis" not in txt
     assert "Deflated Sharpe" not in txt
     assert "neto +0.08%" in txt
+
+
+def test_regime_and_mdd_rendered_with_active_alpha():
+    txt = bot.format_validasi(_payload({
+        "n_phases": 20, "holding_days": 20, "cost_per_round_trip_pct": 0.4,
+        "avg_turnover_pct": 21.7, "avg_turnover_two_way_pct": 43.4,
+        "quintile": 0.2, "hold_quintile": 0.6, "hysteresis": True,
+        "min_hold": 2, "regime": "sma50_200_half",
+        "avg_exposure_pct": 79.8, "max_drawdown_mean_pct": -20.0,
+        "alpha_active_gross_mean_pct": 0.534,
+        "alpha_gross_mean_pct": 0.416, "alpha_net_mean_pct": 0.33,
+        "alpha_net_median_pct": 0.385, "phases_net_positive": 16,
+    }))
+    assert "min_hold=2 siklus" in txt
+    assert "regime=sma50_200_half" in txt
+    assert "MDD rata-rata -20.0%" in txt
+    assert "eksposur 79.8%" in txt
+    assert "alpha aktif +0.53%" in txt

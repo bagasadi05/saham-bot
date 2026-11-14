@@ -201,3 +201,27 @@ def test_sl_tp_mengikuti_tick_idx():
     assert p["sl"] == 1060 and p["tp"] == 1120
     assert p["sl"] % 5 == 0 and p["tp"] % 5 == 0
     assert p["rr"] == 2.0
+
+
+def test_finalize_defensif_pangkas_eksposur_dan_risiko():
+    cands = [
+        rencana.enrich(_row(ticker=f"T{i}", rel_pct=90 - i),
+                       _analyzed(sector=f"S{i}", price=1000, atr=10))
+        for i in range(4)
+    ]
+    def_reg = {"status": "DEFENSIVE", "exposure_scale": 0.5}
+    out = rencana.finalize(cands, 10_000_000, max_plans=5, market_regime=def_reg)
+    assert out["exposure_scale"] == 0.5
+    assert out["risk_pct_limit"] == 0.5
+    assert out["max_pos_pct"] == 10.0
+    assert out["max_total_pct"] == 45.0
+    assert all(p["lots"] == 10 for p in out["picks"])  # maks 10% x 10jt = 1jt = 10 lot
+    assert sum(p["buy_cost"] for p in out["picks"]) <= 4_500_000
+
+    # Status NA tetap memakai porsi normal 100% secara jujur (tidak memalsu jadi nol/defensif)
+    na_out = rencana.finalize(
+        cands, 10_000_000, max_plans=5, market_regime={"status": "NA", "exposure_scale": 1.0}
+    )
+    assert na_out["exposure_scale"] == 1.0
+    assert na_out["max_total_pct"] == 90.0
+    assert all(p["lots"] == 20 for p in na_out["picks"])
