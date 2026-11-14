@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 
+import config
 from core import fundamental, kualitas as kvalmod, marketcal, pricing, store
 from core.reports import _rp, esc
 from core.textutil import rupiah
@@ -161,6 +163,12 @@ def _sinyal_section(rows: list[dict], sig: str, meta: dict, deps,
             out += ["", "<i>✅ sehat · ⚠️ tidak lolos saringan · ❔ belum "
                     "dinilai (data fundamental gagal diambil). Penanda hanya "
                     "untuk 6 emiten teratas — bukan seluruh daftar.</i>"]
+        if sig == "BELI":
+            out.append("<i>Ketuk tombol saham di bawah untuk cek 6 poin "
+                       "atau hitung lot sesuai modal.</i>")
+        elif sig == "JUAL":
+            out.append("<i>Ketuk tombol saham di bawah untuk cek layak "
+                       "jual atau buka analisis lengkap.</i>")
     out += ["", "<i>Label ini peringkat relatif 12 faktor (IC OOS ±0,03), "
             "bukan probabilitas naik. BELI = peringkat atas, JUAL = peringkat "
             "bawah — bukan instruksi short.</i>", "", deps._SINYAL_DISCLAIMER]
@@ -263,22 +271,102 @@ async def kualitas_map(tickers: list[str], deps) -> dict[str, dict]:
     return out
 
 
-def _beli_bagus_text(rows: list[dict], meta: dict, deps,
-                     kval: dict) -> str:
-    """Daftar kandidat BELI yang lolos saringan kualitas."""
+def _clean_ticker(raw: str | None) -> str:
+    """Normalkan kode emiten menjadi `[A-Z0-9]{2,10}` tanpa `.JK`/spasi."""
+    s = str(raw or "").strip().upper()
+    if s.endswith(".JK"):
+        s = s[:-3]
+    return s if re.fullmatch(r"[A-Z0-9]{2,10}", s) else ""
+
+
+def _clean_tickers(tickers: list[str] | None, limit: int) -> list[str]:
+    """Bersihkan, deduplikasi, dan batasi daftar ticker untuk tombol."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in tickers or []:
+        t = _clean_ticker(raw)
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _safe_cb(cb: str) -> str:
+    """Pastikan callback_data tidak melebihi batas 64 byte Telegram."""
+    if len(cb.encode("utf-8")) > 64:
+        raise ValueError(f"callback_data melebihi 64 byte: {cb!r}")
+    return cb
+
+
+def _partisi_kualitas(
+    rows: list[dict], kval: dict
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """Pisahkan pool BELI menjadi lolos, belum dinilai, dan gugur."""
     pool = rows[:BELI_BAGUS_POOL]
-    dinilai = [r for r in pool if (kval.get(r["ticker"]) or {}).get("ok")
-               is not None]
+    dinilai = [r for r in pool
+               if (kval.get(r["ticker"]) or {}).get("ok") is not None]
     lolos = [r for r in dinilai if kvalmod.passes(kval.get(r["ticker"]))]
-    belum = [r for r in pool if (kval.get(r["ticker"]) or {}).get("ok") is None]
+    belum = [r for r in pool
+             if (kval.get(r["ticker"]) or {}).get("ok") is None]
     gugur = [r for r in dinilai if not kvalmod.passes(kval.get(r["ticker"]))]
+    return pool, lolos, belum, gugur
+
+
+def _lot_cost_1(price) -> int | None:
+    """Estimasi biaya beli 1 lot (100 lembar + fee beli BEI 0,15%)."""
+    try:
+        px = float(price)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(px) or px <= 0:
+        return None
+    return int(math.ceil(round(px * 100.0 * (1.0 + config.IDX_BUY_FEE), 6)))
+
+
+def _lot_vs_modal_note(price, modal: float | None) -> str:
+    """Baris estimasi biaya 1 lot dan kecukupannya terhadap modal."""
+    cost = _lot_cost_1(price)
+    if cost is None:
+        return "   <i>biaya 1 lot: harga tidak tersedia</i>"
+    if modal is not None and modal > 0:
+        slot25 = modal * 0.25
+        if cost <= slot25:
+            status = f"✅ cukup slot 25% &amp; modal {rupiah(modal)}"
+        elif cost <= modal:
+            status = f"⚠️ &gt; slot 25%, cukup modal penuh {rupiah(modal)}"
+        else:
+            kurang = cost - modal
+            status = f"⛔ &gt; modal {rupiah(modal)}, kurang {rupiah(kurang)}"
+        return f"   <i>1 lot ≈ {rupiah(cost)} ({status})</i>"
+    return f"   <i>1 lot ≈ {rupiah(cost)} (termasuk fee beli 0,15%)</i>"
+
+
+def _beli_bagus_text(rows: list[dict], meta: dict, deps,
+                     kval: dict, modal: int | float | None = None) -> str:
+    """Daftar kandidat BELI yang lolos saringan kualitas."""
+    pool, lolos, belum, gugur = _partisi_kualitas(rows, kval)
+    modal_val: float | None = None
+    if modal is not None:
+        try:
+            m = float(modal)
+            if math.isfinite(m) and m > 0:
+                modal_val = m
+        except (TypeError, ValueError):
+            modal_val = None
     out = ["🟢 <b>BELI BERKUALITAS</b>",
            f"<i>{esc(deps._scan_when(meta))}</i>",
            "",
            f"Dinilai <b>{len(pool)}</b> kandidat BELI teratas (peringkat "
-           f"relatif) · <b>{len(lolos)}</b> lolos saringan",
-           "<i>Saringan: laba positif · ROE ≥ 8% · PER ≤ 25× · PBV ≤ 4×. "
-           "Ini syarat kualitas, <b>bukan jaminan naik</b>.</i>", ""]
+           f"relatif) · <b>{len(lolos)}</b> lolos saringan"]
+    if modal_val is not None:
+        out.append(
+            f"Modal tersimpan: <b>{rupiah(modal_val)}</b> "
+            f"(slot 25%/posisi: <b>{rupiah(modal_val * 0.25)}</b>)"
+        )
+    out += ["<i>Saringan: laba positif · ROE ≥ 8% · PER ≤ 25× · PBV ≤ 4×. "
+            "Ini syarat kualitas, <b>bukan jaminan naik</b>.</i>", ""]
     if not lolos:
         out += ["Tidak ada kandidat yang lolos hari ini.",
                 "Itu bukan error — lebih baik tidak memaksa beli daripada "
@@ -290,6 +378,7 @@ def _beli_bagus_text(rows: list[dict], meta: dict, deps,
     else:
         for i, r in enumerate(lolos[:BELI_BAGUS_SHOW], 1):
             out.append(_sinyal_row(i, r, kval.get(r["ticker"])))
+            out.append(_lot_vs_modal_note(r.get("price"), modal_val))
         if len(lolos) > BELI_BAGUS_SHOW:
             out.append(f"… dan {len(lolos) - BELI_BAGUS_SHOW} lainnya.")
     if gugur:
@@ -316,45 +405,96 @@ def overview_markup() -> InlineKeyboardMarkup:
     ])
 
 
-def section_markup(sig: str) -> InlineKeyboardMarkup:
-    rows = []
-    if sig == "BELI":
+def section_markup(
+    sig: str,
+    tickers: list[str] | None = None,
+    *,
+    from_menu: bool = False,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    sig_up = (sig or "").upper()
+    clean = _clean_tickers(tickers, limit=4)
+    if sig_up == "BELI":
+        for t in clean:
+            rows.append([
+                InlineKeyboardButton(f"🔍 Cek {t}",
+                                     callback_data=_safe_cb(f"tick:cek:{t}")),
+                InlineKeyboardButton(f"🎯 Hitung Lot {t}",
+                                     callback_data=_safe_cb(f"tick:rencana:{t}")),
+            ])
         rows.append([InlineKeyboardButton("✅ BELI berkualitas",
                                           callback_data="sg:good")])
+    elif sig_up == "JUAL":
+        for t in clean:
+            rows.append([
+                InlineKeyboardButton(f"🤔 Cek Jual {t}",
+                                     callback_data=_safe_cb(f"tick:jual:{t}")),
+                InlineKeyboardButton(f"📈 Analisis {t}",
+                                     callback_data=_safe_cb(f"tick:analisis:{t}")),
+            ])
     rows.append([InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov"),
                  InlineKeyboardButton("🔄 Scan ulang",
                                       callback_data="sg:scan")])
-    return InlineKeyboardMarkup(rows)
+    return _with_home(InlineKeyboardMarkup(rows), from_menu)
 
 
-def detail_markup(ticker: str, sig: str | None = None) -> InlineKeyboardMarkup:
+def detail_markup(
+    ticker: str,
+    sig: str | None = None,
+    *,
+    from_menu: bool = False,
+) -> InlineKeyboardMarkup:
+    t = _clean_ticker(ticker)
+    if not t:
+        return _with_home(
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov"),
+            ]]),
+            from_menu,
+        )
+    rows: list[list[InlineKeyboardButton]] = []
     if (sig or "").upper() == "JUAL":
-        top_row = [
+        rows.append([
             InlineKeyboardButton("🤔 Cek layak jual?",
-                                 callback_data=f"tick:jual:{ticker}"),
+                                 callback_data=_safe_cb(f"tick:jual:{t}")),
             InlineKeyboardButton("📝 Sudah jual di Stockbit",
-                                 callback_data=f"exec:sell:{ticker}"),
-        ]
+                                 callback_data=_safe_cb(f"exec:sell:{t}")),
+        ])
     else:
-        top_row = [
+        rows.append([
+            InlineKeyboardButton("🛡️ Cek 6 Poin",
+                                 callback_data=_safe_cb(f"tick:cek:{t}")),
+            InlineKeyboardButton("🎯 Hitung Lot",
+                                 callback_data=_safe_cb(f"tick:rencana:{t}")),
+        ])
+        rows.append([
             InlineKeyboardButton("📝 Sudah beli di Stockbit",
-                                 callback_data=f"exec:buy:{ticker}"),
+                                 callback_data=_safe_cb(f"exec:buy:{t}")),
             InlineKeyboardButton("🤔 Cek layak jual?",
-                                 callback_data=f"tick:jual:{ticker}"),
-        ]
-    return InlineKeyboardMarkup([
-        top_row,
-        [InlineKeyboardButton("📊 Analisis lengkap",
-                              callback_data=f"sg:an:{ticker}")],
-        [InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov")],
-    ])
+                                 callback_data=_safe_cb(f"tick:jual:{t}")),
+        ])
+    rows.append([InlineKeyboardButton("📊 Analisis lengkap",
+                                      callback_data=_safe_cb(f"sg:an:{t}"))])
+    rows.append([InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov")])
+    return _with_home(InlineKeyboardMarkup(rows), from_menu)
 
 
-def bagus_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🟢 Semua BELI", callback_data="sg:buy"),
-         InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov")],
-    ])
+def bagus_markup(
+    tickers: list[str] | None = None,
+    *,
+    from_menu: bool = False,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for t in _clean_tickers(tickers, limit=5):
+        rows.append([
+            InlineKeyboardButton(f"🔍 Cek {t}",
+                                 callback_data=_safe_cb(f"tick:cek:{t}")),
+            InlineKeyboardButton(f"🎯 Hitung Lot {t}",
+                                 callback_data=_safe_cb(f"tick:rencana:{t}")),
+        ])
+    rows.append([InlineKeyboardButton("🟢 Semua BELI", callback_data="sg:buy"),
+                 InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov")])
+    return _with_home(InlineKeyboardMarkup(rows), from_menu)
 
 
 def empty_markup() -> InlineKeyboardMarkup:
@@ -374,6 +514,46 @@ async def _overview_text(rows: list[dict], meta: dict, deps) -> str:
     buys = _sort_buys(rows)
     kval = await deps._kualitas_map([r["ticker"] for r in buys[:3]])
     return _sinyal_overview(rows, meta, deps, kval)
+
+
+async def _load_modal(update: Update) -> float | None:
+    chat = getattr(update, "effective_chat", None)
+    chat_id = getattr(chat, "id", None)
+    if chat_id is None:
+        return None
+    return await asyncio.to_thread(store.get_modal, chat_id)
+
+
+def _csv_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬅️ Ringkasan", callback_data="sg:ov"),
+    ]])
+
+
+async def _build_section_reply(
+    rows: list[dict], sig: str, meta: dict, deps
+) -> tuple[str, InlineKeyboardMarkup]:
+    if sig == "BELI":
+        picked = _sort_buys(rows)
+        kval = await deps._kualitas_map([r["ticker"] for r in picked[:6]])
+    else:
+        picked = _sort_sells(rows)
+        kval = None
+    text = _sinyal_section(rows, sig, meta, deps, kval)
+    kb = section_markup(sig, [r.get("ticker") for r in picked])
+    return text, kb
+
+
+async def _build_bagus_reply(
+    update: Update, buys: list[dict], meta: dict, deps
+) -> tuple[str, InlineKeyboardMarkup]:
+    modal = await _load_modal(update)
+    pool = buys[:BELI_BAGUS_POOL]
+    kval = await deps._kualitas_map([r["ticker"] for r in pool])
+    _, lolos, _, _ = _partisi_kualitas(pool, kval)
+    text = _beli_bagus_text(pool, meta, deps, kval, modal=modal)
+    kb = bagus_markup([r.get("ticker") for r in lolos])
+    return text, kb
 
 
 async def nav(update: Update, cb_data: str, deps, job_queue=None):
@@ -396,22 +576,28 @@ async def nav(update: Update, cb_data: str, deps, job_queue=None):
     meta = await asyncio.to_thread(store.market_scan_meta)
     if not rows:
         await deps._safe_edit(msg, _EMPTY_TEXT, parse_mode=ParseMode.HTML,
-                              reply_markup=empty_markup())
+                              reply_markup=_with_home(empty_markup(), True))
         return
     if cb_data == "sg:ov":
         await deps._safe_edit(
             msg, await _overview_text(rows, meta, deps),
-            parse_mode=ParseMode.HTML, reply_markup=overview_markup())
+            parse_mode=ParseMode.HTML,
+            reply_markup=_with_home(overview_markup(), True))
         return
     if cb_data == "sg:csv":
         await msg.reply_document(
             document=_sinyal_csv(rows), filename="sinyal_idx.csv",
             caption=f"📡 Sinyal seluruh pasar — {len(rows)} emiten. "
-                    "Buka di Excel/Sheets. Bukan saran investasi.")
+                    "Buka di Excel/Sheets. Bukan saran investasi.",
+            reply_markup=_with_home(_csv_markup(), True),
+        )
         return
     if cb_data.startswith("sg:an:"):
-        ticker = cb_data.split(":", 2)[2].upper()
+        ticker = _clean_ticker(cb_data.split(":", 2)[2])
         if not ticker:
+            await deps._safe_edit(
+                msg, "❌ Kode saham tidak valid.",
+                reply_markup=deps.home_markup())
             return
         await deps._safe_edit(
             msg, f"⏳ Menganalisis <b>{esc(ticker)}</b>...",
@@ -422,34 +608,33 @@ async def nav(update: Update, cb_data: str, deps, job_queue=None):
         await deps._safe_edit(msg, "⏳ Memuat...",
                               reply_markup=deps.home_markup())
         if cb_data == "sg:buy":
-            buys = _sort_buys(rows)
-            kval = await deps._kualitas_map([r["ticker"] for r in buys[:6]])
-            text = _sinyal_section(rows, "BELI", meta, deps, kval)
-            kb = section_markup("BELI")
+            text, kb = await _build_section_reply(rows, "BELI", meta, deps)
         elif cb_data == "sg:sell":
-            text = _sinyal_section(rows, "JUAL", meta, deps)
-            kb = section_markup("JUAL")
+            text, kb = await _build_section_reply(rows, "JUAL", meta, deps)
         else:
             buys = _sort_buys(rows)
             if not buys:
                 await deps.reply_long(
                     msg, "🟢 Tidak ada kandidat BELI di snapshot hari ini — "
                     "jadi tidak ada yang bisa disaring.",
-                    reply_markup=section_markup("BELI"))
+                    reply_markup=_with_home(section_markup("BELI"), True))
                 return
-            pool = buys[:BELI_BAGUS_POOL]
-            kval = await deps._kualitas_map([r["ticker"] for r in pool])
-            text = _beli_bagus_text(pool, meta, deps, kval)
-            kb = bagus_markup()
-        await deps.reply_long(msg, text, reply_markup=kb)
+            text, kb = await _build_bagus_reply(update, buys, meta, deps)
+        await deps.reply_long(msg, text, reply_markup=_with_home(kb, True))
         return
     await deps._safe_edit(
         msg, await _overview_text(rows, meta, deps),
-        parse_mode=ParseMode.HTML, reply_markup=overview_markup())
+        parse_mode=ParseMode.HTML,
+        reply_markup=_with_home(overview_markup(), True))
+
+
+def _has_home(kb: InlineKeyboardMarkup) -> bool:
+    return any(b.callback_data == "menu"
+               for row in kb.inline_keyboard for b in row)
 
 
 def _with_home(kb: InlineKeyboardMarkup, from_menu: bool) -> InlineKeyboardMarkup:
-    if not from_menu:
+    if not from_menu or _has_home(kb):
         return kb
     return InlineKeyboardMarkup(
         list(kb.inline_keyboard)
@@ -477,14 +662,13 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
         await msg.reply_document(
             document=data, filename="sinyal_idx.csv",
             caption=f"📡 Sinyal seluruh pasar — {len(rows)} emiten. "
-                    "Buka di Excel/Sheets. Bukan saran investasi.")
+                    "Buka di Excel/Sheets. Bukan saran investasi.",
+            reply_markup=_with_home(_csv_markup(), from_menu),
+        )
         return
     if arg in ("beli", "buy"):
-        buys = _sort_buys(rows)
-        kval = await deps._kualitas_map([r["ticker"] for r in buys[:6]])
-        await deps.reply_long(msg, _sinyal_section(rows, "BELI", meta, deps,
-                                                   kval),
-                              reply_markup=_with_home(section_markup("BELI"), from_menu))
+        text, kb = await _build_section_reply(rows, "BELI", meta, deps)
+        await deps.reply_long(msg, text, reply_markup=_with_home(kb, from_menu))
         return
     if arg in ("beli bagus", "bagus", "bagus beli", "beli berkualitas"):
         buys = _sort_buys(rows)
@@ -494,32 +678,35 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
                 "ada yang bisa disaring.", parse_mode=ParseMode.HTML,
                 reply_markup=_with_home(section_markup("BELI"), from_menu))
             return
-        pool = buys[:BELI_BAGUS_POOL]
-        kval = await deps._kualitas_map([r["ticker"] for r in pool])
-        await deps.reply_long(msg, _beli_bagus_text(pool, meta, deps, kval),
-                              reply_markup=_with_home(bagus_markup(), from_menu))
+        text, kb = await _build_bagus_reply(update, buys, meta, deps)
+        await deps.reply_long(msg, text, reply_markup=_with_home(kb, from_menu))
         return
     if arg in ("jual", "sell", "hindari"):
-        await deps.reply_long(msg, _sinyal_section(rows, "JUAL", meta, deps),
-                              reply_markup=_with_home(section_markup("JUAL"), from_menu))
+        text, kb = await _build_section_reply(rows, "JUAL", meta, deps)
+        await deps.reply_long(msg, text, reply_markup=_with_home(kb, from_menu))
         return
-    if re.fullmatch(r"[A-Za-z]{4}", arg):
-        found = next((r for r in rows if r["ticker"] == arg.upper()), None)
+    if re.fullmatch(r"[A-Za-z]{4}(?:\.jk)?", arg):
+        clean_t = _clean_ticker(arg)
+        found = next(
+            (r for r in rows if _clean_ticker(r.get("ticker")) == clean_t),
+            None,
+        )
         if not found:
             await msg.reply_text(
-                f"Kode <b>{esc(arg.upper())}</b> tidak ada di snapshot "
+                f"Kode <b>{esc(clean_t or arg.upper())}</b> tidak ada di snapshot "
                 f"(mungkin delisted/suspensi, atau tidak ada data harga cukup).\n"
-                f"Coba <code>/analisis {esc(arg.upper())}</code> untuk cek "
+                f"Coba <code>/analisis {esc(clean_t or arg.upper())}</code> untuk cek "
                 "langsung.", parse_mode=ParseMode.HTML,
                 reply_markup=deps.home_markup() if from_menu else None)
             return
         kval = await deps._kualitas_map([found["ticker"]])
         sig_px = found.get("entry") or found.get("price")
         intent = "jual" if found.get("signal") == "JUAL" else "beli"
+        ctx_ticker = _clean_ticker(found["ticker"]) or found["ticker"]
         if sig_px and float(sig_px) > 0:
             await asyncio.to_thread(
                 store.save_signal_context,
-                update.effective_chat.id, found["ticker"], "sinyal",
+                update.effective_chat.id, ctx_ticker, "sinyal",
                 float(sig_px), found.get("sl"), found.get("tp"), None,
                 str(found.get("trade_date") or meta.get("trade_date") or ""),
                 intent=intent,
