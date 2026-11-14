@@ -7,7 +7,9 @@ import types
 import numpy as np
 
 import bot
-from core import bandar, banding, data, fundamental, news, store
+from core import alerts, bandar, banding, data, fundamental, learn, marketcal, news, store
+from handlers import menu as menu_mod, sinyal as sinyal_mod
+from telegram.error import BadRequest
 from tests.conftest import make_prices
 
 
@@ -219,3 +221,294 @@ def test_menu_portofolio_sektor_dan_reply_long_markup_hanya_di_akhir(monkeypatch
     assert len(msg.replies) >= 2
     assert "reply_markup" not in msg.replies[0][1]
     assert msg.replies[-1][1]["reply_markup"] is not None
+
+
+class _FakeJobQueue:
+    def __init__(self):
+        self.jobs = []
+
+    def run_once(self, fn, when=0, data=None, name=None):
+        self.jobs.append((fn, when, data, name))
+        return name
+
+
+class _MediaMsg(_Msg):
+    """Pesan foto/media Telegram: edit_text selalu gagal karena tidak punya text."""
+    def __init__(self, cid: int = 100, *, photo=True, err_msg: str = "There is no text in the message to edit"):
+        super().__init__(cid=cid, text="")
+        self.photo = [object()] if photo else []
+        self._err_msg = err_msg
+
+    async def edit_text(self, text: str, **kwargs):
+        raise BadRequest(self._err_msg)
+
+
+def test_sg_scan_berfungsi_saat_kosong_dan_paksa_ulang_saat_sudah_ada(monkeypatch, tmp_store):
+    _setup(monkeypatch, tmp_store)
+    bot._screener_running = False
+    jq = _FakeJobQueue()
+    try:
+        # 1) Belum ada hasil scan -> klik "🔄 Scan pasar sekarang" (sg:scan) wajib memicu scan!
+        q_empty = _Query("sg:scan")
+        asyncio.run(bot.menu_callback(_Update(query=q_empty), types.SimpleNamespace(bot=types.SimpleNamespace(), job_queue=jq)))
+        assert len(jq.jobs) == 1
+        assert bot._screener_running is True
+        reply_txt, reply_kw = q_empty.message.replies[-1]
+        assert "Memindai" in reply_txt
+        assert "menu" in _callbacks(reply_kw["reply_markup"])
+
+        # 2) Sudah ada snapshot hari ini -> klik "🔄 Scan ulang" (sg:scan) tetap scan ulang (paksa)
+        bot._screener_running = False
+        bot._last_used.clear()
+        today = marketcal.now_wib().date().isoformat()
+        store.save_market_scan(
+            [{"ticker": "BBCA", "name": "PT BBCA", "board": "Utama", "sector": "Keuangan",
+              "trade_date": today, "price": 9000.0, "rel_pct": 95.0, "rsi": 55.0,
+              "ret20d": 3.0, "signal": "BELI", "reason": "", "entry": 9000.0,
+              "sl": 8700.0, "tp": 9600.0, "ret1d": 0.5, "ret5d": 1.0,
+              "sma20": 8900.0, "sma50": 8800.0, "sma200": 8500.0}],
+            {"ok": 1, "trade_date": today, "scanned_at": f"{today}T08:00:00"},
+        )
+        jq2 = _FakeJobQueue()
+        q_rescan = _Query("sg:scan")
+        asyncio.run(bot.menu_callback(_Update(query=q_rescan), types.SimpleNamespace(bot=types.SimpleNamespace(), job_queue=jq2)))
+        assert len(jq2.jobs) == 1
+        assert "Memindai" in q_rescan.message.replies[-1][0]
+
+        # 3) Tanpa job_queue aktif -> pesan ramah, flag tidak tersangkut
+        bot._screener_running = False
+        bot._last_used.clear()
+        q_nojq = _Query("sg:scan")
+        asyncio.run(bot.menu_callback(_Update(query=q_nojq), _ctx()))
+        assert bot._screener_running is False
+        assert "tidak aktif" in q_nojq.message.replies[-1][0].lower()
+    finally:
+        bot._screener_running = False
+
+
+def test_safe_edit_fallback_ke_reply_pada_pesan_foto_dan_uneditable(monkeypatch, tmp_store):
+    _setup(monkeypatch, tmp_store)
+    q_photo = _Query("menu")
+    q_photo.message = _MediaMsg(cid=100, photo=True)
+    asyncio.run(bot.menu_callback(_Update(query=q_photo), _ctx()))
+    assert q_photo.message.replies
+    assert "SahamBuddy" in q_photo.message.replies[-1][0]
+    assert "pick:cek" in _callbacks(q_photo.message.replies[-1][1]["reply_markup"])
+
+    # Pesan lama (>48 jam) -> BadRequest("Message can't be edited") jatuh aman ke reply_text
+    q_old = _Query("menu")
+    q_old.message = _MediaMsg(cid=100, photo=False, err_msg="Message can't be edited")
+    asyncio.run(bot.menu_callback(_Update(query=q_old), _ctx()))
+    assert q_old.message.replies
+    assert "SahamBuddy" in q_old.message.replies[-1][0]
+
+    # Double-tap ("Message is not modified") tetap diabaikan tanpa error atau reply ganda
+    q_same = _Query("menu")
+    q_same.message = _MediaMsg(cid=100, photo=False, err_msg="Message is not modified")
+    asyncio.run(bot.menu_callback(_Update(query=q_same), _ctx()))
+    assert not q_same.message.replies
+
+
+def test_manual_alert_rencana_dan_clear_pending_saat_klik_run(monkeypatch, tmp_store):
+    _setup(monkeypatch, tmp_store)
+
+    # 1) Pasang alarm pakai target harga <9000 & 9500 via menu manual
+    asyncio.run(bot.menu_callback(_Update(query=_Query("manual:alert_add")), _ctx()))
+    assert bot._pending_get(100) == "alert_add"
+
+    u_lt = _Update("BBCA <9000", uid=100, cid=100)
+    asyncio.run(bot.menu_text_input(u_lt, _ctx()))
+    assert bot._pending_get(100) is None
+    assert set(store.get_alerts(100)["BBCA"]) == {"target<=9000"}
+
+    asyncio.run(bot.menu_callback(_Update(query=_Query("manual:alert_add")), _ctx()))
+    u_ge = _Update("BBRI 9500", uid=100, cid=100)
+    asyncio.run(bot.menu_text_input(u_ge, _ctx()))
+    assert set(store.get_alerts(100)["BBRI"]) == {"target>=9500"}
+
+    asyncio.run(bot.menu_callback(_Update(query=_Query("manual:alert_add")), _ctx()))
+    u_def = _Update("TLKM", uid=100, cid=100)
+    asyncio.run(bot.menu_text_input(u_def, _ctx()))
+    assert set(store.get_alerts(100)["TLKM"]) == set(alerts.ALL_KINDS)
+
+    # 2) Input manual rencana mendukung kode + budget opsional
+    seen = []
+
+    async def fake_rencana(upd, args, *, from_menu=False):
+        seen.append((list(args), from_menu))
+
+    monkeypatch.setattr(bot, "_do_rencana", fake_rencana)
+    asyncio.run(bot.menu_callback(_Update(query=_Query("manual:rencana")), _ctx()))
+    asyncio.run(bot.menu_text_input(_Update("BBCA 5jt", uid=100, cid=100), _ctx()))
+    assert seen == [(["BBCA", "5JT"], True)]
+
+    # 3) Klik tombol run:* membatalkan PENDING input lama
+    bot._pending_set(100, "cek")
+    asyncio.run(bot.menu_callback(_Update(query=_Query("run:belajar")), _ctx()))
+    assert bot._pending_get(100) is None
+
+
+def test_semua_tombol_menu_submenu_dan_belajar_valid(monkeypatch, tmp_store):
+    _setup(monkeypatch, tmp_store)
+    monkeypatch.setattr(bandar, "get_index_summary", lambda: [])
+    monkeypatch.setattr(bandar, "get_stock_summary", lambda *a, **k: [])
+
+    async def fake_saran(upd, sub="", list_only=False, from_menu=False):
+        await upd.effective_message.reply_text("ok saran", reply_markup=bot.home_markup())
+
+    async def fake_scan(upd, args, jq, *, from_menu=False):
+        await upd.effective_message.reply_text("ok scan", reply_markup=bot.home_markup())
+
+    monkeypatch.setattr(bot, "_do_saran", fake_saran)
+    monkeypatch.setattr(bot, "_do_scan", fake_scan)
+    monkeypatch.setattr(bot, "load_validation", lambda: None)
+
+    markups = [
+        bot.main_menu_markup(),
+        bot.help_markup(),
+        bot.watch_menu_markup(),
+        bot.alert_menu_markup(),
+        bot.modal_menu_markup(),
+        bot.belajar_markup(),
+        bot.belajar_detail_markup(),
+        bot.result_markup("cek", "BBCA"),
+        bot.result_markup("jual", "BBCA"),
+        sinyal_mod.overview_markup(),
+        sinyal_mod.section_markup("BELI"),
+        sinyal_mod.section_markup("JUAL"),
+        sinyal_mod.bagus_markup(),
+        sinyal_mod.empty_markup(),
+        sinyal_mod.detail_markup("BBCA", "BELI"),
+        sinyal_mod.detail_markup("BBCA", "JUAL"),
+    ]
+    for g in ("ide", "rencana", "modal", "pantau", "pro", "allcmd"):
+        sub = menu_mod._submenu_content(g, 10_000_000)
+        assert sub is not None
+        markups.append(sub[1])
+    for act in menu_mod.NEED_TICKER:
+        markups.append(bot.ticker_pick_markup(act, ["ANTM"]))
+
+    all_cbs = {cb for kb in markups for cb in _callbacks(kb)}
+    for cb in sorted(all_cbs):
+        if cb.startswith(("tick:", "refresh:", "sg:", "exec:")):
+            continue
+        if cb.startswith("manual:"):
+            act = cb.split(":", 1)[1]
+            assert act in menu_mod._MANUAL_PROMPT
+        if cb.startswith("belajar:"):
+            topic = cb.split(":", 1)[1]
+            assert learn.learn(topic) is not None
+        bot._last_used.clear()
+        q = _Query(cb, uid=100, cid=100)
+        asyncio.run(bot.menu_callback(_Update(query=q), _ctx()))
+        assert q.message.edits or q.message.replies, f"Tombol {cb} tidak merespon"
+        if cb.startswith("manual:"):
+            assert bot._pending_get(100) == cb.split(":", 1)[1]
+        else:
+            assert bot._pending_get(100) is None
+
+
+def test_semua_tick_refresh_dan_unknown_callback_valid(monkeypatch, tmp_store):
+    _setup(monkeypatch, tmp_store)
+    dispatched = []
+
+    async def fake_analisis(upd, tks):
+        dispatched.append(("analisis", tks))
+
+    async def fake_cek(upd, args, *, from_menu=False):
+        dispatched.append(("cek", args))
+
+    async def fake_rencana(upd, args, *, from_menu=False):
+        dispatched.append(("rencana", args))
+
+    async def fake_skor(upd, tks, from_menu=False):
+        dispatched.append(("skor", tks))
+
+    async def fake_berita(upd, t):
+        dispatched.append(("berita", [t]))
+
+    async def fake_fund(upd, t):
+        dispatched.append(("fundamental", [t]))
+
+    async def fake_bt(upd, t, from_menu=False):
+        dispatched.append(("backtest", [t]))
+
+    async def fake_tanya(upd, t, focus):
+        dispatched.append((f"tanya_{focus}", [t]))
+
+    async def fake_sinyal(upd, args, *, from_menu=False):
+        dispatched.append(("sinyal_detail", args))
+
+    monkeypatch.setattr(bot, "_do_analisis", fake_analisis)
+    monkeypatch.setattr(bot, "_do_cek", fake_cek)
+    monkeypatch.setattr(bot, "_do_rencana", fake_rencana)
+    monkeypatch.setattr(bot, "_do_skor", fake_skor)
+    monkeypatch.setattr(bot, "_do_berita", fake_berita)
+    monkeypatch.setattr(bot, "_do_fundamental", fake_fund)
+    monkeypatch.setattr(bot, "_do_backtest", fake_bt)
+    monkeypatch.setattr(bot, "_do_tanya", fake_tanya)
+    monkeypatch.setattr(bot, "_do_sinyal", fake_sinyal)
+
+    expected = {
+        "cek": ("cek", ["BBCA"]),
+        "rencana": ("rencana", ["BBCA"]),
+        "analisis": ("analisis", ["BBCA"]),
+        "skor": ("skor", ["BBCA"]),
+        "berita": ("berita", ["BBCA"]),
+        "fundamental": ("fundamental", ["BBCA"]),
+        "backtest": ("backtest", ["BBCA"]),
+        "beli": ("tanya_beli", ["BBCA"]),
+        "tanya_beli": ("tanya_beli", ["BBCA"]),
+        "jual": ("tanya_jual", ["BBCA"]),
+        "tanya_jual": ("tanya_jual", ["BBCA"]),
+        "tanya_umum": ("tanya_umum", ["BBCA"]),
+        "sinyal_detail": ("sinyal_detail", ["BBCA"]),
+    }
+    for action, want in expected.items():
+        dispatched.clear()
+        q_tick = _Query(f"tick:{action}:BBCA")
+        asyncio.run(bot.menu_callback(_Update(query=q_tick), _ctx()))
+        assert dispatched == [want], f"tick:{action} salah arah"
+
+        dispatched.clear()
+        q_ref = _Query(f"refresh:{action}:BBCA")
+        asyncio.run(bot.menu_callback(_Update(query=q_ref), _ctx()))
+        assert dispatched == [want], f"refresh:{action} salah arah"
+
+    q_unk = _Query("tidak_ada:tombol")
+    asyncio.run(bot.menu_callback(_Update(query=q_unk), _ctx()))
+    assert "tidak dikenal" in q_unk.message.edits[-1][0].lower()
+    assert "menu" in _callbacks(q_unk.message.edits[-1][1]["reply_markup"])
+
+
+def test_paket_regime_fallback_dan_exec_sell_clear_pending(monkeypatch, tmp_store):
+    _setup(monkeypatch, tmp_store)
+    today = marketcal.now_wib().date().isoformat()
+    store.save_market_scan(
+        [{"ticker": "BBCA", "name": "PT BBCA", "board": "Utama", "sector": "Keuangan",
+          "trade_date": today, "price": 9000.0, "rel_pct": 95.0, "rsi": 55.0,
+          "ret20d": 3.0, "signal": "BELI", "reason": "", "entry": 9000.0,
+          "sl": 8700.0, "tp": 9600.0, "ret1d": 0.5, "ret5d": 1.0,
+          "sma20": 8900.0, "sma50": 8800.0, "sma200": 8500.0}],
+        {"ok": 1, "trade_date": today, "scanned_at": f"{today}T08:00:00"},
+    )
+    key = f"plan:v1:{today}T08:00:00"
+    store.save_plan_cache(key, {"enriched": [], "rejected": {}}, today)
+
+    def boom():
+        raise RuntimeError("IHSG down")
+
+    monkeypatch.setattr(bot.regime, "fetch_ihsg_regime", boom)
+    q_pkt = _Query("run:paket")
+    asyncio.run(bot.menu_callback(_Update(query=q_pkt), _ctx()))
+    assert "menu" in _callbacks(q_pkt.message.replies[-1][1]["reply_markup"])
+
+    # exec:sell utk saham yg belum dimiliki tetap membersihkan PENDING lama
+    bot._pending_set(100, "cek")
+    q_sell = _Query("exec:sell:BBCA")
+    asyncio.run(bot.menu_callback(_Update(query=q_sell), _ctx()))
+    assert bot._pending_get(100) is None
+    assert "belum punya posisi" in q_sell.message.replies[-1][0].lower()
+
+
+

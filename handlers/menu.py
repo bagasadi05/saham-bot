@@ -48,7 +48,7 @@ _PICK_HINTS = {
 
 _MANUAL_PROMPT = {
     "cek": "Ketik kode saham yang mau dicek kelayakannya (contoh: <code>BBCA</code>):",
-    "rencana": "Ketik kode saham untuk hitung lot &amp; rencana beli (contoh: <code>BBCA</code>):",
+    "rencana": "Ketik kode saham untuk hitung lot &amp; rencana beli (contoh: <code>BBCA</code>, atau dengan anggaran: <code>BBCA 5jt</code>):",
     "modal": "Ketik nominal modal dalam Rupiah (contoh: <code>5000000</code>, <code>5jt</code>, atau <code>2,5jt</code>):",
     "analisis": "Ketik kode emiten untuk dianalisis (contoh: <code>BBCA</code>, atau beberapa dipisah spasi: <code>BBCA TLKM</code>):",
     "skor": "Ketik kode emiten untuk skor cepat (contoh: <code>BBCA TLKM BBRI</code>):",
@@ -61,8 +61,11 @@ _MANUAL_PROMPT = {
     "watch_add": "Ketik kode emiten yang mau ditambah ke watchlist (contoh: <code>ANTM</code>):",
     "watch_del": "Ketik kode emiten yang mau dihapus dari watchlist:",
     "alert_add": (
-        "Ketik kode emiten untuk alarm (jenis default: "
-        + ", ".join(sorted(alerts.ALL_KINDS)) + "):"
+        "Ketik kode emiten untuk alarm (contoh: <code>BBCA</code> untuk semua "
+        "alarm standar, atau tambah target harga / jenis mis. "
+        "<code>BBCA 9500</code>, <code>BBCA &lt;9000</code>, "
+        "<code>BBCA oversold</code>).\n"
+        "<i>Jenis default: " + ", ".join(sorted(alerts.ALL_KINDS)) + "</i>:"
     ),
 }
 
@@ -355,13 +358,32 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
     return None
 
 
-async def safe_edit(msg, text: str, **kw):
-    """Edit pesan menu; abaikan 'Message is not modified' (double-tap jinak)."""
+def _is_media_message(msg) -> bool:
+    """True bila pesan adalah media (foto/dokumen/video) tanpa body teks."""
+    return any(
+        bool(getattr(msg, attr, None))
+        for attr in ("photo", "document", "video", "animation")
+    )
+
+
+async def safe_edit(msg, text: str, *, send_fn=None, **kw):
+    """Edit pesan menu; jatuh ke reply_text bila pesan berupa media atau tak bisa diedit."""
+    async def _run(call):
+        return await send_fn(call) if send_fn is not None else await call()
+
+    if _is_media_message(msg):
+        await _run(lambda: msg.reply_text(text, **kw))
+        return
     try:
-        await msg.edit_text(text, **kw)
+        await _run(lambda: msg.edit_text(text, **kw))
     except BadRequest as e:
-        if "message is not modified" not in str(e).lower():
-            raise
+        low = str(e).lower()
+        if "message is not modified" in low:
+            return
+        if "no text in the message" in low or "message can't be edited" in low:
+            await _run(lambda: msg.reply_text(text, **kw))
+            return
+        raise
 
 
 async def run_menu_action(update: Update, action: str, tickers: list[str], deps):
@@ -371,7 +393,7 @@ async def run_menu_action(update: Update, action: str, tickers: list[str], deps)
     elif action == "cek":
         await deps._do_cek(update, [tickers[0]], from_menu=True)
     elif action == "rencana":
-        await deps._do_rencana(update, [tickers[0]], from_menu=True)
+        await deps._do_rencana(update, tickers[:2], from_menu=True)
     elif action == "skor":
         await deps._do_skor(update, tickers, from_menu=True)
     elif action == "berita":
@@ -399,7 +421,8 @@ async def run_menu_action(update: Update, action: str, tickers: list[str], deps)
     elif action == "alert_list":
         await deps._do_alert_list(update, from_menu=True)
     elif action == "alert_add":
-        await deps._do_alert_add(update, tickers[0], from_menu=True)
+        kinds = {k.lower() for k in tickers[1:]} or None
+        await deps._do_alert_add(update, tickers[0], kinds=kinds, from_menu=True)
     elif action == "bandar":
         await deps._do_bandar(update, from_menu=True)
     elif action == "portofolio":
@@ -637,8 +660,46 @@ async def menu_callback(update: Update, ctx, deps):
         return
 
     if cb_data.startswith("run:"):
+        deps._pending_clear(chat_id)
         action = cb_data.split(":", 1)[1]
         await _handle_run(update, msg, ctx, action, deps)
+        return
+
+    await deps._safe_edit(
+        msg, "❌ Tombol menu tidak dikenal — kembali ke Menu Utama.",
+        reply_markup=deps.home_markup(),
+    )
+
+
+def _clean_ticker_tok(tok: str) -> str | None:
+    """Normalkan 1 token kode emiten (`BBCA.JK` -> `BBCA`) atau None bila tidak valid."""
+    clean = tok[:-3] if tok.endswith(".JK") else tok
+    return clean if (clean.isalnum() and 2 <= len(clean) <= 6) else None
+
+
+def _parse_menu_tokens(action: str, raw_text: str) -> list[str]:
+    """Urai input teks bebas setelah ketuk `manual:*` menjadi argumen aksi."""
+    up = raw_text.upper()
+    if action in ("alert_add", "rencana"):
+        # Pertahankan koma internal pada nominal/target (mis. `9,500` atau `5,5jt`).
+        parts = [t.strip(",") for t in up.split() if t.strip(",")]
+        if len(parts) == 1 and "," in parts[0]:
+            parts = [p.strip() for p in parts[0].split(",") if p.strip()]
+        if not parts:
+            return []
+        head = _clean_ticker_tok(parts[0])
+        if not head:
+            return []
+        if action == "rencana" and len(parts) > 2:
+            return []
+        return [head, *parts[1:12]]
+    out: list[str] = []
+    for tok in up.replace(",", " ").split():
+        clean = _clean_ticker_tok(tok)
+        if not clean:
+            return []
+        out.append(clean)
+    return out[:5]
 
 
 async def menu_text_input(update: Update, ctx, deps):
@@ -696,15 +757,7 @@ async def menu_text_input(update: Update, ctx, deps):
         )
         return
 
-    raw_tokens = [t for t in raw_text.upper().replace(",", " ").split() if t]
-    tickers = []
-    for tok in raw_tokens:
-        clean = tok[:-3] if tok.endswith(".JK") else tok
-        if clean.isalnum() and 2 <= len(clean) <= 6:
-            tickers.append(clean)
-        else:
-            tickers = []
-            break
+    tickers = _parse_menu_tokens(action, raw_text)
     if not tickers:
         await update.effective_message.reply_text(
             "❌ Kode emiten tidak valid. Contoh: <code>BBCA</code> (atau <code>BBCA TLKM</code>).",
@@ -712,4 +765,4 @@ async def menu_text_input(update: Update, ctx, deps):
         )
         return
     deps._pending_clear(chat_id)
-    await deps.run_menu_action(update, action, tickers[:5])
+    await deps.run_menu_action(update, action, tickers)

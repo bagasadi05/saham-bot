@@ -386,6 +386,12 @@ async def nav(update: Update, cb_data: str, deps, job_queue=None):
     msg = update.effective_message
     if not msg:
         return
+    if cb_data == "sg:scan":
+        await deps._safe_edit(
+            msg, "⏳ Memproses permintaan scan pasar...",
+            reply_markup=deps.home_markup())
+        await deps._do_scan(update, ["paksa"], job_queue, from_menu=True)
+        return
     rows = await asyncio.to_thread(store.load_market_scan)
     meta = await asyncio.to_thread(store.market_scan_meta)
     if not rows:
@@ -396,12 +402,6 @@ async def nav(update: Update, cb_data: str, deps, job_queue=None):
         await deps._safe_edit(
             msg, await _overview_text(rows, meta, deps),
             parse_mode=ParseMode.HTML, reply_markup=overview_markup())
-        return
-    if cb_data == "sg:scan":
-        await deps._safe_edit(
-            msg, "⏳ Memindai seluruh pasar (±3–6 menit)...",
-            reply_markup=deps.home_markup())
-        await deps._do_scan(update, [], job_queue)
         return
     if cb_data == "sg:csv":
         await msg.reply_document(
@@ -443,6 +443,9 @@ async def nav(update: Update, cb_data: str, deps, job_queue=None):
             kb = bagus_markup()
         await deps.reply_long(msg, text, reply_markup=kb)
         return
+    await deps._safe_edit(
+        msg, await _overview_text(rows, meta, deps),
+        parse_mode=ParseMode.HTML, reply_markup=overview_markup())
 
 
 def _with_home(kb: InlineKeyboardMarkup, from_menu: bool) -> InlineKeyboardMarkup:

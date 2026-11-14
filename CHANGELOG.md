@@ -22,8 +22,11 @@ beli & jual/exit portofolio-aware, exit alert otomatis portofolio asli di
 `scan_alerts`, diagnostik MAE/MFE `/jurnal`, target harga `/alert`, menu
 `Cek Jual / Tinjau Posisi`, serta sinkronisasi penuh `.agents/skills/` &
 dokumentasi proyek), plus hotfix `yfinance` adaptif tanpa `scipy`, cooldown
-kuota/premium EODHD & Alpha Vantage, dan perbaikan unduhan chunk `download_model.py`. Total verifikasi akhir: **670 tes lulus** offline
-(`0 skipped`, `0 failed`, coverage target CI `core+handlers+bot+config` **83%**, `bot.py` 1.737 baris),
+kuota/premium EODHD & Alpha Vantage, perbaikan unduhan chunk `download_model.py`,
+dan audit + perbaikan seluruh menu tombol & callback inline (`sg:scan`, `_safe_edit`
+pesan foto/media, input target/budget `manual:alert_add` & `manual:rencana`, serta
+ketahanan `do_paket`/`do_scan`/`exec:*`). Total verifikasi akhir: **676 tes lulus** offline
+(`0 skipped`, `0 failed`, coverage target CI `core+handlers+bot+config` **84%** / `83.87%`, `bot.py` 1.736 baris),
 `ruff check .` bersih.
 
 ### Ditambahkan
@@ -171,6 +174,11 @@ kuota/premium EODHD & Alpha Vantage, dan perbaikan unduhan chunk `download_model
   mengevaluasi sinyal `JUAL` secara terpisah sebagai `TURUN`/`NAIK`/`DATAR` (`r_multiple=None`);
   serta menambahkan `t_hac` Newey-West dan deteksi pergeseran eks-dividen (`div_adjusted`) pada
   `scorecard.live_ic()`.
+- **Audit & perbaikan menyeluruh tombol menu, callback inline & input manual (`handlers/sinyal.py`, `handlers/menu.py`, `handlers/market.py`, `handlers/jurnal.py`, `bot.py`)** —
+  - `handlers/sinyal.py` (`nav`): memindahkan cabang `sg:scan` ke sebelum guard `if not rows:` dan meneruskan `["paksa"]` + `from_menu=True` ke `_do_scan` agar tombol `"🔄 Scan pasar sekarang"` (saat snapshot kosong) maupun `"🔄 Scan ulang"` (saat snapshot hari ini sudah ada) benar-benar memicu scan, bukan menelan `"Message is not modified"` secara diam-diam; serta fallback ke ringkasan bila ada `sg:*` tak dikenal.
+  - `handlers/menu.py` (`safe_edit`, `_is_media_message`) & `bot.py` (`_safe_edit`): mendeteksi pesan foto/media (mis. tombol `"🏠 Menu Utama"`, `"🔄 Perbarui"`, `"🤔 Cek layak jual?"` di bawah grafik `/analisis`) maupun error `There is no text in the message to edit` / `Message can't be edited` dan otomatis fallback ke `reply_text` tanpa crash.
+  - `handlers/menu.py` (`menu_text_input`, `_parse_menu_tokens`, `run_menu_action`, `menu_callback`): mendukung target harga & jenis pada `manual:alert_add` (mis. `BBCA <9000`, `BBCA 9500`, `BBCA oversold`) dan anggaran opsional pada `manual:rencana` (`BBCA 5jt`), membersihkan `PENDING` saat mengetuk `run:*` atau `exec:*`, serta fallback ramah untuk callback tak dikenal.
+  - `handlers/market.py` (`do_paket`, `do_rencana`, `do_scan`): memakai `_fetch_regime_safe(deps)` pada `do_paket` agar kegagalan IHSG tidak meledak, menyertakan `reply_markup=rm` saat rencana ditolak batas risiko, dan menjaga `job_queue is None` di `do_scan`. Total tes terbaru: **676 tes lulus** offline (`tests/test_menu_beginner.py` mencakup regresi & audit seluruh `callback_data` menu/submenu/picker/belajar).
 - **Perbaikan crash `yfinance(..., repair=True)` tanpa `scipy`, cooldown kuota EODHD & isolasi `.env` di tes (`core/data.py`, `core/screener.py`, `tests/conftest.py`)** —
   `yfinance==1.8.0` mengimpor `scipy` secara internal saat `repair=True`, menyebabkan
   unduhan live gagal total di environment tanpa `scipy` (`requirements.txt` memang tidak

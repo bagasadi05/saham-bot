@@ -765,13 +765,12 @@ async def run_menu_action(update: Update, action: str, tickers: list[str]):
 
 
 async def _safe_edit(msg, text, **kw):
-    """Edit pesan menu; abaikan 'Message is not modified' (double-tap jinak)."""
-    try:
-        await send_with_retry(lambda: msg.edit_text(text, **kw),
-                              what="edit pesan")
-    except BadRequest as e:
-        if "message is not modified" not in str(e).lower():
-            raise
+    """Edit pesan menu; abaikan double-tap & tangani pesan foto/media."""
+    await menu_handler.safe_edit(
+        msg, text,
+        send_fn=lambda call: send_with_retry(call, what="edit pesan"),
+        **kw,
+    )
 
 
 async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

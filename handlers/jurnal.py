@@ -334,6 +334,7 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
     if not ticker or kind not in ("buy", "sell"):
         await msg.reply_text("❌ Kode saham eksekusi tidak valid.")
         return True
+    deps._pending_clear(chat_id)
 
     cancel_kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("❌ Batal", callback_data="exec:cancel"),

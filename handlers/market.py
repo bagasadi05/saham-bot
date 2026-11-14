@@ -234,7 +234,7 @@ async def do_paket(update: Update, args: list[str], deps,
     if not await deps.cooldown_ok(update, "rencana"):
         return
 
-    reg = await asyncio.to_thread(getattr(deps, "regime", regime).fetch_ihsg_regime)
+    reg = await _fetch_regime_safe(deps)
 
     top = rencana.MAX_PLANS
     force = False
@@ -559,7 +559,7 @@ async def do_rencana(update: Update, args: list[str], deps,
                 "",
                 deps._SINYAL_DISCLAIMER,
             ]
-            await deps.reply_long(msg, "\n".join(lines))
+            await deps.reply_long(msg, "\n".join(lines), reply_markup=rm)
             return
     today_iso = marketcal.now_wib().date().isoformat()
     if plan.get("entry") and float(plan["entry"]) > 0:
@@ -653,6 +653,11 @@ async def do_scan(update: Update, args: list[str], job_queue, deps,
     if deps._screener_running:
         await update.effective_message.reply_text(
             "⏳ Scan pasar masih berjalan. Tunggu sampai selesai, ya.",
+            reply_markup=rm)
+        return
+    if job_queue is None:
+        await update.effective_message.reply_text(
+            "❌ Penjadwal scan latar belakang tidak aktif saat ini.",
             reply_markup=rm)
         return
     # Cooldown baru setelah snapshot/status dicek: meminta data yang sudah ada
