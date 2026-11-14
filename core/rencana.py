@@ -176,6 +176,7 @@ def enrich(cand: dict, analyzed: dict | None,
     board = cand.get("board") or universe.board_of(ticker)
 
     vetoes, warnings = _fund_flags(per, pbv, roe, der, sector)
+    warnings.extend(fundamental.analyze_cashflow_quality(fund_raw)["flags"])
     if price < MIN_PRICE:
         vetoes.append("harga < Rp50")
     if board == "Pemantauan Khusus":

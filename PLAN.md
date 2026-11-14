@@ -313,8 +313,18 @@ tersedia (keputusan pemilik, 2026-11-12).
   modal/sektor; `/rencana` menolak rencana yang melanggar dengan alasan
   nominal + lot maksimum yang lolos; `/cek` memperingatkan posisi yang sudah
   melewati batas. Tanpa anggaran eksplisit, `/rencana` memakai 25% modal.
-- [ ] **P23 lanjutan** — batas dapat diubah pemilik lewat perintah
-  terdokumentasi (sekarang konstanta di `core/risk.py`).
+- [x] **P23 lanjutan** (`core/store.py` v6 `chat_settings`, `/portofolio batas`,
+  `core/risk.validate_limits`, `core/risk.inverse_vol_weights`) — batas posisi
+  (5–50%, bawaan 25%) & sektor (10–80%, bawaan 40%) dapat diubah/reset per chat
+  dan otomatis berlaku di `/rencana`, `/cek`, dan `/portofolio`; laporan
+  portofolio menampilkan target bobot penyeimbang volatilitas (*inverse-vol* ala
+  Riskfolio-Lib).
+- [x] **Forensik arus kas & debat Pro/Risiko** (`.agents/skills/idx-equity-research/SKILL.md`,
+  `core/fundamental.analyze_cashflow_quality`, `core/cek.py`, `handlers/cek.py`,
+  `handlers/info.py`, `core/rencana.py`) — audit OCF/laba bersih (akrual), FCF,
+  kas bersih, current ratio, dan deteksi *dividend trap* (memisahkan aturan
+  sektor bank vs non-bank, jujur `"tidak tersedia"` bila kosong), plus ringkasan
+  **Sudut Pandang Pro (Bull) vs Risiko (Bear)** di `/cek`.
 - [x] **P28 — Jurnal eksekusi manual Stockbit & slippage nyata** (`core/jurnal.py`,
   `handlers/jurnal.py`, `core/store.py` v5, `handlers/jobs.py`,
   `handlers/menu.py`, `bot.py`) — konfirmasi 1-tap **"Sudah beli di Stockbit"**

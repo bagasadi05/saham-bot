@@ -66,6 +66,27 @@ berbasis bukti offline.
   - Pemarser nominal `parse_rupiah` disatukan di `core/textutil.py`. Tes baru:
     `tests/test_jurnal.py` (**575 tes lulus**, coverage `core`+`handlers` `83%`,
     `ruff` bersih).
+- **Skill & audit forensik fundamental + debat Pro/Risiko (`idx-equity-research`)**:
+  - Skill lokal `.agents/skills/idx-equity-research/SKILL.md` (protokol riset
+    *point-in-time*, forensik kas & *dividend trap*, debat Bull vs Bear, serta
+    kepatuhan batas risiko BEI).
+  - `core/fundamental.analyze_cashflow_quality()` mengambil `operatingCashflow`,
+    `freeCashflow`, `netIncomeToCommon`, `totalCash`, `totalDebt`,
+    `currentRatio`, dan `payoutRatio` dari respons `yfinance.info` yang sama
+    (tanpa panggilan jaringan tambahan), memisahkan bank vs non-bank dan jujur
+    `"tidak tersedia"` bila kosong; ditampilkan di `/fundamental`, `/rencana`,
+    dan `/cek` (`tests/test_fundamental_forensic.py`).
+  - `/cek` (`core/cek.py`, `handlers/cek.py`) kini menyertakan **Sudut Pandang
+    Pro vs Risiko** (`bull_points` vs `bear_points`).
+- **Batas risiko portofolio kustom (P23 lanjutan) & pembobotan *inverse-volatility***:
+  - Skema SQLite naik `v5 -> v6` (`chat_settings`, migrasi `_migrate_v6`),
+    helper `store.get_risk_limits` / `store.set_risk_limits`, validasi
+    `risk.validate_limits`, dan perintah `/portofolio batas [pos% sektor%|reset]`
+    yang terhubung ke `/rencana`, `/cek`, dan `/portofolio`.
+  - `core/risk.inverse_vol_weights()` menghitung target bobot penyeimbang risiko
+    (`1/vol` dengan *water-filling cap*) ketika `>= 2` posisi memiliki riwayat
+    return memadai, dan ditampilkan di laporan risiko `/portofolio`. Tes baru:
+    `tests/test_risk_advanced.py`.
 
 ### Diubah
 

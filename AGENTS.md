@@ -17,7 +17,7 @@ eksekusi manual; lihat `git log`).
 python -m venv .venv
 .venv\Scripts\activate            # Windows; Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest -q                         # harus 575 passed, ~72 detik, offline
+pytest -q                         # harus 586 passed, ~72 detik, offline
 ruff check .                      # harus bersih
 python bot.py                     # butuh BOT_TOKEN di .env
 ```
@@ -55,11 +55,11 @@ core/                   logika domain (tanpa Telegram), bisa diuji offline
   kualitas.py           kualitas fundamental (PER/PBV/ROE) + cache harian
   portofolio.py         ringkasan PnL/risiko portofolio asli
   jurnal.py             jurnal eksekusi manual Stockbit, slippage & realisasi
-  risk.py               vol/drawdown/VaR/beta/korelasi + batas portofolio
+  risk.py               vol/drawdown/VaR/beta/korelasi/inv-vol + batas portofolio
   sektor.py             parser indeks sektor BEI (defensif)
   store.py              SQLite: watchlist, alert, paper, scan_history,
                         real_positions/real_trades, zone_state,
-                        signal_context, real_executions (v5)
+                        signal_context, real_executions, chat_settings (v6)
   guards.py             cooldown + PENDING
   reports.py            teks laporan (/analisis dll.)
   logsetup.py           logging teks/JSON (LOG_JSON=1)
@@ -67,7 +67,7 @@ handlers/               handler Telegram, pola `deps`
   analisis, cek, info, jobs, jurnal, market, menu, portfolio, sektor, sinyal,
   trading, watchlist
 research/               harness riset (evaluate, portfolio, publish, horizons)
-tests/                  575 tes offline + fixtures/
+tests/                  586 tes offline + fixtures/
 tools/                  skrip manual (build_universe, record_fixtures)
 ```
 
@@ -118,8 +118,9 @@ dipanggil via `to_thread`.
 | Fase 3 (P12–P18) | selesai, termasuk `/sektor` |
 | Fase 4 (modularisasi, CI, backup, log, LICENSE) | selesai |
 | Uji chat di host | ⛔ diblokir akses token (lihat `deploy.md`) |
-| P23/P24 (risiko portofolio) | selesai; batas masih konstanta (`core/risk.py`) |
+| P23/P24 (risiko portofolio) | selesai; batas kustom (`/portofolio batas`) + bobot *inv-vol* |
 | P28 (jurnal eksekusi Stockbit & slippage) | selesai (tanpa auto-trading / kredensial) |
+| Audit forensik kas + Pro/Risiko (`/cek`, `/fundamental`) | selesai (`.agents/skills/idx-equity-research/`) |
 
 Angka riset terbaru (`data/validation.json`): turnover 50,6%; alpha neto
 +0,264% [CI +0,148; +0,390]; model 0,0304 vs bobot-sama −0,0061; DSR 0,881;

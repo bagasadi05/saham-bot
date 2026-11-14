@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import math
 
+from core import fundamental
+
 LIQ_GOOD = 5_000_000_000.0      # Rp5 miliar/hari: cukup untuk ritel tanpa slip
 LIQ_MIN = 2_000_000_000.0       # di bawah ini = kurang likuid (sama dgn /paket)
 MIN_PRICE = 50.0
@@ -336,6 +338,14 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
     items.append({"key": "likuiditas", "label": "Likuiditas", "status": l_status,
                   "headline": l_head, "detail": liq["text"]})
 
+    # 6b. Audit forensik arus kas & jebakan dividen (offline, jujur bila NA)
+    cf = fundamental.analyze_cashflow_quality(fund_raw)
+    for flg in cf["flags"]:
+        warnings.append(flg)
+        facts.append((-2, flg))
+    for ok_note in cf["strengths"]:
+        facts.append((1, ok_note))
+
     # Veto & verdict --------------------------------------------------------
     vetoes: list[str] = []
     if liq["level"] == "kurang":
@@ -370,6 +380,15 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
     if vetoes:
         reasons = [f"Veto: {v}." for v in vetoes[:2]]
 
+    bull_points = [t for _, t in sorted(
+        [f for f in facts if f[0] > 0], key=lambda x: -x[0],
+    )[:3]]
+    bear_points: list[str] = [f"Veto: {v}." for v in vetoes]
+    for _, t in sorted([f for f in facts if f[0] < 0], key=lambda x: x[0]):
+        if t not in bear_points:
+            bear_points.append(t)
+    bear_points = bear_points[:3]
+
     return {
         "ticker": res.get("ticker") or (fund_raw.get("symbol") or ""),
         "price": price,
@@ -380,6 +399,9 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         "vetoes": vetoes,
         "verdict": verdict,
         "reasons": reasons,
+        "bull_points": bull_points,
+        "bear_points": bear_points,
+        "cashflow": cf,
         "missing": missing,
         "warnings": warnings,
     }

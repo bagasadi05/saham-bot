@@ -60,6 +60,14 @@ def normalize_der(v) -> float | None:
     return _finite_float(v)
 
 
+def normalize_payout(v) -> float | None:
+    """Normalisasi payout ratio (Yahoo fraksi 0.45 -> 45%, 1.25 -> 125%)."""
+    f = _finite_float(v)
+    if f is None or f < 0:
+        return None
+    return f * 100.0 if f <= 5.0 else f
+
+
 def is_financial_sector(sector: str | None) -> bool:
     """Bank/asuransi/keuangan: DPK dihitung sebagai liabilitas sehingga DER alami tinggi."""
     if not sector:
@@ -123,6 +131,13 @@ def _fetch_uncached(symbol: str) -> dict | None:
         "roe": _finite_float(g("returnOnEquity")),
         "margin": _finite_float(g("profitMargins")),
         "debt_eq": _finite_float(g("debtToEquity")),
+        "ocf": _finite_float(g("operatingCashflow")),
+        "fcf": _finite_float(g("freeCashflow")),
+        "net_income": _finite_float(g("netIncomeToCommon")),
+        "total_cash": _finite_float(g("totalCash")),
+        "total_debt": _finite_float(g("totalDebt")),
+        "current_ratio": _finite_float(g("currentRatio")),
+        "payout_ratio": _finite_float(g("payoutRatio")),
     }
     if all(fields[k] is None for k in ("per", "pbv", "div_yield", "roe")):
         return None
@@ -168,6 +183,123 @@ def _fetch_uncached(symbol: str) -> dict | None:
     except Exception:
         pass  # tren tak tersedia → dikatakan jujur di laporan
     return fields
+
+
+def analyze_cashflow_quality(f: dict | None) -> dict:
+    """Audit forensik arus kas, neraca & jebakan dividen (offline).
+
+    Mengikuti disiplin sektor BEI: bank/asuransi/keuangan tidak dinilai
+    dengan aturan FCF, OCF/laba, atau current ratio manufaktur karena
+    DPK & penyaluran kredit mendistorsi arus kas operasi. Bagian yang
+    datanya kosong tidak diisi nol dan tidak dianggap negatif.
+    """
+    raw = f or {}
+    fin_sector = is_financial_sector(raw.get("sector"))
+    ocf = _finite_float(raw.get("ocf"))
+    fcf = _finite_float(raw.get("fcf"))
+    net_income = _finite_float(raw.get("net_income"))
+    total_cash = _finite_float(raw.get("total_cash"))
+    total_debt = _finite_float(raw.get("total_debt"))
+    current_ratio = _finite_float(raw.get("current_ratio"))
+    payout = normalize_payout(raw.get("payout_ratio"))
+    div_yield = normalize_div_yield(raw.get("div_yield"))
+
+    has_any = any(
+        v is not None
+        for v in (ocf, fcf, total_cash, total_debt, current_ratio, payout)
+    )
+    if not has_any:
+        return {
+            "available": False,
+            "fin_sector": fin_sector,
+            "ocf": None,
+            "fcf": None,
+            "net_cash": None,
+            "ocf_to_ni": None,
+            "current_ratio": None,
+            "payout_pct": None,
+            "flags": [],
+            "strengths": [],
+        }
+
+    flags: list[str] = []
+    strengths: list[str] = []
+    ocf_to_ni = None
+    net_cash = (
+        round(total_cash - total_debt)
+        if (total_cash is not None and total_debt is not None)
+        else None
+    )
+
+    if not fin_sector:
+        if ocf is not None and net_income is not None and net_income > 0:
+            ocf_to_ni = round(ocf / net_income, 2)
+            if ocf < 0:
+                flags.append(
+                    "Arus kas operasi negatif (OCF < 0) meski laba positif — "
+                    "waspada kualitas laba akrual"
+                )
+            elif ocf_to_ni < 0.7:
+                flags.append(
+                    f"Konversi kas lemah (OCF {ocf_to_ni:.2f}× laba bersih)"
+                )
+            elif ocf_to_ni >= 1.0:
+                strengths.append(
+                    f"Laba didukung kas nyata (OCF {ocf_to_ni:.2f}× laba bersih)"
+                )
+        elif ocf is not None and ocf < 0:
+            flags.append("Arus kas operasi (OCF) negatif")
+
+        if fcf is not None:
+            if fcf < 0:
+                flags.append(
+                    "Free cash flow (FCF) negatif (arus kas tersedot operasi/capex)"
+                )
+            elif fcf > 0:
+                strengths.append("Free cash flow (FCF) positif")
+
+        if net_cash is not None:
+            if net_cash > 0:
+                strengths.append("Posisi kas bersih positif (kas > utang)")
+            elif total_cash > 0 and total_debt > total_cash * 2.0:
+                flags.append("Utang lebih dari 2× kas yang tersedia")
+
+        if current_ratio is not None:
+            if current_ratio < 1.0:
+                flags.append(
+                    f"Current ratio {current_ratio:.2f}× (< 1,0×) — "
+                    "likuiditas jangka pendek ketat"
+                )
+            elif current_ratio >= 1.5:
+                strengths.append(f"Current ratio sehat ({current_ratio:.2f}×)")
+
+    if payout is not None and payout > 100.0:
+        flags.append(
+            f"Rasio pembagian dividen {payout:.0f}% (> 100% laba) — "
+            "risiko dividen tidak berkelanjutan"
+        )
+    elif (
+        not fin_sector
+        and div_yield is not None and div_yield >= 5.0
+        and fcf is not None and fcf < 0
+    ):
+        flags.append(
+            f"Yield dividen {div_yield:.1f}% tapi FCF negatif — "
+            "waspada dividend trap"
+        )
+
+    return {
+        "available": True,
+        "fin_sector": fin_sector,
+        "ocf": ocf,
+        "fcf": fcf,
+        "net_cash": net_cash,
+        "ocf_to_ni": ocf_to_ni,
+        "current_ratio": current_ratio,
+        "payout_pct": round(payout, 1) if payout is not None else None,
+        "flags": flags,
+        "strengths": strengths,
+    }
 
 
 def score_fundamentals(f: dict) -> dict:
@@ -256,4 +388,13 @@ def score_fundamentals(f: dict) -> dict:
         label, emoji = "MIX", "🤷"
     else:
         label, emoji = "LEMAH", "🫤"
-    return {"pct": round(raw), "label": label, "emoji": emoji, "notes": verdicts}
+    cf = analyze_cashflow_quality(f)
+    for flg in cf["flags"]:
+        verdicts.append(f"⚠️ {flg}")
+    return {
+        "pct": round(raw),
+        "label": label,
+        "emoji": emoji,
+        "notes": verdicts,
+        "forensic": cf,
+    }

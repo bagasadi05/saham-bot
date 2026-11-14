@@ -219,6 +219,34 @@ async def do_fundamental(update: Update, ticker: str, deps):
     if fund.get("market_cap"):
         rows.append(f"  Kap. pasar: Rp{fund['market_cap'] / 1e12:.1f} T")
 
+    def _rp_singkat(v: float) -> str:
+        sign = "-" if v < 0 else ""
+        av = abs(v)
+        if av >= 1e12:
+            return f"{sign}Rp{av / 1e12:.2f} T"
+        if av >= 1e9:
+            return f"{sign}Rp{av / 1e9:.0f} M"
+        return f"{sign}Rp{av / 1e6:.0f} Jt"
+
+    cf = await asyncio.to_thread(fundamental.analyze_cashflow_quality, fund)
+    if cf["available"]:
+        cf_bits = []
+        if cf["ocf"] is not None:
+            cf_bits.append(f"OCF {_rp_singkat(cf['ocf'])}")
+        if cf["fcf"] is not None:
+            cf_bits.append(f"FCF {_rp_singkat(cf['fcf'])}")
+        if cf["net_cash"] is not None:
+            lbl_nc = "Kas bersih" if cf["net_cash"] >= 0 else "Utang bersih"
+            cf_bits.append(f"{lbl_nc} {_rp_singkat(abs(cf['net_cash']))}")
+        if cf["current_ratio"] is not None:
+            cf_bits.append(f"CR {cf['current_ratio']:.2f}×")
+        if cf["payout_pct"] is not None:
+            cf_bits.append(f"Payout {cf['payout_pct']:.0f}%")
+        if cf_bits:
+            rows.append("  Arus kas &amp; neraca: " + " · ".join(cf_bits))
+    else:
+        rows.append("  Arus kas &amp; neraca: <i>tidak tersedia</i>")
+
     rows.append(
         f"\nData per: {esc(str(fund.get('as_of') or 'kuartal terakhir yang tercatat'))}"
         " <i>(laporan keuangan via Yahoo, bisa delay 1-2 kuartal)</i>"
@@ -229,6 +257,8 @@ async def do_fundamental(update: Update, ticker: str, deps):
 
     rows.append("\nCatatan skor:")
     rows.extend(f"  {esc(n)}" for n in sc["notes"])
+    for ok_cf in cf["strengths"]:
+        rows.append(f"  🟢 {esc(ok_cf)}")
     rows.append("\n🔒 Bukan saran investasi.")
     await deps.reply_long(
         msg,

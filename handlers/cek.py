@@ -158,6 +158,14 @@ def _cek_text(out: dict, res: dict, deps) -> str:
                      + _CEK_VERDICT.get(out["verdict"], esc(out["verdict"])))
     for r in out.get("reasons") or []:
         out_lines.append(f"• {esc(r)}")
+    bull_pts = out.get("bull_points") or []
+    bear_pts = out.get("bear_points") or []
+    if out["verdict"] != "TIDAK CUKUP DATA" and (bull_pts or bear_pts):
+        out_lines += ["", "⚖️ <b>Sudut Pandang Pro vs Risiko</b>"]
+        for b in bull_pts[:2]:
+            out_lines.append(f"  🟢 {esc(b)}")
+        for r in bear_pts[:2]:
+            out_lines.append(f"  🔴 {esc(r)}")
     for w in out.get("warnings") or []:
         out_lines.append("⚠️ " + esc(w.replace(".", ",")))
     if out.get("missing"):
@@ -231,7 +239,11 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
                                         update.effective_chat.id)
     modal = await asyncio.to_thread(store.get_modal,
                                     update.effective_chat.id)
-    out["warnings"].extend(riskmod.position_fit(t, positions, modal))
+    max_pos, max_sec = await asyncio.to_thread(
+        store.get_risk_limits, update.effective_chat.id)
+    out["warnings"].extend(riskmod.position_fit(
+        t, positions, modal,
+        max_pos_pct=max_pos, max_sector_pct=max_sec))
     if out.get("price") and float(out["price"]) > 0:
         atr_val = None
         try:
