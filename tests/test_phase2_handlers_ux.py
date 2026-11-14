@@ -538,7 +538,9 @@ def test_watchlist_price_target_alert_and_scan_trigger(monkeypatch, uptrend_df):
 # ---------------------------------------------------------------------------
 def test_menu_has_cek_jual_and_complete_allcmd_and_modal_copy():
     cbs = _all_callbacks(menu_handler.main_menu_markup())
-    assert "pick:jual" in cbs
+    assert "guide:jual" in cbs
+    _, rencana_kb = menu_handler._submenu_content("rencana", 10_000_000)
+    assert "pick:jual" in _all_callbacks(rencana_kb)
 
     sub = menu_handler._submenu_content("allcmd", 10_000_000)
     assert sub is not None

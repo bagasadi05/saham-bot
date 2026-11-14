@@ -83,14 +83,24 @@ def test_start_ramah_pemula_dan_tidak_membanjiri_perintah(monkeypatch, tmp_store
     asyncio.run(bot.cmd_start(upd, _ctx()))
     txt, kw = upd.effective_message.replies[-1]
     assert "SahamBuddy" in txt
-    assert "Cek Layak Beli" in txt
+    assert "Saham Cocok Dibeli" in txt
+    assert "Cek Nilai Saham" in txt
     assert "tidak terhubung" in txt.lower()
     assert len(txt) < 900  # ringkas untuk layar ponsel pemula
     cbs = _callbacks(kw["reply_markup"])
-    for expected in ("pick:cek", "pick:analisis", "sub:ide", "sub:rencana",
-                     "sub:pantau", "run:portofolio", "run:belajar",
-                     "run:help", "sub:pro"):
+    assert len(cbs) <= 8  # layar utama disederhanakan untuk pemula
+    for expected in ("guide:start", "guide:beli", "guide:jual", "guide:cek",
+                     "run:portofolio", "run:belajar", "sub:more"):
         assert expected in cbs
+
+    # Menu Lengkap (sub:more) tetap menyediakan semua alat analisis & submenu lama
+    q_more = _Query("sub:more")
+    asyncio.run(bot.menu_callback(_Update(query=q_more), _ctx()))
+    more_cbs = _callbacks(q_more.message.edits[-1][1]["reply_markup"])
+    for expected in ("pick:cek", "pick:fundamental", "pick:analisis",
+                     "sub:rencana", "sub:ide", "sub:pantau",
+                     "run:help", "sub:pro", "menu"):
+        assert expected in more_cbs
 
 
 def test_help_menampilkan_panduan_3_langkah_dan_coba_bbca(monkeypatch, tmp_store):
@@ -293,7 +303,7 @@ def test_safe_edit_fallback_ke_reply_pada_pesan_foto_dan_uneditable(monkeypatch,
     asyncio.run(bot.menu_callback(_Update(query=q_photo), _ctx()))
     assert q_photo.message.replies
     assert "SahamBuddy" in q_photo.message.replies[-1][0]
-    assert "pick:cek" in _callbacks(q_photo.message.replies[-1][1]["reply_markup"])
+    assert "guide:start" in _callbacks(q_photo.message.replies[-1][1]["reply_markup"])
 
     # Pesan lama (>48 jam) -> BadRequest("Message can't be edited") jatuh aman ke reply_text
     q_old = _Query("menu")
@@ -372,6 +382,10 @@ def test_semua_tombol_menu_submenu_dan_belajar_valid(monkeypatch, tmp_store):
         bot.belajar_markup(),
         bot.belajar_detail_markup(),
         bot.result_markup("cek", "BBCA"),
+        bot.result_markup("cek", "BBCA", allow_buy=False),
+        bot.result_markup("fundamental", "BBCA"),
+        bot.result_markup("analisis", "BBCA"),
+        bot.result_markup("rencana", "BBCA"),
         bot.result_markup("jual", "BBCA"),
         sinyal_mod.overview_markup(),
         sinyal_mod.section_markup("BELI"),
@@ -381,10 +395,14 @@ def test_semua_tombol_menu_submenu_dan_belajar_valid(monkeypatch, tmp_store):
         sinyal_mod.detail_markup("BBCA", "BELI"),
         sinyal_mod.detail_markup("BBCA", "JUAL"),
     ]
-    for g in ("ide", "rencana", "modal", "pantau", "pro", "allcmd"):
+    for g in ("ide", "rencana", "modal", "pantau", "pro", "allcmd", "more"):
         sub = menu_mod._submenu_content(g, 10_000_000)
         assert sub is not None
         markups.append(sub[1])
+    for step in ("start", "beli", "jual", "cek", "pemula"):
+        g_view = asyncio.run(menu_mod._guide_content(step, 100))
+        assert g_view is not None
+        markups.append(g_view[1])
     for act in menu_mod.NEED_TICKER:
         markups.append(bot.ticker_pick_markup(act, ["ANTM"]))
 
@@ -509,6 +527,110 @@ def test_paket_regime_fallback_dan_exec_sell_clear_pending(monkeypatch, tmp_stor
     asyncio.run(bot.menu_callback(_Update(query=q_sell), _ctx()))
     assert bot._pending_get(100) is None
     assert "belum punya posisi" in q_sell.message.replies[-1][0].lower()
+
+
+def test_guide_interaktif_pemula_kosong_dan_terisi(monkeypatch, tmp_store):
+    _setup(monkeypatch, tmp_store)
+    bot._pending_set(100, "cek")
+
+    q_start = _Query("guide:start")
+    asyncio.run(bot.menu_callback(_Update(query=q_start), _ctx()))
+    assert bot._pending_get(100) is None
+    cbs_start = _callbacks(q_start.message.edits[-1][1]["reply_markup"])
+    assert {"guide:beli", "guide:cek", "guide:jual", "guide:pemula", "menu"} <= set(cbs_start)
+
+    # guide:beli tanpa snapshot menawarkan opsi cepat tanpa harus tunggu /scan
+    q_beli0 = _Query("guide:beli")
+    asyncio.run(bot.menu_callback(_Update(query=q_beli0), _ctx()))
+    txt_b0, kw_b0 = q_beli0.message.edits[-1]
+    assert "belum ada hasil scan" in txt_b0.lower()
+    cbs_b0 = _callbacks(kw_b0["reply_markup"])
+    assert {"run:saran", "sg:scan", "guide:cek", "guide:start"} <= set(cbs_b0)
+
+    # guide:cek dan guide:pemula
+    q_cek = _Query("guide:cek")
+    asyncio.run(bot.menu_callback(_Update(query=q_cek), _ctx()))
+    cbs_cek = _callbacks(q_cek.message.edits[-1][1]["reply_markup"])
+    assert {"tick:cek:BBCA", "guide:start", "menu"} <= set(cbs_cek)
+
+    q_pemula = _Query("guide:pemula")
+    asyncio.run(bot.menu_callback(_Update(query=q_pemula), _ctx()))
+    cbs_pemula = _callbacks(q_pemula.message.edits[-1][1]["reply_markup"])
+    assert {"guide:beli", "tick:cek:BBCA", "run:belajar", "guide:start"} <= set(cbs_pemula)
+
+    # guide:jual saat portofolio kosong & tanpa sinyal JUAL tidak menampilkan sg:sell mati
+    q_jual0 = _Query("guide:jual")
+    asyncio.run(bot.menu_callback(_Update(query=q_jual0), _ctx()))
+    txt_j0, kw_j0 = q_jual0.message.edits[-1]
+    cbs_j0 = _callbacks(kw_j0["reply_markup"])
+    assert "belum ada posisi" in txt_j0.lower()
+    assert "sg:sell" not in cbs_j0
+    assert {"manual:jual", "run:portofolio", "guide:start"} <= set(cbs_j0)
+
+    # Seed snapshot pasar + posisi terbuka nyata
+    today = marketcal.now_wib().date().isoformat()
+    base = {"board": "Utama", "sector": "Keuangan", "trade_date": today,
+            "price": 5000.0, "rsi": 55.0, "ret20d": 3.0, "reason": "",
+            "entry": 5000.0, "sl": 4800.0, "tp": 5400.0, "ret1d": 0.5,
+            "ret5d": 1.0, "sma20": 4950.0, "sma50": 4900.0, "sma200": 4700.0}
+    store.save_market_scan(
+        [
+            {**base, "ticker": "BBRI", "name": "BBRI", "rel_pct": 70.0, "signal": "BELI"},
+            {**base, "ticker": "BBCA", "name": "BBCA", "rel_pct": 95.0, "signal": "BELI"},
+            {**base, "ticker": "BMRI", "name": "BMRI", "rel_pct": 91.0, "signal": "BELI"},
+            {**base, "ticker": "TLKM", "name": "TLKM", "rel_pct": 88.0, "signal": "BELI"},
+            {**base, "ticker": "ASII", "name": "ASII", "rel_pct": 25.0, "signal": "JUAL"},
+        ],
+        {"ok": 5, "trade_date": today, "scanned_at": f"{today}T09:00:00"},
+    )
+    store.add_real_position(100, "ANTM", 10, 1500.0, today)
+
+    bot._last_used.clear()
+    q_beli1 = _Query("guide:beli")
+    asyncio.run(bot.menu_callback(_Update(query=q_beli1), _ctx()))
+    txt_b1, kw_b1 = q_beli1.message.edits[-1]
+    cbs_b1 = _callbacks(kw_b1["reply_markup"])
+    assert "bukan jaminan untung" in txt_b1.lower()
+    assert {"tick:cek:BBCA", "tick:cek:BMRI", "tick:cek:TLKM"} <= set(cbs_b1)
+    assert "tick:cek:BBRI" not in cbs_b1
+    assert {"run:sinyal_bagus", "run:saran", "run:paket"} <= set(cbs_b1)
+
+    q_jual1 = _Query("guide:jual")
+    asyncio.run(bot.menu_callback(_Update(query=q_jual1), _ctx()))
+    txt_j1, kw_j1 = q_jual1.message.edits[-1]
+    cbs_j1 = _callbacks(kw_j1["reply_markup"])
+    assert "ANTM" in txt_j1
+    assert "bukan instruksi short" in txt_j1.lower()
+    assert "tick:jual:ANTM" in cbs_j1
+    assert "sg:sell" in cbs_j1
+
+    # Step tidak dikenal jatuh ke menu utama dengan rapi
+    q_bad = _Query("guide:tidak_ada")
+    asyncio.run(bot.menu_callback(_Update(query=q_bad), _ctx()))
+    assert "guide:start" in _callbacks(q_bad.message.edits[-1][1]["reply_markup"])
+
+
+def test_result_markup_langkah_lanjutan_jujur():
+    ok_cek = _callbacks(bot.result_markup("cek", "BBCA", allow_buy=True))
+    assert {"tick:fundamental:BBCA", "tick:rencana:BBCA",
+            "exec:buy:BBCA", "tick:jual:BBCA"} <= set(ok_cek)
+
+    hindari_cek = _callbacks(bot.result_markup("cek", "BBCA", allow_buy=False))
+    assert "exec:buy:BBCA" not in hindari_cek
+    assert "tick:rencana:BBCA" not in hindari_cek
+    assert {"tick:fundamental:BBCA", "tick:analisis:BBCA", "tick:jual:BBCA"} <= set(hindari_cek)
+
+    hindari_fund = _callbacks(bot.result_markup("fundamental", "BBCA", allow_buy=False))
+    assert "exec:buy:BBCA" not in hindari_fund
+    assert "tick:rencana:BBCA" not in hindari_fund
+    assert {"tick:cek:BBCA", "tick:analisis:BBCA"} <= set(hindari_fund)
+
+    for act in ("jual", "tanya_jual"):
+        cbs = _callbacks(bot.result_markup(act, "BBCA"))
+        assert not any(c.startswith("exec:buy:") for c in cbs)
+        assert not any(c.startswith("tick:rencana:") for c in cbs)
+        assert {"exec:sell:BBCA", "run:portofolio",
+                "tick:analisis:BBCA", "tick:fundamental:BBCA"} <= set(cbs)
 
 
 

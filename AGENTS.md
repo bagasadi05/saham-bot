@@ -7,8 +7,9 @@ boleh dilanggar, peta kode, dan status terakhir. Riwayat perubahan ada di
 [`PLAN.md`](PLAN.md).
 
 Terakhir diperbarui: **2026-11-14** (Wave 2A, Wave 2B, perbaikan `yfinance` adaptif
-tanpa `scipy` / EODHD & AV cooldown / `download_model.py`, serta audit & perbaikan seluruh
-tombol menu + callback inline `sg:scan` / media `_safe_edit` / `manual:alert_add` / `do_paket`; lihat `git log`).
+tanpa `scipy` / EODHD & AV cooldown / `download_model.py`, audit & perbaikan
+tombol menu/callback, serta penyederhanaan menu utama + panduan interaktif
+pemula `guide:*` / `sub:more`; lihat `git log`).
 
 ---
 
@@ -18,7 +19,7 @@ tombol menu + callback inline `sg:scan` / media `_safe_edit` / `manual:alert_add
 python -m venv .venv
 .venv\Scripts\activate            # Windows; Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest -q                         # harus 676 passed (0 skipped, coverage 84% target CI), offline
+pytest -q                         # harus 678 passed (0 skipped, coverage 84% target CI), offline
 ruff check .                      # harus bersih
 python tools/check_sync.py        # audit sinkronisasi riset, LQ45, umur data & backup DB
 python tools/record_fixtures.py --verify  # audit struktur fixture offline
@@ -88,7 +89,7 @@ handlers/               12 modul handler Telegram, pola `deps`
   trading, watchlist
 research/               harness riset (evaluate, experiments, portfolio, publish,
                         horizons, evaluate_kronos, bias)
-tests/                  676 tes offline (0 skipped, coverage 84% target CI) + fixtures/
+tests/                  678 tes offline (0 skipped, coverage 84% target CI) + fixtures/
 tools/                  skrip utilitas (backup_db, build_universe, check_sync, record_fixtures)
 ```
 
@@ -146,6 +147,7 @@ dipanggil via `to_thread`.
 | Wave 2B (`handlers/bot` provenance & exit UX, skills & docs) | selesai (`666 passed` offline, coverage `core+handlers` **84%**, `bot.py` 1.737 baris) |
 | Hotfix `repair` adaptif tanpa `scipy`, cooldown EODHD/AV & `download_model` | selesai (**670 passed** offline, coverage target CI **83%**, EODHD & AV `.env` terverifikasi live) |
 | Audit & perbaikan menyeluruh tombol menu, callback inline & input manual | selesai (**676 passed** offline, coverage target CI **84%**, `sg:scan` / media `_safe_edit` / `manual:alert_add` / `manual:rencana` / `do_paket`) |
+| Menu utama sederhana & panduan interaktif langkah demi langkah pemula | selesai (**678 passed** offline, coverage target CI **84%**, `guide:start/beli/jual/cek/pemula`, `sub:more`, `result_markup` kontekstual) |
 
 Angka riset terbaru (`data/validation.json`, konfigurasi `--hold 0.6 --min-hold 2 --regime sma50_200_half --offline`, biaya BEI `0,40%` pulang-pergi):
 turnover satu arah **21,7%** (dua arah **43,4%**); eksposur **79,8%**; MDD **−20,0%**;

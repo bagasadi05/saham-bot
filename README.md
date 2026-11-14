@@ -12,11 +12,15 @@ Bot Telegram analisis saham Indonesia (BEI) dengan **tiga pin analisis**:
 
 ## Fitur
 
-- **Menu interaktif ramah pemula (`/start`, `/menu`, `/help`)** — layar awal
-  ringkas tanpa tumpukan jargon, tersusun berdasarkan tujuan (*Cek Layak Beli*,
-  *Analisis Lengkap*, *Ide & Sinyal*, *Hitung Modal & Lot*, *Watchlist & Alarm*,
-  *Portofolio Saya*, *Belajar Istilah*, *Panduan Pemula*) serta laci *Fitur
-  Lanjutan* untuk alat riset/scan. `/help` menyajikan panduan *3 Langkah Mulai*
+- **Menu interaktif ramah pemula & panduan langkah demi langkah (`/start`, `/menu`, `/help`)** — layar awal
+  sangat ringkas (7 tombol dalam bahasa sehari-hari: *Pandu Aku Langkah demi Langkah*,
+  *Saham Cocok Dibeli*, *Cek Saham Jual*, *Cek Nilai Saham*, *Portofolio Saya*,
+  *Belajar Pemula*, dan *Menu Lengkap* yang memuat semua alat analisis & fitur
+  lanjutan). Alur panduan `guide:*` memandu pemula mencari kandidat beli dari
+  snapshot/watchlist, mengecek nilai & keamanan 6 poin, serta meninjau posisi yang
+  siap dijual, dilengkapi tombol langkah lanjutan kontekstual di bawah setiap
+  hasil (`Rincian Nilai`, `Hitung Lot`, `Cek 6 Poin`, tetap menyembunyikan tombol
+  beli pada status `HINDARI` & `jual`). `/help` menyajikan panduan *3 Langkah Mulai*
   beserta tombol coba cepat BBCA, `/belajar` dilengkapi tombol istilah klik
   langsung, pengatur modal punya pilihan cepat (`Rp 2/5/10/25 Juta`), dan
   pertanyaan bebas seperti `"BBCA beli gak?"` langsung dijawab tanpa perintah `/`
@@ -269,7 +273,7 @@ Konsekuensinya di kode:
 ```bash
 pip install -r requirements-dev.txt
 ruff check .                             # lint
-pytest -q                                # 676 tes offline (0 skipped, coverage 84% target CI; tanpa Yahoo/Google News/HF/EODHD/AV)
+pytest -q                                # 678 tes offline (0 skipped, coverage 84% target CI; tanpa Yahoo/Google News/HF/EODHD/AV)
 python tools/check_sync.py               # audit sinkronisasi relatif.py <-> validation.json, LQ45, umur data & backup DB
 python tools/record_fixtures.py --verify # audit struktur fixture offline
 make coverage                            # tes + gerbang coverage 75% (core, handlers, bot, config)

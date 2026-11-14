@@ -25,8 +25,10 @@ dokumentasi proyek), plus hotfix `yfinance` adaptif tanpa `scipy`, cooldown
 kuota/premium EODHD & Alpha Vantage, perbaikan unduhan chunk `download_model.py`,
 dan audit + perbaikan seluruh menu tombol & callback inline (`sg:scan`, `_safe_edit`
 pesan foto/media, input target/budget `manual:alert_add` & `manual:rencana`, serta
-ketahanan `do_paket`/`do_scan`/`exec:*`). Total verifikasi akhir: **676 tes lulus** offline
-(`0 skipped`, `0 failed`, coverage target CI `core+handlers+bot+config` **84%** / `83.87%`, `bot.py` 1.736 baris),
+dan ketahanan `do_paket`/`do_scan`/`exec:*`), serta penyederhanaan menu utama +
+panduan interaktif langkah demi langkah untuk pemula (`guide:start/beli/jual/cek/pemula`,
+`sub:more`, dan `result_markup` kontekstual). Total verifikasi akhir: **678 tes lulus** offline
+(`0 skipped`, `0 failed`, coverage target CI `core+handlers+bot+config` **84%** / `84.01%`, `bot.py` 1.736 baris),
 `ruff check .` bersih.
 
 ### Ditambahkan
@@ -174,6 +176,10 @@ ketahanan `do_paket`/`do_scan`/`exec:*`). Total verifikasi akhir: **676 tes lulu
   mengevaluasi sinyal `JUAL` secara terpisah sebagai `TURUN`/`NAIK`/`DATAR` (`r_multiple=None`);
   serta menambahkan `t_hac` Newey-West dan deteksi pergeseran eks-dividen (`div_adjusted`) pada
   `scorecard.live_ic()`.
+- **Penyederhanaan menu utama & panduan interaktif langkah demi langkah pemula (`handlers/menu.py`)** —
+  - Merampingkan `menu_text()` dan `main_menu_markup()` dari 10 tombol menjadi 7 tombol berbahasa sehari-hari (*Pandu Aku Langkah demi Langkah*, *Saham Cocok Dibeli*, *Cek Saham Jual*, *Cek Nilai Saham*, *Portofolio Saya*, *Belajar Pemula*, dan *Menu Lengkap* `sub:more` yang menjaga akses ke seluruh alat analisis & submenu lanjutan).
+  - Menambahkan `_guide_content` (`guide:start`, `guide:beli`, `guide:cek`, `guide:jual`, `guide:pemula`) beserta loader lokal (`_load_guide_beli_data`, `_load_guide_jual_data`) yang membaca snapshot scan & posisi aktif secara instan tanpa memanggil jaringan, menyertakan penafian jujur (*bukan jaminan untung*, *bukan instruksi short*), serta tombol cepat ke kandidat `BELI` teratas (bila ada) atau `/saran`/`/scan` cepat (bila snapshot kosong).
+  - Memperkaya `result_markup()` dengan langkah lanjutan kontekstual (`Rincian Nilai`, `Hitung Lot`, `Cek 6 Poin`, `Grafik & Analisis`) sembari tetap menyembunyikan tombol beli (`exec:buy`, `Hitung Lot`) pada status `HINDARI` (`allow_buy=False`) dan layar `jual`/`tanya_jual`. Total tes terbaru: **678 tes lulus** offline (`0 skipped`, coverage target CI **84%** / `84.01%`, `handlers/menu.py` **93%**).
 - **Audit & perbaikan menyeluruh tombol menu, callback inline & input manual (`handlers/sinyal.py`, `handlers/menu.py`, `handlers/market.py`, `handlers/jurnal.py`, `bot.py`)** —
   - `handlers/sinyal.py` (`nav`): memindahkan cabang `sg:scan` ke sebelum guard `if not rows:` dan meneruskan `["paksa"]` + `from_menu=True` ke `_do_scan` agar tombol `"🔄 Scan pasar sekarang"` (saat snapshot kosong) maupun `"🔄 Scan ulang"` (saat snapshot hari ini sudah ada) benar-benar memicu scan, bukan menelan `"Message is not modified"` secara diam-diam; serta fallback ke ringkasan bila ada `sg:*` tak dikenal.
   - `handlers/menu.py` (`safe_edit`, `_is_media_message`) & `bot.py` (`_safe_edit`): mendeteksi pesan foto/media (mis. tombol `"🏠 Menu Utama"`, `"🔄 Perbarui"`, `"🤔 Cek layak jual?"` di bawah grafik `/analisis`) maupun error `There is no text in the message to edit` / `Message can't be edited` dan otomatis fallback ke `reply_text` tanpa crash.

@@ -1,8 +1,8 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
-> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (pasca-Wave 2A, Wave 2B, hotfix `scipy`/EODHD/AV/`download_model`, & audit tombol menu/callback)
-> **Baseline terukur saat ini:** **`676 passed`** (`0 skipped`, `0 failed`; naik dari 670 pasca-hotfix `scipy`, 666 di Wave 2B, 653 di Wave 2A, 586 pra-Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
-> coverage target CI (`core+handlers+bot+config`) **`TOTAL 84%`** (`83.87%`; gerbang CI `>= 75%`) · `bot.py` **1.736 baris** +
+> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (pasca-Wave 2A, Wave 2B, hotfix `scipy`/EODHD/AV/`download_model`, audit tombol, & menu utama sederhana + panduan interaktif pemula)
+> **Baseline terukur saat ini:** **`678 passed`** (`0 skipped`, `0 failed`; naik dari 676 pasca-audit menu, 670 pasca-hotfix `scipy`, 666 di Wave 2B, 653 di Wave 2A, 586 pra-Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
+> coverage target CI (`core+handlers+bot+config`) **`TOTAL 84%`** (`84.01%`; gerbang CI `>= 75%`) · `bot.py` **1.736 baris** +
 > 12 modul `handlers/` (analisis, cek, info, jobs, jurnal, market, menu, portfolio, sektor,
 > sinyal, trading, watchlist) + 33 modul `core/` (`SCHEMA_VERSION = 6`).
 >
