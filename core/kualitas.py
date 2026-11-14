@@ -16,10 +16,13 @@ from __future__ import annotations
 import json
 import os
 
+from core import fundamental
+
 ROE_MIN = 8.0
 PER_MAX = 25.0
 PBV_MAX = 4.0
 DAY = 24 * 3600
+CACHE_VERSION = fundamental.CACHE_VERSION
 
 MARK = {True: "✅", False: "⚠️", None: "❔"}
 
@@ -40,7 +43,7 @@ def judge(fund_raw: dict | None) -> dict:
     raw = fund_raw or {}
     per = _f(raw.get("per"))
     pbv = _f(raw.get("pbv"))
-    roe = _f(raw.get("roe"))
+    roe = fundamental.normalize_roe(raw.get("roe"), unit=raw.get("roe_unit"))
     bits = []
     if per is not None:
         bits.append(f"PER {per:.1f}".replace(".", ","))
@@ -92,7 +95,11 @@ def _path(cache_dir: str, ticker: str, day: str) -> str:
 
 
 def load_cached(cache_dir: str, ticker: str, day: str) -> dict | None:
-    """Fundamental yang sudah diambil pada tanggal (WIB) yang sama."""
+    """Fundamental yang sudah diambil pada tanggal (WIB) yang sama.
+
+    File cache JSON versi lama (tanpa ``_v == CACHE_VERSION``) dianggap
+    kedaluwarsa agar ROE desimal lama (0.18) otomatis di-fetch/dinormalisasi ulang.
+    """
     if not cache_dir:
         return None
     path = _path(cache_dir, ticker, day)
@@ -101,19 +108,28 @@ def load_cached(cache_dir: str, ticker: str, day: str) -> dict | None:
             payload = json.load(f)
     except (OSError, ValueError):
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("_v") != CACHE_VERSION:
+        return None
+    return payload
 
 
 def save_cached(cache_dir: str, ticker: str, day: str, fund_raw: dict) -> bool:
     """Simpan fundamental harian secara atomik (tmp -> replace)."""
     if not cache_dir or not fund_raw:
         return False
+    payload = dict(fund_raw)
+    payload["_v"] = CACHE_VERSION
+    if payload.get("roe") is not None and payload.get("roe_unit") != "pct":
+        payload["roe"] = fundamental.normalize_roe(
+            payload.get("roe"), unit=payload.get("roe_unit")
+        )
+    payload.setdefault("roe_unit", "pct")
     try:
         os.makedirs(cache_dir, exist_ok=True)
         path = _path(cache_dir, ticker, day)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(fund_raw, f, ensure_ascii=False)
+            json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, path)
         return True
     except OSError:

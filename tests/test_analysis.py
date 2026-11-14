@@ -77,3 +77,5 @@ def test_skor_volume_nol_tidak_crash():
     ind = analysis.compute_indicators(df)
     sc = analysis.score_stock(ind)
     assert math.isfinite(sc["pct"])
+    assert sc["trend_label"] in set(analysis.TREND_LABELS.values())
+    assert "IC harian" in sc["disclaimer"]

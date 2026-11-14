@@ -29,9 +29,11 @@ tidak diisi nol. Verdict adalah ringkasan aturan di atas — bukan probabilitas;
 """
 from __future__ import annotations
 
+import inspect
 import math
+import re
 
-from core import fundamental
+from core import fundamental, pricing
 
 LIQ_GOOD = 5_000_000_000.0      # Rp5 miliar/hari: cukup untuk ritel tanpa slip
 LIQ_MIN = 2_000_000_000.0       # di bawah ini = kurang likuid (sama dgn /paket)
@@ -138,6 +140,153 @@ def agenda_note(agenda: dict | None, today_days: int | None = None) -> dict:
                     "sebesar dividen"}
 
 
+def _strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", str(text or "")).strip()
+
+
+def _collect_data_and_arb_warnings(
+    res: dict,
+    snap: dict,
+    price: float | None,
+    warnings: list[str],
+    facts: list[tuple[int, str]],
+) -> None:
+    """Tambahkan peringatan eksplisit kualitas data, suspensi, dan risiko gap ARB."""
+
+    def _add_warn(msg: str, weight: int = 0) -> None:
+        clean = _strip_html(msg)
+        if clean and clean not in warnings:
+            warnings.append(clean)
+            if weight < 0:
+                facts.append((weight, clean))
+
+    quality_note = _strip_html(res.get("quality_note") or "")
+    if quality_note:
+        _add_warn(quality_note, -2)
+
+    stale_note = _strip_html(res.get("stale_note") or "")
+    if stale_note and stale_note not in quality_note:
+        _add_warn(stale_note, -1)
+
+    quality = res.get("quality") if isinstance(res.get("quality"), dict) else {}
+    flags = quality.get("flags") if isinstance(quality.get("flags"), dict) else {}
+    if flags.get("volume_nol"):
+        _add_warn(
+            f"Peringatan suspensi/likuiditas: {flags['volume_nol']} bar volume 0 terdeteksi",
+            -2,
+        )
+    if flags.get("stale_days"):
+        _add_warn(
+            f"Data harga tertinggal {flags['stale_days']} hari bursa (potensi suspensi/cache lama)",
+            -2,
+        )
+
+    if res.get("suspended") or snap.get("suspended") or snap.get("halt"):
+        _add_warn("Peringatan suspensi perdagangan / penghentian sementara aktif", -3)
+
+    vol = _num(snap.get("volume"))
+    if vol is not None and vol == 0:
+        _add_warn(
+            "Volume hari terakhir 0 — waspada suspensi atau antrean terkunci (ARB/ARA)",
+            -2,
+        )
+
+    ret1d = _num(snap.get("ret1d"))
+    if res.get("arb_locked") or snap.get("arb_locked") or (ret1d is not None and ret1d <= -14.0):
+        _add_warn(
+            "Risiko gap ARB: tekanan turun tajam/terkunci membuat eksekusi jual sulit",
+            -2,
+        )
+
+    explicit_arb = res.get("arb_gap_risk") or res.get("arb_warning")
+    if explicit_arb:
+        if isinstance(explicit_arb, dict):
+            msg = explicit_arb.get("warning") or explicit_arb.get("message") or explicit_arb.get("reason")
+            if explicit_arb.get("risk") or explicit_arb.get("high_risk") or msg:
+                _add_warn(str(msg or "Risiko gap ARB terdeteksi"), -2)
+        elif isinstance(explicit_arb, str):
+            _add_warn(explicit_arb, -2)
+        elif explicit_arb is True:
+            _add_warn("Risiko gap ARB terdeteksi (potensi melewati stop loss)", -2)
+
+    arb_fn = getattr(pricing, "check_arb_gap_risk", None)
+    if callable(arb_fn):
+        try:
+            sig = inspect.signature(arb_fn)
+            ind = res.get("ind")
+            sl = _num(res.get("sl") or snap.get("sl"))
+            prev_close = _num(res.get("prev_close") or snap.get("prev_close"))
+            day = res.get("day") or snap.get("as_of")
+            pool = {
+                "df": ind,
+                "ind": ind,
+                "price": price,
+                "entry": price,
+                "entry_price": price,
+                "close": price,
+                "sl": sl,
+                "stop_loss": sl,
+                "prev_close": prev_close,
+                "day": day,
+                "res": res,
+            }
+            pos_args: list = []
+            kw: dict = {}
+            has_varkw = False
+            for pname, pinfo in sig.parameters.items():
+                if pinfo.kind == inspect.Parameter.VAR_KEYWORD:
+                    has_varkw = True
+                    continue
+                val = pool.get(pname)
+                if pinfo.kind == inspect.Parameter.POSITIONAL_ONLY:
+                    if val is None and pinfo.default is inspect.Parameter.empty:
+                        val = ind if ind is not None else price
+                    if val is not None:
+                        pos_args.append(val)
+                    elif pinfo.default is inspect.Parameter.empty:
+                        pos_args.append(None)
+                elif val is not None:
+                    kw[pname] = val
+            if has_varkw:
+                for k in ("price", "sl", "prev_close", "ind", "res"):
+                    if pool[k] is not None and k not in kw:
+                        kw[k] = pool[k]
+            missing_req = [
+                pname
+                for pname, pinfo in sig.parameters.items()
+                if pinfo.kind in (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+                and pinfo.default is inspect.Parameter.empty
+                and pname not in kw
+            ]
+            if not missing_req:
+                arb_res = arb_fn(*pos_args, **kw) if (pos_args or kw or not sig.parameters) else None
+            elif len(missing_req) == 1 and (ind is not None or price is not None):
+                kw[missing_req[0]] = ind if ind is not None else price
+                arb_res = arb_fn(*pos_args, **kw)
+            else:
+                arb_res = None
+            if isinstance(arb_res, dict):
+                if arb_res.get("risk") or arb_res.get("has_risk") or arb_res.get("gap_risk"):
+                    _add_warn(
+                        str(
+                            arb_res.get("warning")
+                            or arb_res.get("message")
+                            or arb_res.get("reason")
+                            or "Risiko gap ARB terdeteksi oleh aturan tick/ARB"
+                        ),
+                        -2,
+                    )
+            elif isinstance(arb_res, str) and arb_res.strip():
+                _add_warn(arb_res.strip(), -2)
+            elif arb_res is True:
+                _add_warn("Risiko gap ARB terdeteksi oleh aturan tick/ARB", -2)
+        except Exception:
+            pass
+
+
 # ------------------------------------------------------------------ verdict
 def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
           nsent: dict | None, bandar_row: dict | None,
@@ -196,16 +345,22 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
     items.append({"key": "tren", "label": "Tren", "status": status,
                   "headline": head, "detail": detail})
 
-    # 2. Valuasi vs sektor --------------------------------------------------
+    # 2. Kinerja harga 20h vs peers & ambang valuasi absolut ----------------
     per = _num(fund_raw.get("per"))
     pbv = _num(fund_raw.get("pbv"))
-    roe = _num(fund_raw.get("roe"))
+    roe = fundamental.normalize_roe(
+        _num(fund_raw.get("roe")),
+        unit=fund_raw.get("roe_unit"),
+    )
     sector = fund_raw.get("sector") or (peers or {}).get("sector")
     laba_negatif = (per is not None and per < 0) or (roe is not None and roe < 0)
     mahal = ((per is not None and per > PER_MAHAL)
              or (pbv is not None and pbv > PBV_MAHAL))
-    murah = ((per is not None and 0 < per <= PER_MURAH)
-             or (pbv is not None and 0 < pbv <= PBV_MURAH))
+    per_murah = per is not None and 0 < per <= PER_MURAH
+    pbv_murah = pbv is not None and 0 < pbv <= PBV_MURAH
+    both_present = per is not None and pbv is not None
+    both_murah = per_murah and pbv_murah
+    one_murah = per_murah or pbv_murah
     if per is None and pbv is None and roe is None:
         v_status, v_head = "na", "valuasi tidak tersedia"
         missing.append("valuasi")
@@ -221,10 +376,15 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
             points -= 1
         elif mahal:
             points -= 1
-            v_status, v_head = "warn", "mahal menurut ambang"
-        elif murah:
+            v_status, v_head = "warn", "Mahal"
+        elif both_murah:
             points += 1
-            v_status, v_head = "ok", "murah menurut ambang"
+            v_status, v_head = "ok", "Murah (PER & PBV)"
+        elif both_present and one_murah:
+            v_status, v_head = "warn", "Campuran (salah satu murah, satunya tinggi)"
+        elif not both_present and one_murah:
+            points += 1
+            v_status, v_head = "ok", "Murah (parsial; rasio pasangan tidak tersedia)"
         else:
             v_status, v_head = "warn", "wajar, bukan murah"
         if roe is not None and roe >= ROE_BAGUS:
@@ -237,32 +397,53 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         if roe is not None:
             vals.append(f"ROE {roe:.1f}%".replace(".", ","))
         v_detail = " · ".join(vals)
+        if per is not None or pbv is not None:
+            v_detail += " (ambang bot absolut PER≤20, PBV≤2)"
         if roe is None:
             v_detail += " · ROE tidak tersedia"
             warnings.append("ROE tidak tersedia — valuasi hanya dari PER/PBV")
         if sector:
             v_detail += f" · sektor {sector}"
+        sec_per = _num((peers or {}).get("per_median") or (peers or {}).get("sector_per"))
+        sec_pbv = _num((peers or {}).get("pbv_median") or (peers or {}).get("sector_pbv"))
+        if sec_per is not None or sec_pbv is not None:
+            sec_bits = []
+            if sec_per is not None:
+                sec_bits.append(f"median PER sektor {sec_per:.1f}".replace(".", ","))
+            if sec_pbv is not None:
+                sec_bits.append(f"median PBV sektor {sec_pbv:.2f}".replace(".", ","))
+            v_detail += " · " + ", ".join(sec_bits)
         peer_ret = _num((peers or {}).get("ret20d"))
         if peer_ret is not None:
-            v_detail += (f" · pembanding sektor 20h "
-                         f"{peer_ret:+.1f}%".replace(".", ","))
+            sec_tag = "" if (sec_per is not None or sec_pbv is not None) else "; median PER/PBV sektor tidak tersedia"
+            v_detail += (
+                f" · kinerja harga 20h peers {peer_ret:+.1f}%{sec_tag}"
+                .replace(".", ",")
+            )
         if laba_negatif:
             facts.append((-4, "Perusahaan sedang merugi (PER/ROE negatif)."))
         elif roe_tipis:
             facts.append((-2, (f"ROE {roe:.1f}% — laba nyaris nol, valuasi "
                                "murah tidak otomatis aman.").replace(".", ",")))
         elif mahal:
-            facts.append((-2, f"Valuasi di atas ambang (PER {per}, PBV {pbv})."
+            facts.append((-2, f"Valuasi mahal menurut ambang absolut (PER {per}, PBV {pbv})."
                           if per is not None and pbv is not None
-                          else "Valuasi di atas ambang yang dipakai bot."))
-        elif murah:
-            facts.append((2, "Valuasi relatif murah menurut ambang bot."))
+                          else "Valuasi di atas ambang absolut bot."))
+        elif both_murah:
+            facts.append((2, "Valuasi murah menurut ambang absolut bot (PER & PBV)."))
+        elif both_present and one_murah:
+            facts.append((-1, (
+                f"Valuasi campuran (PER {per:.1f}, PBV {pbv:.2f} — "
+                "salah satu murah, satunya tinggi)."
+            ).replace(".", ",")))
+        elif not both_present and one_murah:
+            facts.append((1, "Valuasi di bawah ambang absolut bot pada metrik yang tersedia."))
         if roe is not None and roe >= ROE_BAGUS:
             facts.append((2, f"ROE {roe:.1f}% — profitabilitas kuat."
                           .replace(".", ",")))
         elif roe is not None and 0 <= roe < 5:
             facts.append((-1, f"ROE tipis ({roe:.1f}%)."))
-    items.append({"key": "valuasi", "label": "Valuasi vs sektor",
+    items.append({"key": "valuasi", "label": "Kinerja harga 20h vs peers",
                   "status": v_status, "headline": v_head, "detail": v_detail})
 
     # 3. Aliran asing -------------------------------------------------------
@@ -345,6 +526,9 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         facts.append((-2, flg))
     for ok_note in cf["strengths"]:
         facts.append((1, ok_note))
+
+    # 6c. Kualitas data OHLCV, risiko suspensi & gap ARB
+    _collect_data_and_arb_warnings(res, snap, price, warnings, facts)
 
     # Veto & verdict --------------------------------------------------------
     vetoes: list[str] = []

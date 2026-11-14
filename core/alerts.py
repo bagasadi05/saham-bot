@@ -5,6 +5,8 @@ import html
 
 import pandas as pd
 
+from core import analysis
+
 KIND_LABEL = {
     "jump": "🏃 Lonjakan harga",
     "drop": "💥 Penurunan tajam",
@@ -187,11 +189,16 @@ def check_triggers(ind: pd.DataFrame) -> list[str]:
 
 
 def build_alert_message(symbol: str, triggers: list[str], snap: dict, score: dict) -> str:
-    lines = [f"🔔 <b>ALERT</b> — <b>{html.escape(str(symbol))}</b>",
-             f"Harga: Rp{snap['close']:,.0f}".replace(",", ".") + f" ({snap['ret1d']:+.2f}% HARI INI)",
-             f"Skor: {score['pct']:+.0f}% {score['emoji']} {html.escape(str(score['rating']))}",
-             "",
-             "Pemicu aktif:"]
+    trend_lbl = score.get("trend_label") or analysis.describe_rating(score.get("rating"))
+    disclaimer = score.get("disclaimer") or analysis.SCORE_DISCLAIMER
+    lines = [
+        f"🔔 <b>ALERT</b> — <b>{html.escape(str(symbol))}</b>",
+        f"Harga: Rp{snap['close']:,.0f}".replace(",", ".") + f" ({snap['ret1d']:+.2f}% HARI INI)",
+        f"Kondisi tren: {score['pct']:+.0f}% {score['emoji']} {html.escape(str(trend_lbl))}",
+        f"<i>{html.escape(str(disclaimer))}</i>",
+        "",
+        "Pemicu aktif:",
+    ]
     for t in triggers:
         # label berisi '<' / '>' (mis. 'RSI oversold (<30)') — escape agar
         # pesan HTML Telegram tidak gagal parse

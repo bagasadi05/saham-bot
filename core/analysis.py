@@ -5,6 +5,22 @@ import math
 
 import pandas as pd
 
+TREND_LABELS = {
+    "STRONG BUY": "Momentum Kuat",
+    "BUY": "Condong Menguat",
+    "NETRAL": "Netral",
+    "HOLD": "Netral",
+    "SELL": "Melemah",
+    "STRONG SELL": "Tekanan Turun",
+}
+SCORE_DISCLAIMER = "Indikator tren historis, bukan prediksi pasti — IC harian ±0,01"
+
+
+def describe_rating(rating: str | None) -> str:
+    """Ubah kode rating internal menjadi label tren deskriptif non-prediktif."""
+    key = str(rating or "").strip().upper()
+    return TREND_LABELS.get(key, "Netral")
+
 
 def sma(series: pd.Series, n: int) -> pd.Series:
     return series.rolling(n).mean()
@@ -296,6 +312,8 @@ def score_from_rows(last, prev) -> dict:
         "max": MAX_SCORE,
         "pct": pct * 100,
         "rating": rating,
+        "trend_label": TREND_LABELS[rating],
+        "disclaimer": SCORE_DISCLAIMER,
         "emoji": emoji,
         "bull": signals_bull,
         "bear": signals_bear,
@@ -399,12 +417,22 @@ def analyze(ticker: str, df_raw) -> dict:
         history_note = (
             f"⚠️ <i>Riwayat harga cuma {len(ind)} hari (<200): MA200 belum "
             "terbentuk — sinyal jangka panjang dianggap netral, bukan negatif.</i>\n")
-    return {
+    attrs = getattr(ind, "attrs", {}) or {}
+    out = {
         "ticker": ticker.upper(),
         "ind": ind,
         "snap": last_snapshot(ind),
         "score": score_stock(ind),
         "sr": support_resistance(ind),
         "history_note": history_note,
-        "fallbacks": list(ind.attrs.get("fallbacks") or []),
+        "fallbacks": list(attrs.get("fallbacks") or []),
     }
+    if attrs.get("provenance") is not None:
+        out["provenance"] = attrs.get("provenance")
+    elif any(k in attrs for k in ("provider", "last_bar_date", "repaired_count", "stale")):
+        out["provenance"] = {
+            k: attrs[k]
+            for k in ("provider", "last_bar_date", "repaired_count", "stale")
+            if k in attrs
+        }
+    return out

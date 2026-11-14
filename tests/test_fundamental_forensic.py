@@ -69,6 +69,11 @@ def test_forensic_akrual_dan_dividend_trap_non_bank():
 
     sc = fundamental.score_fundamentals(bad)
     assert any("⚠️" in n for n in sc["notes"])
+    assert sc["forensic_penalty"] > 0
+    assert sc["forensic_flags"]
+    assert sc["pct"] < sc["base_pct"]
+    assert sc["label"] != "FUNDAMENTAL KUAT"
+    assert "POJK 14" in sc["filing_note"]
 
 
 def test_forensic_yield_tinggi_fcf_negatif_ditandai_dividend_trap():

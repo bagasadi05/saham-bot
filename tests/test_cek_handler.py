@@ -87,7 +87,7 @@ def _teks(replies):
 
 def test_cek_enam_bagian_dan_kesimpulan(jalankan):
     teks = _teks(jalankan("/cek BBCA"))
-    for label in ("Tren", "Valuasi vs sektor", "Aliran asing", "Berita",
+    for label in ("Tren", "Kinerja harga 20h vs peers", "Aliran asing", "Berita",
                   "Agenda 14 hari", "Likuiditas"):
         assert label in teks, label
     assert "CEK SEBELUM BELI — BBCA" in teks

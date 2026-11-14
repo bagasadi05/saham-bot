@@ -17,6 +17,7 @@ import yfinance as yf
 from core import data as datamod
 
 _FUND_TTL = int(os.getenv("SAHAMBOT_FUND_TTL", "21600") or 0)  # 6 jam
+CACHE_VERSION = 2
 _fund_cache: dict[str, tuple[float, dict]] = {}
 _fund_lock = threading.Lock()
 
@@ -31,12 +32,51 @@ def _finite_float(v) -> float | None:
     return f if math.isfinite(f) else None
 
 
-def normalize_roe(v) -> float | None:
-    """Normalisasi ROE (yfinance kadang fraksi 0.18, kadang persen 18.0)."""
+def normalize_currency(v) -> str:
+    """Normalisasi kode mata uang laporan keuangan ('IDR', 'USD', atau 'tidak tersedia')."""
+    if v is None:
+        return "tidak tersedia"
+    s = str(v).strip().upper()
+    return s if s else "tidak tersedia"
+
+
+def normalize_roe(v, unit: str | None = None) -> float | None:
+    """Normalisasi ROE ke skala persen.
+
+    - ``unit`` eksplisit ``"pct"`` / ``"percent"`` / ``"%"`` → sudah persen,
+      TIDAK dikali 100 lagi (melindungi ROE mikro seperti 0.2% atau 2.5%).
+    - ``unit`` eksplisit ``"fraction"`` / ``"ratio"`` / ``"decimal"`` → ×100.
+    - ``unit is None`` (dict/cache lama tanpa tag unit) → heuristik kompatibel
+      ``abs(f) < 3.0`` dianggap fraksi Yahoo (0.18 → 18%).
+    """
     f = _finite_float(v)
     if f is None:
         return None
+    if unit is not None:
+        u = str(unit).strip().lower()
+        if u in ("pct", "percent", "%"):
+            return f
+        if u in ("fraction", "ratio", "decimal", "dec"):
+            return f * 100.0
     return f * 100.0 if abs(f) < 3.0 else f
+
+
+def build_filing_note(f: dict | None) -> str:
+    """Catatan jujur keterlambatan laporan keuangan (POJK 14 / TTM vs tahunan)."""
+    raw = f or {}
+    filing_date = raw.get("filing_date")
+    as_of = raw.get("as_of")
+    if filing_date:
+        return f"Tanggal rilis/filing: {filing_date} (data agregator Yahoo Finance)"
+    if as_of:
+        return (
+            f"Periode {as_of} (TTM/ringkasan Yahoo Finance; tanggal rilis filing BEI / "
+            "POJK 14 tidak tersedia — cek keterlambatan laporan resmi)"
+        )
+    return (
+        "Tanggal filing/periode laporan tidak tersedia (data TTM vs tahunan Yahoo bisa "
+        "tertinggal dari rilis BEI/POJK 14)"
+    )
 
 
 def normalize_margin(v) -> float | None:
@@ -120,15 +160,22 @@ def _fetch_uncached(symbol: str) -> dict | None:
     else:
         dy_val = dy_raw
 
+    raw_roe = _finite_float(g("returnOnEquity"))
+    roe_pct = raw_roe * 100.0 if raw_roe is not None else None
+    fin_currency = normalize_currency(g("financialCurrency", "currency"))
+
     fields = {
+        "_v": CACHE_VERSION,
         "name": g("longName", "shortName") or symbol.replace(".JK", ""),
         "sector": g("sector", "industry"),
+        "currency": fin_currency,
         "market_cap": g("marketCap"),
         "per": _finite_float(g("trailingPE")),
         "pbv": _finite_float(g("priceToBook")),
         "eps": _finite_float(g("trailingEps")),
         "div_yield": dy_val,
-        "roe": _finite_float(g("returnOnEquity")),
+        "roe": roe_pct,
+        "roe_unit": "pct",
         "margin": _finite_float(g("profitMargins")),
         "debt_eq": _finite_float(g("debtToEquity")),
         "ocf": _finite_float(g("operatingCashflow")),
@@ -182,6 +229,7 @@ def _fetch_uncached(symbol: str) -> dict | None:
             fields["as_of"] = f"Q{last_q.quarter} {last_q.year}" if last_q else None
     except Exception:
         pass  # tren tak tersedia → dikatakan jujur di laporan
+    fields["filing_note"] = build_filing_note(fields)
     return fields
 
 
@@ -208,6 +256,7 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
         v is not None
         for v in (ocf, fcf, total_cash, total_debt, current_ratio, payout)
     )
+    filing_note = build_filing_note(raw)
     if not has_any:
         return {
             "available": False,
@@ -220,10 +269,15 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
             "payout_pct": None,
             "flags": [],
             "strengths": [],
+            "forensic_flags": [],
+            "forensic_penalty": 0,
+            "filing_note": filing_note,
         }
 
     flags: list[str] = []
     strengths: list[str] = []
+    forensic_flags: list[str] = []
+    raw_penalty = 0
     ocf_to_ni = None
     net_cash = (
         round(total_cash - total_debt)
@@ -239,22 +293,30 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
                     "Arus kas operasi negatif (OCF < 0) meski laba positif — "
                     "waspada kualitas laba akrual"
                 )
+                forensic_flags.append("ocf_negatif_vs_laba")
+                raw_penalty += 25
             elif ocf_to_ni < 0.7:
                 flags.append(
                     f"Konversi kas lemah (OCF {ocf_to_ni:.2f}× laba bersih)"
                 )
+                forensic_flags.append("konversi_kas_lemah")
+                raw_penalty += 15
             elif ocf_to_ni >= 1.0:
                 strengths.append(
                     f"Laba didukung kas nyata (OCF {ocf_to_ni:.2f}× laba bersih)"
                 )
         elif ocf is not None and ocf < 0:
             flags.append("Arus kas operasi (OCF) negatif")
+            forensic_flags.append("ocf_negatif")
+            raw_penalty += 15
 
         if fcf is not None:
             if fcf < 0:
                 flags.append(
                     "Free cash flow (FCF) negatif (arus kas tersedot operasi/capex)"
                 )
+                forensic_flags.append("fcf_negatif")
+                raw_penalty += 15
             elif fcf > 0:
                 strengths.append("Free cash flow (FCF) positif")
 
@@ -263,6 +325,8 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
                 strengths.append("Posisi kas bersih positif (kas > utang)")
             elif total_cash > 0 and total_debt > total_cash * 2.0:
                 flags.append("Utang lebih dari 2× kas yang tersedia")
+                forensic_flags.append("utang_gt_2x_kas")
+                raw_penalty += 15
 
         if current_ratio is not None:
             if current_ratio < 1.0:
@@ -270,6 +334,8 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
                     f"Current ratio {current_ratio:.2f}× (< 1,0×) — "
                     "likuiditas jangka pendek ketat"
                 )
+                forensic_flags.append("current_ratio_lt_1")
+                raw_penalty += 12
             elif current_ratio >= 1.5:
                 strengths.append(f"Current ratio sehat ({current_ratio:.2f}×)")
 
@@ -278,6 +344,8 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
             f"Rasio pembagian dividen {payout:.0f}% (> 100% laba) — "
             "risiko dividen tidak berkelanjutan"
         )
+        forensic_flags.append("payout_gt_100")
+        raw_penalty += 20
     elif (
         not fin_sector
         and div_yield is not None and div_yield >= 5.0
@@ -287,6 +355,10 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
             f"Yield dividen {div_yield:.1f}% tapi FCF negatif — "
             "waspada dividend trap"
         )
+        forensic_flags.append("dividend_trap_fcf_negatif")
+        raw_penalty += 15
+
+    forensic_penalty = min(90, raw_penalty)
 
     return {
         "available": True,
@@ -299,6 +371,9 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
         "payout_pct": round(payout, 1) if payout is not None else None,
         "flags": flags,
         "strengths": strengths,
+        "forensic_flags": forensic_flags,
+        "forensic_penalty": forensic_penalty,
+        "filing_note": filing_note,
     }
 
 
@@ -331,7 +406,7 @@ def score_fundamentals(f: dict) -> dict:
         else:
             points.append(-5); verdicts.append(f"🔴 PBV {pbv:.2f} — premium tinggi")
 
-    roe = normalize_roe(f.get("roe"))
+    roe = normalize_roe(f.get("roe"), unit=f.get("roe_unit"))
     if roe is not None:
         if roe < 0:
             points.append(-10); verdicts.append(f"🔴 ROE {roe:.1f}% negatif")
@@ -379,7 +454,10 @@ def score_fundamentals(f: dict) -> dict:
         else:
             points.append(-5); verdicts.append(f"🔴 DER {de:.0f}% tinggi")
 
-    raw = max(-40, min(40, sum(points))) * 2.5  # skala -100..100
+    base_raw = max(-40, min(40, sum(points))) * 2.5  # skala -100..100
+    cf = analyze_cashflow_quality(f)
+    forensic_penalty = int(cf.get("forensic_penalty") or 0)
+    raw = max(-100.0, min(100.0, base_raw - forensic_penalty))
     if raw >= 50:
         label, emoji = "FUNDAMENTAL KUAT", "💪"
     elif raw >= 15:
@@ -388,13 +466,23 @@ def score_fundamentals(f: dict) -> dict:
         label, emoji = "MIX", "🤷"
     else:
         label, emoji = "LEMAH", "🫤"
-    cf = analyze_cashflow_quality(f)
     for flg in cf["flags"]:
         verdicts.append(f"⚠️ {flg}")
+    if forensic_penalty > 0:
+        verdicts.append(
+            f"📉 Penalti forensik kas/neraca: -{forensic_penalty} poin "
+            f"(skor dasar {round(base_raw):+d}% → {round(raw):+d}%)"
+        )
+    filing_note = cf.get("filing_note") or build_filing_note(f)
     return {
         "pct": round(raw),
+        "base_pct": round(base_raw),
         "label": label,
         "emoji": emoji,
         "notes": verdicts,
         "forensic": cf,
+        "forensic_penalty": forensic_penalty,
+        "forensic_flags": list(cf.get("forensic_flags") or []),
+        "currency": normalize_currency(f.get("currency")),
+        "filing_note": filing_note,
     }

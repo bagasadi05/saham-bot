@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import html
 
-from core import analysis, learn, powerscore, textutil
+from core import analysis, data_quality, learn, powerscore, textutil
 
 
 def esc(s) -> str:
@@ -25,6 +25,46 @@ def esc(s) -> str:
 def fmt_rp(v: float) -> str:
     """Rupiah tanpa desimal — delegasi ke core/textutil.py."""
     return textutil.rupiah(v)
+
+
+def _norm_cur(currency: str | None) -> str:
+    s = str(currency or "").strip().upper()
+    return s if s else "TIDAK TERSEDIA"
+
+
+def fmt_amount(v: float, currency: str | None = "IDR") -> str:
+    """Format nominal fundamental sesuai mata uang asli (tanpa mengarang kurs).
+
+    `Rp` hanya dipakai jika `currency == 'IDR'`. Mata uang lain (mis. `USD`)
+    ditampilkan dengan kode mata uang aslinya; jika tidak tersedia, tidak
+    ditandai `Rp`.
+    """
+    cur = _norm_cur(currency)
+    if cur == "IDR":
+        return textutil.rupiah(v)
+    if cur == "TIDAK TERSEDIA":
+        num = f"{v:,.0f}" if abs(v) >= 100 else f"{v:,.2f}"
+        return f"{num} (mata uang tidak tersedia)"
+    num = f"{v:,.0f}" if abs(v) >= 1000 else f"{v:,.2f}"
+    return f"{cur} {num}"
+
+
+def fmt_compact_amount(v: float, currency: str | None = "IDR") -> str:
+    """Format ringkas nominal laporan (triliun/miliar/juta) sesuai mata uang asli."""
+    cur = _norm_cur(currency)
+    sign = "-" if v < 0 else ""
+    av = abs(v)
+    if cur == "IDR":
+        tril = av / 1e12
+        return f"{sign}Rp{tril:.2f}T" if tril >= 1 else f"{sign}Rp{av / 1e9:.0f}M"
+    prefix = "" if cur == "TIDAK TERSEDIA" else f"{cur} "
+    if av >= 1e12:
+        return f"{sign}{prefix}{av / 1e12:.2f}T"
+    if av >= 1e9:
+        return f"{sign}{prefix}{av / 1e9:.2f}B"
+    if av >= 1e6:
+        return f"{sign}{prefix}{av / 1e6:.1f}M"
+    return f"{sign}{prefix}{av:,.0f}"
 
 
 def _rp(v) -> str:
@@ -113,6 +153,45 @@ def data_age_line(res: dict) -> str:
     return f" — <i>data per {esc(as_of)}</i>" if as_of else ""
 
 
+def provenance_line(res: dict) -> str:
+    """Baris metadata sumber/perbaikan/kesegaran bila tersedia pada `res`."""
+    explicit_note = res.get("provenance_note")
+    if explicit_note:
+        txt = str(explicit_note)
+        return txt if txt.endswith("\n") else f"{txt}\n"
+    prov = res.get("provenance")
+    if isinstance(prov, str) and prov.strip():
+        return f"🔎 <i>{esc(prov.strip())}</i>\n"
+    if isinstance(prov, dict) and prov:
+        bits = []
+        src = prov.get("provider") or prov.get("source")
+        if src:
+            bits.append(f"sumber {src}")
+        last_bar = prov.get("last_bar_date") or prov.get("last_bar") or prov.get("as_of")
+        if last_bar:
+            bits.append(f"bar terakhir {last_bar}")
+        rep = prov.get("repaired_count")
+        if rep is None:
+            rep = prov.get("repaired")
+        if rep:
+            bits.append(f"{rep} bar diperbaiki")
+        if prov.get("stale"):
+            bits.append("cache lama")
+        if bits:
+            return f"🔎 <i>Provenance data: {esc(', '.join(bits))}</i>\n"
+    ind = res.get("ind")
+    if ind is not None and hasattr(ind, "attrs"):
+        fmt_fn = getattr(data_quality, "format_provenance", None)
+        if callable(fmt_fn) and any(
+            k in ind.attrs
+            for k in ("provider", "last_bar_date", "repaired_count", "provenance")
+        ):
+            txt = fmt_fn(ind)
+            if txt:
+                return f"🔎 <i>{esc(txt)}</i>\n"
+    return ""
+
+
 def build_report(res: dict, fund: dict | None, news_sent: dict | None,
                  mkt: dict | None = None) -> str:
     snap, sc, sr = res["snap"], res["score"], res["sr"]
@@ -174,18 +253,26 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
         headline_txt = (f"\nBerita terkini (sentimen {news_sent['emoji']} "
                         f"{news_sent['pct']:+.0f}%):\n{heads}")
 
+    trend_lbl = sc.get("trend_label") or analysis.describe_rating(sc.get("rating"))
+    disclaimer = sc.get("disclaimer") or analysis.SCORE_DISCLAIMER
+    filing_line = ""
+    if isinstance(fund, dict) and fund.get("filing_note"):
+        filing_line = f"\n📄 <i>{esc(fund['filing_note'])}</i>"
+
     return (
         f"{res.get('stale_note', '')}"
         f"{res.get('quality_note', '')}"
+        f"{provenance_line(res)}"
         f"{res.get('fallback_note', '')}"
         f"{res.get('history_note', '')}"
         f"📊 <b>{esc(res['ticker'])}</b>\n"
         f"Harga: <b>{fmt_rp(snap['close'])}</b> "
         f"({snap['ret1d']:+.2f}% 1d, {snap['ret20d']:+.2f}% 20d)"
         f"{data_age_line(res)}\n\n"
-        f"{power}\n\n"
-        f"Skor teknikal: <b>{sc['pct']:+.0f}%</b> → {sc['emoji']} <b>{esc(sc['rating'])}</b>\n"
+        f"{power}{filing_line}\n\n"
+        f"Skor teknikal: <b>{sc['pct']:+.0f}%</b> → {sc['emoji']} <b>{esc(trend_lbl)}</b>\n"
         f"  <i>{rating_note}</i>\n"
+        f"  ℹ️ <i>{esc(disclaimer)}</i>\n"
         f"  ✅ Sinyal positif:\n{bull_txt}\n"
         f"  ❌ Sinyal negatif:\n{bear_txt}\n"
         f"{last_macd_cross_note(sc)}\n\n"
@@ -206,20 +293,18 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
     )
 
 
-def _trend_line(trend: list[tuple[str, float]] | None) -> str | None:
+def _trend_line(trend: list[tuple[str, float]] | None,
+                currency: str | None = "IDR") -> str | None:
     """[P3] Satu baris tren 4 kuartal + perubahan % kuartal terakhir."""
     if not trend or len(trend) < 2:
         return None
 
-    def _rp(v: float) -> str:
-        sign = "-" if v < 0 else ""
-        av = abs(v)
-        tril = av / 1e12
-        return f"{sign}Rp{tril:.2f}T" if tril >= 1 else f"{sign}Rp{av / 1e9:.0f}M"
-
+    cur = _norm_cur(currency)
     labels = [lbl for lbl, _ in trend]
     vals = [v for _, v in trend]
-    base = "→".join(_rp(v) for v in vals)
+    base = "→".join(fmt_compact_amount(v, currency=currency) for v in vals)
+    if cur == "TIDAK TERSEDIA":
+        base += " (mata uang tidak tersedia)"
     chg = (vals[-1] - vals[-2]) / abs(vals[-2]) * 100 if vals[-2] != 0 else None
     arrow = " 📈" if (chg or 0) > 0 else (" 📉" if (chg or 0) < 0 else "")
     out = f"{base}{arrow}"

@@ -42,8 +42,33 @@ def test_cache_harian_bolak_balik(tmp_path):
                                 {"per": 12.0, "roe": 18.0})
     got = kualitas.load_cached(str(tmp_path), "BBCA", "2026-11-12")
     assert got["per"] == 12.0
+    assert got["_v"] == kualitas.CACHE_VERSION
+    assert got["roe_unit"] == "pct"
     # tanggal lain = cache terpisah
     assert kualitas.load_cached(str(tmp_path), "BBCA", "2026-11-13") is None
+
+
+def test_judge_roe_desimal_yahoo_dan_roe_mikro_berunit():
+    # Payload desimal Yahoo (0.18 = 18%) harus lolos sehat, bukan ROE tipis
+    k_dec = kualitas.judge({"per": 12.0, "pbv": 1.4, "roe": 0.18})
+    assert k_dec["ok"] is True
+    assert k_dec["label"] == "sehat"
+    assert "ROE 18,0%" in k_dec["bits"]
+
+    # ROE mikro bertag roe_unit='pct' tidak boleh dikali 100 -> 20%
+    k_micro = kualitas.judge({"per": 12.0, "pbv": 1.4, "roe": 0.2, "roe_unit": "pct"})
+    assert k_micro["ok"] is False
+    assert k_micro["label"] == "ROE tipis"
+    assert "ROE 0,2%" in k_micro["bits"]
+
+
+def test_cache_lama_tanpa_versi_kedaluwarsa_aman(tmp_path):
+    import json
+
+    old_path = tmp_path / "fund_BBRI_2026-11-14.json"
+    old_path.write_text(json.dumps({"per": 11.0, "roe": 0.18}), encoding="utf-8")
+    # Cache v1 tanpa _v harus dianggap basi agar di-fetch/normalkan ulang ke v2
+    assert kualitas.load_cached(str(tmp_path), "BBRI", "2026-11-14") is None
 
 
 # ------------------------------------------------------------------ handler

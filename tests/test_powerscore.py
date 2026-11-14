@@ -49,3 +49,24 @@ def test_judge_memuat_ketiga_pin():
     )
     assert "POWERSCORE" in teks
     assert "Teknikal" in teks and "Fundamental" in teks and "Berita" in teks
+    assert "IC harian" in teks
+
+
+def test_combine_dan_judge_memperhitungkan_penalti_forensik():
+    tanpa = powerscore.combine(60, 80, 20)
+    kena = powerscore.combine(60, 80, 20, forensic_penalty=30)
+    assert kena["pct"] < tanpa["pct"]
+    assert kena["forensic_penalty"] == 30
+    assert kena["components"]["forensic_impact"] < 0
+    assert kena["trend_label"]
+    assert "IC harian" in kena["disclaimer"]
+
+    teks = powerscore.judge(
+        60,
+        {"pct": 50, "base_pct": 80, "forensic_penalty": 30, "forensic_flags": ["fcf_negatif"]},
+        {"pct": 20},
+        {"ret20d": 5, "ret1d": 1},
+    )
+    assert "Penalti forensik fundamental" in teks
+    assert "fcf_negatif" in teks
+    assert "STRONG BUY" not in teks and "STRONG SELL" not in teks

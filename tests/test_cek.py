@@ -14,9 +14,11 @@ def _res(tech=40.0, weekly="naik", close=1000.0, pct_vs_ma=2.0):
     return res
 
 
-def _fund(per=12.0, pbv=1.5, roe=18.0, sector="Financials"):
-    return {"pct": 15.0}, {"per": per, "pbv": pbv, "roe": roe,
-                           "sector": sector}
+def _fund(per=12.0, pbv=1.5, roe=18.0, sector="Financials", roe_unit="pct"):
+    raw = {"per": per, "pbv": pbv, "roe": roe, "sector": sector}
+    if roe is not None and roe_unit is not None:
+        raw["roe_unit"] = roe_unit
+    return {"pct": 15.0}, raw
 
 
 def _build(**over):
@@ -138,7 +140,7 @@ def test_papan_pemantauan_jadi_veto():
     assert any("Pemantauan" in r for r in out["reasons"])
 
 def test_roe_nyaris_nol_tidak_disebut_murah():
-    fund, fund_raw = _fund(per=11.0, pbv=2.3, roe=0.2)
+    fund, fund_raw = _fund(per=11.0, pbv=2.3, roe=0.2, roe_unit="pct")
     out = _build(fund=fund, fund_raw=fund_raw)
     valuasi = next(it for it in out["items"] if it["key"] == "valuasi")
     assert valuasi["status"] == "warn"
@@ -152,3 +154,45 @@ def test_roe_hilang_ditulis_terbuka():
     valuasi = next(it for it in out["items"] if it["key"] == "valuasi")
     assert "ROE tidak tersedia" in valuasi["detail"]
     assert any("ROE tidak tersedia" in w for w in out["warnings"])
+
+
+def test_roe_desimal_yahoo_tidak_regresi_ke_hindari():
+    """Payload ROE desimal Yahoo 0.18 (= 18%) tidak boleh dianggap ROE 0,2% -> HINDARI."""
+    fund, fund_raw = _fund(per=12.0, pbv=1.5, roe=0.18, roe_unit=None)
+    out = _build(fund=fund, fund_raw=fund_raw)
+    valuasi = next(it for it in out["items"] if it["key"] == "valuasi")
+    assert "ROE 18,0%" in valuasi["detail"]
+    assert "nyaris nol" not in valuasi["headline"]
+    assert out["verdict"] == "LAYAK"
+
+
+def test_valuasi_campuran_vs_murah_vs_mahal():
+    # PER 38, PBV 1.9 tidak boleh dilabeli murah menurut ambang
+    fund, fund_raw = _fund(per=38.0, pbv=1.9, roe=18.0)
+    out_mix = _build(fund=fund, fund_raw=fund_raw)
+    v_mix = next(it for it in out_mix["items"] if it["key"] == "valuasi")
+    assert v_mix["headline"] == "Campuran (salah satu murah, satunya tinggi)"
+    assert v_mix["status"] == "warn"
+    assert v_mix["label"] == "Kinerja harga 20h vs peers"
+    assert "median PER/PBV sektor tidak tersedia" in v_mix["detail"]
+
+    # Murah (PER & PBV)
+    out_ok = _build()
+    v_ok = next(it for it in out_ok["items"] if it["key"] == "valuasi")
+    assert v_ok["headline"] == "Murah (PER & PBV)"
+
+    # Mahal
+    f_m, fr_m = _fund(per=55.0, pbv=8.0, roe=16.0)
+    out_mahal = _build(fund=f_m, fund_raw=fr_m)
+    v_m = next(it for it in out_mahal["items"] if it["key"] == "valuasi")
+    assert v_m["headline"] == "Mahal"
+
+
+def test_cek_warning_kualitas_dan_risiko_gap_arb():
+    res = _res()
+    res["quality_note"] = "⚠️ Kualitas data: 3 bar volume 0\n"
+    res["arb_gap_risk"] = "Risiko gap ARB: jarak SL melampaui batas auto-rejection harian"
+    out = _build(res=res)
+    joined = " | ".join(out["warnings"])
+    assert "3 bar volume 0" in joined
+    assert "ARB" in joined

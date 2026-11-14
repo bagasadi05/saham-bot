@@ -48,6 +48,9 @@ def test_build_alert_message_memuat_simbol_dan_pemicu():
     )
     assert "BBCA" in teks
     assert "Lonjakan harga" in teks
+    assert "Condong Menguat" in teks
+    assert "BUY" not in teks
+    assert "IC harian" in teks
 
 
 @pytest.mark.parametrize(
