@@ -12,12 +12,18 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 Ringkasan: Track A (kontrol risiko rezim IHSG defensif + hysteresis turnover),
 Track B (ablasi & walk-forward multi-horizon 20/40/60 hari), Track C (risiko
-portofolio P23/P24, jurnal eksekusi P28, forensik arus kas), serta **Wave 2A**
+portofolio P23/P24, jurnal eksekusi P28, forensik arus kas), **Wave 2A**
 (merge `8489697`: perbaikan akurasi ROE/mata uang non-IDR/penalti forensik,
 panduan exit Chandelier/Scale-out/Time-stop/ARB 7%, cache per-period &
 `repair=True`, perbaikan `Dockerfile` `COPY handlers/` & `vendor/`, serta
-sinkronisasi `core/relatif.py` & `tools/check_sync.py`). Checkpoint Wave 2A:
-**653 tes lulus** offline (`pytest -q`), `ruff check .` bersih.
+sinkronisasi `core/relatif.py` & `tools/check_sync.py`), dan **Wave 2B**
+(integrasi provenance WIB & kualitas data di `handlers/` + `bot.py`, panduan
+beli & jual/exit portofolio-aware, exit alert otomatis portofolio asli di
+`scan_alerts`, diagnostik MAE/MFE `/jurnal`, target harga `/alert`, menu
+`Cek Jual / Tinjau Posisi`, serta sinkronisasi penuh `.agents/skills/` &
+dokumentasi proyek). Total verifikasi akhir: **666 tes lulus** offline
+(`0 skipped`, `0 failed`, coverage `core+handlers` **84%**, `bot.py` 1.737 baris),
+`ruff check .` bersih.
 
 ### Ditambahkan
 
@@ -101,6 +107,11 @@ sinkronisasi `core/relatif.py` & `tools/check_sync.py`). Checkpoint Wave 2A:
   - `tools/check_sync.py` memeriksa keselarasan `core/relatif.py` (`WEIGHTS` & `OOS_QUINTILES`) vs `data/validation.json`, kelengkapan `core.saran.LQ45` di `data/idx_universe.json`, umur artefak data, serta uji round-trip backup -> restore SQLite (`tools/backup_db.py` + `PRAGMA integrity_check`).
   - `tools/record_fixtures.py` mendukung `--ohlcv-rows` dan `--verify` (audit struktur fixture offline).
   - `research/portfolio.py` & `research/experiments.py` menambah **Probabilistic Sharpe Ratio (PSR)** (`probabilistic_sharpe`, `best_phase_psr`) dan pencatatan eksplisit `experiments_trials` (`320` trial vs `20` fase); `research/evaluate.py` & `core/relatif.py` menambah pita dispersi **P25–P75 IQR** (`summarize_quintile_bands`, `quintile_dispersion`). Tes baru: `tests/test_phase2_research_tools.py`.
+- **Integrasi UX jual/exit portofolio-aware, exit alert otomatis, provenance WIB & skills (Wave 2B — `bot.py`, `handlers/*`, `core/reports.py`, `.agents/skills/*`)**:
+  - **Exit alert portofolio asli (`handlers/jobs.py:scan_alerts`)**: memantau `real_positions` + `real_executions` secara otomatis untuk SL tersentuh, TP1 scale-out, Chandelier trailing SL jebol, time-stop `>= 20` hari bursa, dan pengingat rezim IHSG `DEFENSIVE` dengan dedup harian di `chat_settings`.
+  - **Target harga `/alert` (`handlers/watchlist.py`)**: mendukung alert level harga langsung (`/alert BBCA 9500`, `/alert BBCA <9000`) di samping kondisi indikator.
+  - **Menu & tombol aksi jual (`handlers/menu.py`, `handlers/portfolio.py`, `handlers/jurnal.py`, `handlers/sinyal.py`, `handlers/cek.py`)**: tombol utama `"💰 Cek Jual / Tinjau Posisi"` (`pick:jual`), tombol cepat `"🤔 Cek layak jual?"` (`tick:jual`) & `"💸 Sudah jual di Stockbit"` (`exec:sell`), penyembunyian tombol konfirmasi beli ketika `/cek` menghasilkan `HINDARI` (`allow_buy=False`), peringatan konteks sinyal basi di callback jurnal, serta kelengkapan daftar perintah `sub:allcmd`.
+  - **Sinkronisasi `.agents/skills/` & dokumentasi proyek**: pembaruan `.agents/skills/idx-quant-research/` (`SKILL.md` & `references/gates.md`) dan `.agents/skills/idx-equity-research/SKILL.md` (Pillar 4b Exit Discipline, aturan BEI 2026 Kep-00136/Kep-00158, checklist provenance & CLI offline) beserta seluruh dokumen proyek. Tes baru: `tests/test_phase2_handlers_ux.py`.
 
 ### Diubah
 
@@ -158,7 +169,18 @@ sinkronisasi `core/relatif.py` & `tools/check_sync.py`). Checkpoint Wave 2A:
   menyelaraskan `WEIGHTS` & `OOS_QUINTILES` di `core/relatif.py` 100% ke `data/validation.json`;
   mengevaluasi sinyal `JUAL` secara terpisah sebagai `TURUN`/`NAIK`/`DATAR` (`r_multiple=None`);
   serta menambahkan `t_hac` Newey-West dan deteksi pergeseran eks-dividen (`div_adjusted`) pada
-  `scorecard.live_ic()`. Total tes pasca-merge Wave 2A (`8489697`): **653 tes lulus** offline.
+  `scorecard.live_ic()`.
+- **Integrasi provenance WIB, `_verdict_jual` portofolio-aware & async SQLite (`core/reports.py`, `bot.py`, `handlers/*` — Wave 2B)** —
+  `reports.provenance_line` meneruskan DataFrame ke `data_quality.format_provenance` tanpa
+  tertahan token pendek `live`/`cache`; `handlers/cek.py` mengisi `res["sl"]` & `res["prev_close"]`
+  sebelum `cek.build` dan merender `provenance_line`, `quality_note`, serta `out["warnings"]`;
+  `_verdict_jual` & `build_verdict(..., focus="jual")` di `bot.py` memakai posisi nyata
+  (`real_positions` + `open_executions_by_ticker`), `saran.build_exit_guidance`, pita tahan
+  `HOLD_BAND`, penalti forensik kas, dan rezim IHSG tanpa menampilkan baris `"Kalau beli — SL/TP"`
+  atau label hiperbolik `"STRONG BUY 🚀"` / `"STRONG SELL 🔻"`; perluasan `_TANYA_STOP` agar kata
+  umum seperti `"lot"` tidak terbaca sebagai ticker; pembungkusan seluruh panggilan sinkron di
+  `handlers/trading.py` dengan `asyncio.to_thread`; serta tampilan diagnostik MAE/MFE di `/jurnal`.
+  Total tes pasca-Wave 2B: **666 tes lulus** offline (`0 skipped`, coverage `core+handlers` **84%**).
 
 ---
 
@@ -335,7 +357,7 @@ coverage 80–81%.
 - `tests/test_cek_handler.py`: peringatan posisi di atas batas.
 
 Total (saat komit P23/P24): **567 tes lulus**, `ruff` bersih, coverage 82%
-(checkpoint terbaru setelah Wave 2A `8489697`: **653 tes lulus** offline).
+(total terbaru pasca-Wave 2B: **666 tes lulus** offline, coverage `core+handlers` **84%**).
 
 ## Catatan kompatibilitas
 

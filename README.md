@@ -269,7 +269,7 @@ Konsekuensinya di kode:
 ```bash
 pip install -r requirements-dev.txt
 ruff check .                             # lint
-pytest -q                                # 653 tes offline (checkpoint Wave 2A 8489697; tanpa Yahoo/Google News/HF)
+pytest -q                                # 666 tes offline (0 skipped, coverage core+handlers 84%; tanpa Yahoo/Google News/HF)
 python tools/check_sync.py               # audit sinkronisasi relatif.py <-> validation.json, LQ45, umur data & backup DB
 python tools/record_fixtures.py --verify # audit struktur fixture offline
 make coverage                            # tes + gerbang coverage 75% (core, handlers, bot, config)

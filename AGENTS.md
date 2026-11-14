@@ -6,9 +6,10 @@ boleh dilanggar, peta kode, dan status terakhir. Riwayat perubahan ada di
 [`CHANGELOG.md`](CHANGELOG.md); rencana & status per fase ada di
 [`PLAN.md`](PLAN.md).
 
-Terakhir diperbarui: **2026-11-14** (Wave 2A merge `8489697`: perbaikan akurasi
-fundamental/ROE/non-IDR, standar risiko & exit terpadu, ketahanan cache/Docker/CI,
-serta sinkronisasi riset & `tools/check_sync.py`; lihat `git log`).
+Terakhir diperbarui: **2026-11-14** (Wave 2A & Wave 2B selesai: perbaikan akurasi
+fundamental/ROE/non-IDR, standar risiko & exit terpadu, integrasi provenance WIB &
+exit alert portofolio asli di `handlers/` & `bot.py`, ketahanan cache/Docker/CI,
+serta sinkronisasi riset, skills & `tools/check_sync.py`; lihat `git log`).
 
 ---
 
@@ -18,7 +19,7 @@ serta sinkronisasi riset & `tools/check_sync.py`; lihat `git log`).
 python -m venv .venv
 .venv\Scripts\activate            # Windows; Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest -q                         # harus 653 passed (checkpoint Wave 2A 8489697), offline
+pytest -q                         # harus 666 passed (0 skipped, coverage core+handlers 84%), offline
 ruff check .                      # harus bersih
 python tools/check_sync.py        # audit sinkronisasi riset, LQ45, umur data & backup DB
 python tools/record_fixtures.py --verify  # audit struktur fixture offline
@@ -46,7 +47,7 @@ Kalau butuh data, pakai fixture di `tests/fixtures/` atau data sintetis dari
 ## 3. Peta arsitektur
 
 ```
-bot.py                  entrypoint + menu/aksi + markup + helper aplikasi (1.458 baris)
+bot.py                  entrypoint + menu/aksi + markup + helper aplikasi (1.737 baris)
 core/                   logika domain (tanpa Telegram), 33 modul, bisa diuji offline
   alerts.py             deteksi kondisi alert harga/indikator & zona beli watchlist
   analysis.py           indikator teknikal, skor momentum, trend_label & snapshot
@@ -88,7 +89,7 @@ handlers/               12 modul handler Telegram, pola `deps`
   trading, watchlist
 research/               harness riset (evaluate, experiments, portfolio, publish,
                         horizons, evaluate_kronos, bias)
-tests/                  653 tes offline (checkpoint Wave 2A 8489697) + fixtures/
+tests/                  666 tes offline (0 skipped, coverage core+handlers 84%) + fixtures/
 tools/                  skrip utilitas (backup_db, build_universe, check_sync, record_fixtures)
 ```
 
@@ -142,7 +143,8 @@ dipanggil via `to_thread`.
 | P23/P24 (risiko portofolio) | selesai; batas kustom (`/portofolio batas`) + bobot *inv-vol* |
 | P28 (jurnal eksekusi Stockbit & slippage) | selesai (tanpa auto-trading / kredensial; + MAE/MFE & R-multiple) |
 | Audit forensik kas + Pro/Risiko (`/cek`, `/fundamental`) | selesai (`.agents/skills/idx-equity-research/`, penalti skor & mata uang non-IDR) |
-| Wave 2A (akurasi, exit/risiko, infra/Docker, sync riset) | selesai di merge `8489697` (**653 passed** offline; `Dockerfile` menyalin `handlers/` & `vendor/`) |
+| Wave 2A (akurasi, exit/risiko, infra/Docker, sync riset) | selesai di merge `8489697` (`653 passed` offline; `Dockerfile` menyalin `handlers/` & `vendor/`) |
+| Wave 2B (`handlers/bot` provenance & exit UX, skills & docs) | selesai (**666 passed** offline, coverage `core+handlers` **84%**, `bot.py` 1.737 baris) |
 
 Angka riset terbaru (`data/validation.json`, konfigurasi `--hold 0.6 --min-hold 2 --regime sma50_200_half --offline`, biaya BEI `0,40%` pulang-pergi):
 turnover satu arah **21,7%** (dua arah **43,4%**); eksposur **79,8%**; MDD **−20,0%**;

@@ -1,8 +1,8 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
-> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (checkpoint Wave 2A `8489697`)
-> **Baseline terukur saat ini:** `653 passed` (checkpoint Wave 2A di merge `8489697`, naik dari 586 pra-Wave 2A & 517 pada 2026-11-12) · `ruff check .` bersih ·
-> coverage gate `>= 75%` (`--cov=core --cov=handlers --cov=bot --cov=config`) · `bot.py` 1.458 baris +
+> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (pasca-Wave 2A & Wave 2B)
+> **Baseline terukur saat ini:** **`666 passed`** (`0 skipped`, `0 failed`; naik dari 653 di Wave 2A, 586 pra-Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
+> coverage `core+handlers` **`TOTAL 84%`** (`9.137 Stmts`, `1.501 Miss`; gerbang CI `>= 75%`) · `bot.py` **1.737 baris** +
 > 12 modul `handlers/` (analisis, cek, info, jobs, jurnal, market, menu, portfolio, sektor,
 > sinyal, trading, watchlist) + 33 modul `core/` (`SCHEMA_VERSION = 6`).
 >
@@ -236,7 +236,8 @@ tersedia (keputusan pemilik, 2026-11-12).
   `/fundamental`), `handlers/jobs.py`
   (alert 30 menit, autoscan, screener 16:15, backup, heartbeat), dan
   `core/guards.py` (cooldown + PENDING). Semua memakai pola `deps`;
-  `bot.py` tinggal 1.458 baris berisi **menu/aksi, markup, dan
+  `bot.py` pada akhir Fase 4.1 diringkas ke ~1.458–1.630 baris (kini **1.737 baris**
+  setelah penambahan panduan exit portofolio-aware di Wave 2B) berisi **menu/aksi, markup, dan
   entrypoint** — seluruh perintah ada di 12 modul `handlers/*.py`
   (termasuk `handlers/menu.py` dan `handlers/jurnal.py`). Seam tes
   (`run_menu_action`, `build_chart`, `TMP_DIR`,
@@ -382,7 +383,40 @@ tersedia (keputusan pemilik, 2026-11-12).
   evaluasi terpisah sinyal `JUAL` (`TURUN`/`NAIK`/`DATAR`) & `live_ic` `t_hac` Newey-West di
   `/jejak`, penambahan **PSR** (`probabilistic_sharpe`) & pita **P25–P75 IQR**, serta alat
   verifikasi `python tools/check_sync.py` dan `python tools/record_fixtures.py --verify`.
-  Checkpoint tes pasca-merge Wave 2A (`8489697`): **`653 passed`** (100% offline).
+  Checkpoint tes pasca-merge Wave 2A (`8489697`): `653 passed` (100% offline).
+
+---
+
+## Wave 2B — Integrasi Provenance WIB, Panduan Beli/Jual Portofolio-Aware, Exit Alert & Sinkronisasi Skills/Docs (2026-11-14)
+
+- [x] **Provenance WIB, kualitas data & mata uang non-IDR di `handlers/*` & `core/reports.py`** —
+  `reports.provenance_line` meneruskan DataFrame `ind` ke `data_quality.format_provenance`
+  meski `df.attrs["provenance"]` berisi token singkat (`live`/`cache`); `/cek` mengisi
+  `res["sl"] = saran.stop_price(...)` & `res["prev_close"]` sebelum `cek.build`, menampilkan
+  `provenance_line`, `quality_note`, `out["warnings"]`, dan menyembunyikan tombol konfirmasi
+  beli saat verdict `HINDARI` (`allow_buy=False`); konsistensi tanggal bar WIB & badge cache
+  di `/analisis`, `/fundamental` (mata uang non-IDR + `filing_note` POJK 14), `/status`
+  (`trade_date_min`, `skipped_stale`, `skipped_quality`, `quality_flagged`), `/paket`,
+  `/sinyal`, dan `/portofolio`.
+- [x] **Panduan BELI & JUAL/EXIT portofolio-aware, exit alert otomatis & `/jurnal` MAE/MFE (`bot.py`, `handlers/*`)** —
+  perluasan `_TANYA_STOP`; perombakan `_verdict_jual` & `build_verdict(..., focus="jual")`
+  memakai `real_positions` + `open_executions_by_ticker` dan `saran.build_exit_guidance`
+  (SL eksekusi vs `1×ATR`, Chandelier trailing SL 22h, scale-out 50% TP1 + BEP+0,40% fee BEI,
+  time-stop >=20h, risiko gap ARB 7%); penghapusan teks `"Kalau beli — SL/TP"` pada fokus jual
+  dan label hiperbolik `"STRONG BUY 🚀"` / `"STRONG SELL 🔻"`; pembungkusan seluruh panggilan
+  sinkron di `handlers/trading.py` dengan `asyncio.to_thread`; pemindaian **exit alert portofolio
+  asli** di `handlers/jobs.py:scan_alerts` (SL, TP1 scale-out, Chandelier trail, time-stop >=20h,
+  rezim defensif) dengan dedup harian di `chat_settings`; dukungan target harga di `/alert`
+  (`/alert BBCA 9500`, `/alert BBCA <9000`); tombol `"💰 Cek Jual / Tinjau Posisi"` (`pick:jual`)
+  di menu utama serta `"💸 Sudah jual di Stockbit"` (`exec:sell`); dan tampilan diagnostik
+  MAE/MFE & R-multiple neto di `/jurnal`. Tes baru: `tests/test_phase2_handlers_ux.py`.
+- [x] **Sinkronisasi penuh `.agents/skills/` & dokumentasi proyek** —
+  pembaruan `.agents/skills/idx-quant-research/` (`SKILL.md` & `references/gates.md`),
+  `.agents/skills/idx-equity-research/SKILL.md` (termasuk Pillar 4b Exit Discipline & aturan
+  BEI 2026 Kep-00136/Kep-00158), serta `AGENTS.md`, `PLAN.md`, `README.md`, `CHANGELOG.md`,
+  `deploy.md`, dan `requirements.txt`.
+  Total tes pasca-merge Wave 2B: **`666 passed`** (`0 skipped`, `0 failed`, coverage
+  `core+handlers` **`84%`**, 100% offline).
 
 ---
 
