@@ -35,6 +35,7 @@ _CACHE_DIR = os.getenv("SAHAMBOT_CACHE", os.path.join("temp", "cache"))
 _MAX_RETRIES = int(os.getenv("YF_RETRIES", "3"))
 _TTL_SECONDS = int(os.getenv("SAHAMBOT_TTL", "300") or 0)
 _EODHD_COOLDOWN_SEC = max(0, int(os.getenv("EODHD_COOLDOWN_SECONDS", "900") or 0))
+_AV_COOLDOWN_SEC = max(0, int(os.getenv("ALPHAVANTAGE_COOLDOWN_SECONDS", "900") or 0))
 
 # yfinance dipanggil dengan auto_adjust=True: OHLC sudah disesuaikan split
 # dan dividen. Penanda ini disimpan bersama cache agar data tidak tercampur.
@@ -497,6 +498,22 @@ def _fetch_alphavantage(symbol: str, period: str, api_key: str) -> pd.DataFrame 
         return None
     series = payload.get("Time Series (Daily)")
     if not isinstance(series, dict) or not series:
+        info_msg = str(payload.get("Information") or payload.get("Note") or "").strip()
+        err_msg = str(payload.get("Error Message") or "").strip()
+        msg_lower = info_msg.lower()
+        if info_msg and any(
+            kw in msg_lower
+            for kw in ("premium", "rate limit", "requests per day", "request per second")
+        ):
+            _mark_fallback_cooldown("alphavantage", _AV_COOLDOWN_SEC)
+            log.warning(
+                "%s: Alpha Vantage dibatasi/premium (%s) — jeda %ds sebelum mencoba lagi",
+                symbol, info_msg, _AV_COOLDOWN_SEC,
+            )
+        elif err_msg:
+            log.warning("%s: Alpha Vantage menolak simbol (%s)", symbol, err_msg)
+        elif info_msg:
+            log.warning("%s: Alpha Vantage info (%s)", symbol, info_msg)
         return None
     rows: list[dict] = []
     dates: list[pd.Timestamp] = []
@@ -538,35 +555,41 @@ def _fetch_alphavantage(symbol: str, period: str, api_key: str) -> pd.DataFrame 
     )
 
 
+def _run_fallback_provider(
+    provider: str, fn, symbol: str, period: str, api_key: str, cooldown_sec: int,
+) -> pd.DataFrame | None:
+    if not api_key or _is_fallback_cooled_down(provider):
+        return None
+    try:
+        df = fn(symbol, period, api_key)
+        if df is not None and not df.empty:
+            return df
+    except urllib.error.HTTPError as exc:
+        if exc.code in (402, 429) and cooldown_sec > 0:
+            _mark_fallback_cooldown(provider, cooldown_sec)
+            log.warning(
+                "%s: %s kuota/rate-limit (HTTP %s) — jeda %ds sebelum fallback lagi",
+                symbol, provider.upper(), exc.code, cooldown_sec,
+            )
+        else:
+            log.warning("%s: fallback %s gagal (%s)", symbol, provider.upper(), exc)
+    except Exception as exc:
+        log.warning("%s: fallback %s gagal (%s)", symbol, provider.upper(), exc)
+    return None
+
+
 def _fetch_fallback_provider(symbol: str, period: str, interval: str) -> pd.DataFrame | None:
     """Hook fallback OHLCV opsional (P25) khusus emiten `.JK`, strictly opt-in via env."""
     if interval != "1d" or not symbol.endswith(".JK"):
         return None
-    eodhd_key = os.getenv("EODHD_API_KEY", "").strip()
-    if eodhd_key and not _is_fallback_cooled_down("eodhd"):
-        try:
-            df = _fetch_eodhd(symbol, period, eodhd_key)
-            if df is not None and not df.empty:
-                return df
-        except urllib.error.HTTPError as exc:
-            if exc.code in (402, 429) and _EODHD_COOLDOWN_SEC > 0:
-                _mark_fallback_cooldown("eodhd", _EODHD_COOLDOWN_SEC)
-                log.warning(
-                    "%s: EODHD kuota/rate-limit (HTTP %s) — jeda %ds sebelum fallback EODHD lagi",
-                    symbol, exc.code, _EODHD_COOLDOWN_SEC,
-                )
-            else:
-                log.warning("%s: fallback EODHD gagal (%s)", symbol, exc)
-        except Exception as exc:
-            log.warning("%s: fallback EODHD gagal (%s)", symbol, exc)
-    av_key = os.getenv("ALPHAVANTAGE_API_KEY", "").strip()
-    if av_key:
-        try:
-            df = _fetch_alphavantage(symbol, period, av_key)
-            if df is not None and not df.empty:
-                return df
-        except Exception as exc:
-            log.warning("%s: fallback Alpha Vantage gagal (%s)", symbol, exc)
+    for provider, fn, env_name, cooldown_sec in (
+        ("eodhd", _fetch_eodhd, "EODHD_API_KEY", _EODHD_COOLDOWN_SEC),
+        ("alphavantage", _fetch_alphavantage, "ALPHAVANTAGE_API_KEY", _AV_COOLDOWN_SEC),
+    ):
+        api_key = os.getenv(env_name, "").strip()
+        df = _run_fallback_provider(provider, fn, symbol, period, api_key, cooldown_sec)
+        if df is not None:
+            return df
     return None
 
 

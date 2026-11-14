@@ -375,3 +375,34 @@ def test_eodhd_quota_error_triggers_cooldown_and_resets_with_clear_cache(
     assert data._is_fallback_cooled_down("eodhd") is False
     assert data.fetch_history("BMRI", "1mo") is None
     assert eodhd_calls["n"] == 2
+
+
+def test_alphavantage_premium_or_rate_limit_triggers_cooldown(tmp_path, monkeypatch):
+    """Pesan premium/rate-limit Alpha Vantage mengaktifkan cooldown agar kuota tidak spam."""
+    monkeypatch.setattr(data, "_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(data, "_MAX_RETRIES", 1)
+    monkeypatch.setattr(data, "_AV_COOLDOWN_SEC", 600)
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
+    monkeypatch.setenv("ALPHAVANTAGE_API_KEY", "free-av-key")
+    monkeypatch.setattr(data.yf, "download", lambda *_a, **_k: pd.DataFrame())
+
+    av_calls = {"n": 0}
+
+    def fake_av_premium(_url, timeout=15):
+        av_calls["n"] += 1
+        return {
+            "Information": "Thank you for using Alpha Vantage! This is a premium endpoint."
+        }
+
+    monkeypatch.setattr(data, "_http_get_json", fake_av_premium)
+
+    assert data.fetch_history("BBCA", "1mo") is None
+    assert av_calls["n"] == 1
+    assert data._is_fallback_cooled_down("alphavantage") is True
+
+    # Panggilan berikutnya melewati Alpha Vantage selama cooldown aktif
+    assert data.fetch_history("TLKM", "1mo") is None
+    assert av_calls["n"] == 1
+
+    data.clear_cache()
+    assert data._is_fallback_cooled_down("alphavantage") is False

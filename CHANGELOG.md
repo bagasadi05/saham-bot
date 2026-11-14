@@ -22,7 +22,7 @@ beli & jual/exit portofolio-aware, exit alert otomatis portofolio asli di
 `scan_alerts`, diagnostik MAE/MFE `/jurnal`, target harga `/alert`, menu
 `Cek Jual / Tinjau Posisi`, serta sinkronisasi penuh `.agents/skills/` &
 dokumentasi proyek), plus hotfix `yfinance` adaptif tanpa `scipy` & cooldown
-kuota EODHD. Total verifikasi akhir: **668 tes lulus** offline
+kuota/premium EODHD & Alpha Vantage. Total verifikasi akhir: **669 tes lulus** offline
 (`0 skipped`, `0 failed`, coverage target CI `core+handlers+bot+config` **83%**, `bot.py` 1.737 baris),
 `ruff check .` bersih.
 
@@ -177,10 +177,12 @@ kuota EODHD. Total verifikasi akhir: **668 tes lulus** offline
   menyertakan `scipy`) dan memicu spam fallback EODHD. Ditambahkan `supports_yf_repair()` &
   `download_yf_with_safe_repair()` di `core/data.py` (dipakai bersama oleh `core/screener.py`)
   yang memakai `repair=True` hanya bila `scipy` tersedia serta mengulang dengan `repair=False`
-  bila `ModuleNotFoundError` muncul; cooldown EODHD (`EODHD_COOLDOWN_SECONDS=900`) saat HTTP
-  `402`/`429` agar batch tidak membakar kuota gratis; serta `monkeypatch.delenv` di
-  `tests/conftest.py` agar suite offline tetap terisolasi meski `.env` lokal menyimpan API key
-  live. Total terbaru: **668 tes lulus** offline (`0 skipped`, `ruff` bersih).
+  bila `ModuleNotFoundError` muncul; cooldown terpadu (`EODHD_COOLDOWN_SECONDS=900`,
+  `ALPHAVANTAGE_COOLDOWN_SECONDS=900`) saat HTTP `402`/`429` maupun respons
+  `"Information"`/`"Note"` premium/rate-limit Alpha Vantage agar batch tidak spam kuota;
+  serta `monkeypatch.delenv` di `tests/conftest.py` agar suite offline tetap terisolasi
+  meski `.env` lokal menyimpan API key live. Total terbaru: **669 tes lulus** offline
+  (`0 skipped`, `ruff` bersih).
 - **Integrasi provenance WIB, `_verdict_jual` portofolio-aware & async SQLite (`core/reports.py`, `bot.py`, `handlers/*` — Wave 2B)** —
   `reports.provenance_line` meneruskan DataFrame ke `data_quality.format_provenance` tanpa
   tertahan token pendek `live`/`cache`; `handlers/cek.py` mengisi `res["sl"]` & `res["prev_close"]`
