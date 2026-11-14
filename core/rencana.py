@@ -17,7 +17,7 @@ import math
 import os
 from collections import Counter
 
-from core import fundamental, pricing, regime, saran, universe
+from core import fundamental, pricing, regime, risk, saran, store, universe
 
 def _env_num(name: str, default: float, cast=float):
     try:
@@ -27,6 +27,7 @@ def _env_num(name: str, default: float, cast=float):
 
 
 MIN_VALUE = float(_env_num("PLAN_MIN_VALUE", 2_000_000_000))
+# Filter likuiditas/tidur & risiko Pemantauan Khusus (bukan lantai reguler BEI yang kini Rp1)
 MIN_PRICE = float(_env_num("PLAN_MIN_PRICE", 50))
 MAX_POS_PCT = min(0.5, max(0.05, float(_env_num("PLAN_MAX_POS_PCT", 0.20))))
 MAX_PLANS = max(1, min(5, int(_env_num("PLAN_MAX_PLANS", 3))))
@@ -71,7 +72,7 @@ def prefilter(rows: list[dict], pool_limit: int = POOL_LIMIT):
             continue
         price = _f(r.get("price"))
         if price is None or price < MIN_PRICE:
-            rejected["harga < Rp50 / tidak tersedia"] += 1
+            rejected["harga < Rp50 (filter likuiditas/tidur; reguler BEI Rp1) / tidak tersedia"] += 1
             continue
         if (r.get("board") or "") == "Pemantauan Khusus":
             rejected["papan Pemantauan Khusus"] += 1
@@ -178,7 +179,10 @@ def enrich(cand: dict, analyzed: dict | None,
     vetoes, warnings = _fund_flags(per, pbv, roe, der, sector)
     warnings.extend(fundamental.analyze_cashflow_quality(fund_raw)["flags"])
     if price < MIN_PRICE:
-        vetoes.append("harga < Rp50")
+        vetoes.append(
+            "harga < Rp50 (filter likuiditas/tidur, rawan Pemantauan Khusus; "
+            "lantai reguler BEI Rp1)"
+        )
     if board == "Pemantauan Khusus":
         vetoes.append("papan Pemantauan Khusus")
     if ret20d is not None and ret20d > TRAP_RET20D:
@@ -211,7 +215,10 @@ def enrich(cand: dict, analyzed: dict | None,
     if rsi is not None and rsi > 70:
         warnings.append(f"RSI jenuh beli ({rsi:.0f})")
     if price < 100:
-        warnings.append("harga < Rp100 — spread/tick relatif besar")
+        warnings.append(
+            "harga < Rp100 (mendekati zona Rp50 tidak likuid / FCA; "
+            "lantai reguler BEI Rp1) — spread/tick relatif besar"
+        )
 
     news_top = []
     for d in (nsent.get("details") or [])[:2]:
@@ -287,6 +294,15 @@ def grade(c: dict) -> str:
     return "B" if pts >= 3 else "C"
 
 
+def _merge_warnings(base: list[str] | None, extra: list[str]) -> list[str]:
+    """Gabungkan daftar peringatan tanpa duplikat."""
+    out = list(base or [])
+    for w in extra:
+        if w and w not in out:
+            out.append(w)
+    return out
+
+
 def price_levels(c: dict) -> dict:
     """Entry/SL/TP/chase satu kandidat — satu aturan untuk semua perintah.
 
@@ -310,15 +326,26 @@ def price_levels(c: dict) -> dict:
     if chase_above <= entry:
         chase_above = entry + tick
     risk_per_share = max(entry - sl, 0.0)
+    gap = saran.arb_gap_risk(entry, sl)
     return {
         "raw_entry": raw_entry, "tick": tick, "entry": entry, "atr": atr,
         "sl": sl, "tp": tp, "chase_above": chase_above,
         "risk_per_share": risk_per_share,
         "rr": ((tp - entry) / risk_per_share) if risk_per_share > 0 else 0.0,
+        "sl_dist_pct": gap["sl_dist_entry_pct"],
+        "arb_gap_risk": gap["sl_exceeds_arb"],
+        "arb_floor": gap["arb_floor"],
+        "arb_warnings": list(gap["warnings"]),
     }
 
 
-def make_plan(c: dict, modal: float, *, risk_scale: float = 1.0) -> dict:
+def make_plan(
+    c: dict,
+    modal: float,
+    *,
+    risk_scale: float = 1.0,
+    max_pos_pct: float | None = None,
+) -> dict:
     """Hitung entry/SL/TP, lot, biaya, dan risiko untuk satu kandidat."""
     lv = price_levels(c)
     entry, sl, tp = lv["entry"], lv["sl"], lv["tp"]
@@ -327,8 +354,9 @@ def make_plan(c: dict, modal: float, *, risk_scale: float = 1.0) -> dict:
     risk_per_share = lv["risk_per_share"]
 
     scale = max(0.1, min(1.0, float(risk_scale)))
-    eff_risk_pct = 0.01 * scale
-    eff_max_pos_pct = MAX_POS_PCT * scale
+    eff_risk_pct = saran.BASE_RISK_PCT * scale
+    base_pos_pct = float(max_pos_pct) if max_pos_pct is not None else MAX_POS_PCT
+    eff_max_pos_pct = base_pos_pct * scale
     ps = saran.position_size(
         modal, entry, sl, risk_pct=eff_risk_pct, max_pos_pct=eff_max_pos_pct
     )
@@ -342,6 +370,7 @@ def make_plan(c: dict, modal: float, *, risk_scale: float = 1.0) -> dict:
     )
     min_modal = int(math.ceil(min_modal / 100_000.0) * 100_000)
     rr = lv["rr"]
+    warnings = _merge_warnings(c.get("warnings"), lv["arb_warnings"])
 
     return {
         "ticker": c.get("ticker"),
@@ -356,6 +385,9 @@ def make_plan(c: dict, modal: float, *, risk_scale: float = 1.0) -> dict:
         "atr": round(atr, 2),
         "chase_above": chase_above,
         "rr": round(rr, 2),
+        "sl_dist_pct": lv["sl_dist_pct"],
+        "arb_gap_risk": lv["arb_gap_risk"],
+        "arb_floor": lv["arb_floor"],
         "lots": lots,
         "shares": shares,
         "value": round(value),
@@ -379,7 +411,7 @@ def make_plan(c: dict, modal: float, *, risk_scale: float = 1.0) -> dict:
         "news_pct": c.get("news_pct"),
         "news_label": c.get("news_label"),
         "news_n": c.get("news_n"),
-        "warnings": list(c.get("warnings") or []),
+        "warnings": warnings,
         "fund_notes": list(c.get("fund_notes") or []),
         "news_top": list(c.get("news_top") or []),
         "reason": c.get("reason") or "",
@@ -388,24 +420,87 @@ def make_plan(c: dict, modal: float, *, risk_scale: float = 1.0) -> dict:
     }
 
 
-def budget_plan(c: dict, budget: float, modal: float | None = None) -> dict:
+def _resize_plan_lots(plan: dict, new_lots: int, modal: float) -> dict:
+    """Sesuaikan jumlah lot rencana saat tersisa ruang posisi/sektor."""
+    lots = max(0, int(new_lots))
+    shares = lots * 100
+    entry = float(plan.get("entry") or 0.0)
+    sl = float(plan.get("sl") or 0.0)
+    value = shares * entry
+    real_risk = shares * max(entry - sl, 0.0)
+    out = dict(plan)
+    out.update(
+        lots=lots,
+        shares=shares,
+        value=round(value),
+        buy_cost=round(value * (1 + saran.BUY_FEE)),
+        real_risk=round(real_risk),
+        risk_pct=round(real_risk / modal * 100, 2) if modal else 0.0,
+    )
+    return out
+
+
+def budget_plan(
+    c: dict,
+    budget: float,
+    modal: float | None = None,
+    *,
+    chat_id: int | str | None = None,
+    positions: list[dict] | None = None,
+    market_regime: dict | None = None,
+    risk_scale: float | None = None,
+    max_pos_pct: float | None = None,
+    max_sector_pct: float | None = None,
+) -> dict:
     """Rencana SATU emiten dengan anggaran eksplisit (/rencana <KODE> <Rp>).
 
-    Bedanya dengan `make_plan`: jumlah lot di sini adalah yang benar-benar
-    TERJANGKAU anggaran (dibulatkan ke bawah per 100 lembar, fee beli ikut
-    dihitung), bukan yang dibatasi aturan risiko 1%. Aturan 1% tetap dihitung
-    (`lots_risk`) dan ditampilkan sebagai pembanding supaya kelihatan bila
-    ukuran ini lebih besar dari kebiasaan.
-
-    Kalau anggaran tidak cukup untuk 1 lot, kembalikan `ok=False` + harga 1 lot
-    — jangan mengarang jumlah lot.
+    Menghormati skala risiko rezim IHSG (`risk_scale` / `market_regime`) serta
+    batas posisi & sektor kustom (`risk.get_risk_limits`) dan posisi eksisting
+    di `real_positions` bila `chat_id` atau `positions` diberikan.
     """
     lv = price_levels(c)
     entry, sl, tp = lv["entry"], lv["sl"], lv["tp"]
-    budget = max(0.0, float(budget or 0.0))
+    if risk_scale is not None:
+        scale = max(0.1, min(1.0, float(risk_scale)))
+    elif market_regime is not None:
+        scale = regime.effective_scale(market_regime)
+    else:
+        scale = 1.0
+
+    raw_budget = max(0.0, float(budget or 0.0))
+    eff_budget = raw_budget * scale
     modal = float(modal) if modal else 0.0
+    eff_risk_pct = saran.BASE_RISK_PCT * scale
     lot_value = entry * 100.0
     min_budget = int(math.ceil(lot_value * (1 + saran.BUY_FEE)))
+
+    enforce_limits = modal > 0 and any(
+        x is not None for x in (chat_id, positions, max_pos_pct, max_sector_pct)
+    )
+    if enforce_limits:
+        cfg_pos, cfg_sec = (
+            risk.get_risk_limits(chat_id)
+            if chat_id is not None
+            else (risk.MAX_POS_PCT, risk.MAX_SECTOR_PCT)
+        )
+        lim_pos = (float(max_pos_pct) if max_pos_pct is not None else cfg_pos) * scale
+        lim_sec = (float(max_sector_pct) if max_sector_pct is not None else cfg_sec) * scale
+        pos_list = (
+            list(positions)
+            if positions is not None
+            else (store.real_positions(chat_id) if chat_id is not None else [])
+        )
+    else:
+        lim_pos = None
+        lim_sec = None
+        pos_list = []
+
+    warnings = _merge_warnings(c.get("warnings"), lv["arb_warnings"])
+    if scale < 1.0:
+        warnings.append(
+            f"Rezim IHSG defensif ({scale:.1f}x): anggaran efektif diturunkan "
+            f"dari {saran.fmt(raw_budget)} -> {saran.fmt(eff_budget)}"
+        )
 
     base = {
         "ticker": (c.get("ticker") or "").upper(),
@@ -417,27 +512,64 @@ def budget_plan(c: dict, budget: float, modal: float | None = None) -> dict:
         "entry": entry, "sl": sl, "tp": tp, "atr": round(lv["atr"], 2),
         "chase_above": lv["chase_above"],
         "rr": round(lv["rr"], 2),
+        "sl_dist_pct": lv["sl_dist_pct"],
+        "arb_gap_risk": lv["arb_gap_risk"],
+        "arb_floor": lv["arb_floor"],
         "net_tp_pct": round(saran.pnl_pct(entry, tp), 2),
-        "budget": round(budget),
+        "budget": round(eff_budget),
+        "raw_budget": round(raw_budget),
         "modal": round(modal),
         "lot_value": round(lot_value),
         "min_budget": min_budget,
-        "risk_budget": round(modal * 0.01),
-        "warnings": list(c.get("warnings") or []),
+        "risk_budget": round(modal * eff_risk_pct),
+        "exposure_scale": scale,
+        "risk_pct_limit": round(eff_risk_pct * 100, 2),
+        "max_pos_pct": round(lim_pos * 100, 1) if lim_pos is not None else None,
+        "max_sector_pct": round(lim_sec * 100, 1) if lim_sec is not None else None,
+        "limit_check": None,
+        "warnings": warnings,
         "vetoes": list(c.get("vetoes") or []),
         "reason": c.get("reason") or "",
     }
-    if entry <= 0 or budget < min_budget:
+    if entry <= 0 or eff_budget < min_budget:
         return {**base, "ok": False, "lots": 0, "shares": 0, "value": 0,
-                "buy_cost": 0, "cash_left": round(budget),
+                "buy_cost": 0, "cash_left": round(eff_budget),
                 "max_loss": 0, "max_loss_pct": None, "pct_modal": None,
                 "risk_pct": None, "lots_risk": 0, "profit_tp": None,
-                "skip_reason": ("anggaran kurang dari harga 1 lot"
-                                if entry > 0 else "harga tidak tersedia")}
+                "skip_reason": ("anggaran efektif kurang dari harga 1 lot"
+                                if scale < 1.0 and entry > 0 else
+                                ("anggaran kurang dari harga 1 lot"
+                                 if entry > 0 else "harga tidak tersedia"))}
 
-    lots = int(budget // lot_value)
-    while lots > 0 and lots * lot_value * (1 + saran.BUY_FEE) > budget:
+    lots = int(eff_budget // lot_value)
+    while lots > 0 and lots * lot_value * (1 + saran.BUY_FEE) > eff_budget:
         lots -= 1
+
+    lim_check = None
+    if enforce_limits and lots > 0:
+        lim_check = risk.check_limits(
+            {"ticker": base["ticker"], "sector": base["sector"],
+             "value": lots * lot_value, "entry": entry},
+            pos_list,
+            modal,
+            max_pos_pct=lim_pos,
+            max_sector_pct=lim_sec,
+        )
+        base["limit_check"] = lim_check
+        if not lim_check["ok"]:
+            warnings = _merge_warnings(warnings, lim_check["reasons"])
+            if lim_check["max_lots"] <= 0:
+                return {**base, "ok": False, "lots": 0, "shares": 0, "value": 0,
+                        "buy_cost": 0, "cash_left": round(eff_budget),
+                        "max_loss": 0, "max_loss_pct": None, "pct_modal": None,
+                        "risk_pct": None, "lots_risk": 0, "profit_tp": None,
+                        "warnings": warnings,
+                        "skip_reason": "; ".join(lim_check["reasons"])}
+            lots = min(lots, lim_check["max_lots"])
+            warnings.append(
+                f"Ukuran dipangkas menjadi {lots} lot agar sesuai batas portofolio/sektor"
+            )
+
     shares = lots * 100
     value = shares * entry
     buy_fee = value * saran.BUY_FEE
@@ -446,21 +578,28 @@ def budget_plan(c: dict, budget: float, modal: float | None = None) -> dict:
     max_loss = value - shares * sl + buy_fee + sell_fee_sl
     profit_tp = shares * tp * (1 - saran.SELL_FEE) - buy_cost
     max_loss_pct = (max_loss / modal * 100) if modal else None
-    lots_risk = (saran.position_size(modal, entry, sl)["lots"]
-                 if modal else 0)
+    lots_risk = (
+        saran.position_size(
+            modal, entry, sl,
+            risk_pct=eff_risk_pct,
+            max_pos_pct=lim_pos if lim_pos is not None else 1.0,
+        )["lots"]
+        if modal else 0
+    )
 
-    warnings = list(base["warnings"])
     if modal and lots_risk and lots > lots_risk:
         warnings.append(
             f"{lots} lot = risiko {max_loss_pct:.1f}% modal, di atas aturan "
-            f"1%; ukuran sesuai aturan hanya {lots_risk} lot")
+            f"{eff_risk_pct * 100:g}%; ukuran sesuai aturan hanya {lots_risk} lot")
     elif modal and not lots_risk:
-        warnings.append("risiko per lembar > 1% modal — aturan 1% tidak "
-                        "mengizinkan posisi ini sekalipun 1 lot")
+        warnings.append(
+            f"risiko per lembar > {eff_risk_pct * 100:g}% modal — aturan "
+            f"{eff_risk_pct * 100:g}% tidak mengizinkan posisi ini sekalipun 1 lot"
+        )
 
     return {**base, "ok": True, "lots": lots, "shares": shares,
             "value": round(value), "buy_cost": round(buy_cost),
-            "cash_left": round(budget - buy_cost),
+            "cash_left": round(eff_budget - buy_cost),
             "pct_modal": (round(buy_cost / modal * 100, 2) if modal else None),
             "max_loss": round(max_loss),
             "max_loss_pct": (round(max_loss_pct, 2)
@@ -472,19 +611,57 @@ def budget_plan(c: dict, budget: float, modal: float | None = None) -> dict:
             "warnings": warnings, "skip_reason": ""}
 
 
-def finalize(enriched: list[dict], modal: float,
-             max_plans: int | None = None,
-             *, market_regime: dict | None = None) -> dict:
-    """Veto kualitas + batas sektor/modal/rezim IHSG → daftar rencana final."""
+def finalize(
+    enriched: list[dict],
+    modal: float,
+    max_plans: int | None = None,
+    *,
+    market_regime: dict | None = None,
+    chat_id: int | str | None = None,
+    positions: list[dict] | None = None,
+    max_pos_pct: float | None = None,
+    max_sector_pct: float | None = None,
+    max_total_pct: float | None = None,
+) -> dict:
+    """Veto kualitas + batas kustom portofolio/sektor/posisi eksisting/rezim IHSG."""
     limit = max(1, min(5, int(max_plans or MAX_PLANS)))
     scale = regime.effective_scale(market_regime)
-    total_pct = MAX_TOTAL_PCT * scale
-    pos_pct = MAX_POS_PCT * scale
+    enforce_limits = any(
+        x is not None
+        for x in (chat_id, positions, max_pos_pct, max_sector_pct, max_total_pct)
+    )
+    if enforce_limits:
+        cfg_pos, cfg_sec = (
+            risk.get_risk_limits(chat_id)
+            if chat_id is not None
+            else (MAX_POS_PCT, risk.MAX_SECTOR_PCT)
+        )
+        base_pos = float(max_pos_pct) if max_pos_pct is not None else cfg_pos
+        base_sec = float(max_sector_pct) if max_sector_pct is not None else cfg_sec
+        base_total = float(max_total_pct) if max_total_pct is not None else MAX_TOTAL_PCT
+        pos_list = (
+            list(positions)
+            if positions is not None
+            else (store.real_positions(chat_id) if chat_id is not None else [])
+        )
+    else:
+        base_pos, base_sec, base_total = MAX_POS_PCT, None, MAX_TOTAL_PCT
+        pos_list = []
+
+    total_pct = base_total * scale
+    pos_pct = base_pos * scale
+    sec_pct = (base_sec * scale) if base_sec is not None else None
+    existing_value = sum(
+        float(p.get("lots") or 0) * 100.0 * float(p.get("avg_price") or 0)
+        for p in pos_list
+    )
+    virtual_positions = list(pos_list)
+
     picks: list[dict] = []
     rejected: Counter = Counter()
     sectors: Counter = Counter()
     budget = modal * total_pct
-    spent = 0.0
+    spent = existing_value
     ranked = sorted(enriched, key=lambda c: (-(_f(c.get("rel_pct")) or 0),
                                              c.get("ticker") or ""))
     over_label = f"total alokasi >{int(round(total_pct * 100))}% modal"
@@ -497,10 +674,27 @@ def finalize(enriched: list[dict], modal: float,
         if sector and sectors[sector] >= MAX_PER_SECTOR:
             rejected["konsentrasi sektor (>2)"] += 1
             continue
-        plan = make_plan(c, modal, risk_scale=scale)
+        plan = make_plan(c, modal, risk_scale=scale, max_pos_pct=base_pos)
         if plan["lots"] <= 0:
             rejected["modal kurang untuk 1 lot"] += 1
             continue
+        if enforce_limits and sec_pct is not None:
+            lim = risk.check_limits(
+                plan,
+                virtual_positions,
+                modal,
+                max_pos_pct=pos_pct,
+                max_sector_pct=sec_pct,
+            )
+            if not lim["ok"]:
+                if lim["max_lots"] <= 0:
+                    rejected["batas posisi/sektor portofolio penuh"] += 1
+                    continue
+                plan = _resize_plan_lots(plan, lim["max_lots"], modal)
+                plan["warnings"] = _merge_warnings(
+                    plan.get("warnings"),
+                    ["ukuran disesuaikan sisa batas posisi/sektor portofolio"],
+                )
         if spent + plan["buy_cost"] > budget:
             rejected[over_label] += 1
             continue
@@ -508,6 +702,12 @@ def finalize(enriched: list[dict], modal: float,
         spent += plan["buy_cost"]
         if sector:
             sectors[sector] += 1
+        virtual_positions.append({
+            "ticker": plan["ticker"],
+            "sector": sector,
+            "lots": plan["lots"],
+            "avg_price": plan["entry"],
+        })
         if len(picks) >= limit:
             break
     return {
@@ -519,6 +719,8 @@ def finalize(enriched: list[dict], modal: float,
         "regime": market_regime,
         "exposure_scale": scale,
         "max_pos_pct": round(pos_pct * 100, 1),
+        "max_sector_pct": round(sec_pct * 100, 1) if sec_pct is not None else None,
         "max_total_pct": round(total_pct * 100, 1),
+        "existing_value": round(existing_value),
         "risk_pct_limit": round(1.0 * scale, 2),
     }

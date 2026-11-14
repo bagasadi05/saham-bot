@@ -45,6 +45,19 @@ def validate_limits(pos_pct: float, sec_pct: float) -> tuple[float, float]:
     return round(p, 4), round(s, 4)
 
 
+def get_risk_limits(
+    chat_id: int | str | None,
+    default_pos: float = MAX_POS_PCT,
+    default_sec: float = MAX_SECTOR_PCT,
+) -> tuple[float, float]:
+    """Ambil batas posisi & sektor per chat (delegasi ke store agar satu sumber)."""
+    if chat_id is None:
+        return float(default_pos), float(default_sec)
+    from core import store
+
+    return store.get_risk_limits(chat_id, default_pos=default_pos, default_sec=default_sec)
+
+
 def inverse_vol_weights(
     quotes: dict[str, dict],
     tickers: list[str],

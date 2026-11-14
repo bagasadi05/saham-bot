@@ -10,8 +10,11 @@ auto-trading, login Stockbit, order API, atau penyimpanan kredensial.
 """
 from __future__ import annotations
 
+import datetime as dt
 import re
 import statistics
+
+import pandas as pd
 
 import config
 from core.reports import esc
@@ -220,6 +223,7 @@ def format_journal_report(
     *,
     open_real_count: int = 0,
     periodic_title: str | None = None,
+    diagnostics: dict | None = None,
 ) -> str:
     """Susun laporan realisasi & slippage: ASLI vs PAPER terpisah tegas."""
     header = periodic_title or "📒 <b>JURNAL EKSEKUSI STOCKBIT &amp; REALISASI</b>"
@@ -267,6 +271,11 @@ def format_journal_report(
             )
         else:
             out.append("• Realisasi tutup: belum ada transaksi JUAL di jurnal (belum bisa hitung Win Rate/PF).")
+
+    if diagnostics and diagnostics.get("n_trades"):
+        diag_text = format_jurnal_diagnostics(diagnostics)
+        if diag_text:
+            out += ["", diag_text]
 
     out += ["", "📋 <b>2. PAPER TRADING — LATIHAN (terpisah dari akun asli)</b>"]
     if paper_sum["n_closed"] == 0:
@@ -329,3 +338,323 @@ def format_journal_history(execs: list[dict]) -> str:
             )
     out += ["", "Ringkasan Win Rate &amp; PF: <code>/jurnal</code>"]
     return "\n".join(out)
+
+
+def _parse_trade_date(raw: str | dt.date | None) -> dt.date | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dt.datetime):
+        return raw.date()
+    if isinstance(raw, dt.date):
+        return raw
+    txt = str(raw).strip()
+    if not txt:
+        return None
+    try:
+        return dt.date.fromisoformat(txt[:10])
+    except ValueError:
+        return None
+
+
+def _slice_ohlcv_window(
+    df: pd.DataFrame | None,
+    entry_date: str | dt.date | None,
+    exit_date: str | dt.date | None,
+) -> pd.DataFrame | None:
+    """Ambil baris OHLCV dalam rentang [entry_date, exit_date] secara ketat."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    work = df.rename(columns={c: str(c).lower() for c in df.columns})
+    if not {"high", "low", "close"}.issubset(work.columns):
+        return None
+    work = work[["high", "low", "close"]].apply(pd.to_numeric, errors="coerce").dropna()
+    if work.empty:
+        return None
+
+    start = _parse_trade_date(entry_date)
+    end = _parse_trade_date(exit_date)
+    if start is not None or end is not None:
+        try:
+            idx_dates = pd.to_datetime(work.index).date
+            mask = pd.Series(True, index=work.index)
+            if start is not None:
+                mask = mask & (idx_dates >= start)
+            if end is not None:
+                mask = mask & (idx_dates <= end)
+            sliced = work[mask.values]
+            if sliced.empty:
+                return None
+            return sliced
+        except Exception:
+            return None
+    return work
+
+
+def compute_trade_excursions(
+    df: pd.DataFrame | None,
+    *,
+    entry_price: float,
+    exit_price: float | None = None,
+    sl: float | None = None,
+    entry_date: str | dt.date | None = None,
+    exit_date: str | dt.date | None = None,
+    lots: int = 1,
+) -> dict:
+    """Hitung MAE, MFE, dan R-multiple (bruto & neto setelah 0,40% biaya BEI).
+
+    Jujur terhadap data: tanpa OHLCV jendela masuk-keluar, MAE/MFE bernilai
+    None (`ok=False`); tanpa SL awal yang valid (< entry), R-multiple bernilai
+    None agar tidak mengarang angka risiko.
+    """
+    entry = float(entry_price or 0.0)
+    exit_px = float(exit_price) if exit_price is not None and float(exit_price) > 0 else None
+    sl_px = float(sl) if sl is not None and float(sl) > 0 else None
+    n_lots = max(1, int(lots or 1))
+    fee_hurdle = round((config.IDX_BUY_FEE + config.IDX_SELL_FEE) * 100.0, 2)
+
+    gross_ret_pct = ((exit_px / entry - 1.0) * 100.0) if entry > 0 and exit_px is not None else None
+    net_ret_pct = None
+    if entry > 0 and exit_px is not None:
+        buy_u = entry * (1.0 + config.IDX_BUY_FEE)
+        sell_u = exit_px * (1.0 - config.IDX_SELL_FEE)
+        net_ret_pct = (sell_u / buy_u - 1.0) * 100.0
+
+    risk_per_share = (entry - sl_px) if (entry > 0 and sl_px is not None and sl_px < entry) else None
+    r_gross = None
+    r_net = None
+    if risk_per_share and exit_px is not None:
+        r_gross = round((exit_px - entry) / risk_per_share, 2)
+        buy_u = entry * (1.0 + config.IDX_BUY_FEE)
+        sell_u = exit_px * (1.0 - config.IDX_SELL_FEE)
+        r_net = round((sell_u - buy_u) / risk_per_share, 2)
+
+    window = _slice_ohlcv_window(df, entry_date, exit_date) if entry > 0 else None
+    if window is None or window.empty:
+        return {
+            "ok": False,
+            "reason": "data OHLCV jendela masuk-keluar tidak tersedia",
+            "entry_price": entry,
+            "exit_price": exit_px,
+            "sl": sl_px,
+            "lots": n_lots,
+            "bars_held": 0,
+            "mae_pct": None,
+            "mfe_pct": None,
+            "mae_r": None,
+            "mfe_r": None,
+            "r_multiple": r_net,
+            "r_multiple_gross": r_gross,
+            "gross_return_pct": round(gross_ret_pct, 2) if gross_ret_pct is not None else None,
+            "net_return_pct": round(net_ret_pct, 2) if net_ret_pct is not None else None,
+            "fee_hurdle_pct": fee_hurdle,
+            "beat_bei_fee": (net_ret_pct > 0) if net_ret_pct is not None else None,
+            "capture_ratio": None,
+        }
+
+    min_low = float(window["low"].min())
+    max_high = float(window["high"].max())
+    mae_pct = min(0.0, (min_low / entry - 1.0) * 100.0)
+    mfe_pct = max(0.0, (max_high / entry - 1.0) * 100.0)
+
+    mae_r = round(min(0.0, (min_low - entry) / risk_per_share), 2) if risk_per_share else None
+    mfe_r = round(max(0.0, (max_high - entry) / risk_per_share), 2) if risk_per_share else None
+
+    capture_ratio = None
+    if mfe_pct > 0 and gross_ret_pct is not None:
+        capture_ratio = round(gross_ret_pct / mfe_pct, 2)
+
+    return {
+        "ok": True,
+        "reason": "",
+        "entry_price": entry,
+        "exit_price": exit_px,
+        "sl": sl_px,
+        "lots": n_lots,
+        "bars_held": int(len(window)),
+        "min_low": round(min_low, 2),
+        "max_high": round(max_high, 2),
+        "mae_pct": round(mae_pct, 2),
+        "mfe_pct": round(mfe_pct, 2),
+        "mae_r": mae_r,
+        "mfe_r": mfe_r,
+        "r_multiple": r_net,
+        "r_multiple_gross": r_gross,
+        "gross_return_pct": round(gross_ret_pct, 2) if gross_ret_pct is not None else None,
+        "net_return_pct": round(net_ret_pct, 2) if net_ret_pct is not None else None,
+        "fee_hurdle_pct": fee_hurdle,
+        "beat_bei_fee": (net_ret_pct > 0) if net_ret_pct is not None else None,
+        "capture_ratio": capture_ratio,
+    }
+
+
+def _chronological_execs(execs: list[dict]) -> list[dict]:
+    """Urutkan transaksi dari terlama ke terbaru (aman untuk DB DESC maupun list uji)."""
+    if not execs:
+        return []
+    if all(e.get("id") is not None for e in execs):
+        return sorted(execs, key=lambda e: int(e["id"]))
+    return list(execs)
+
+
+def jurnal_diagnostics(
+    execs: list[dict],
+    bars_by_ticker: dict[str, pd.DataFrame] | None = None,
+) -> dict:
+    """Evaluasi kualitas eksekusi beli & jual nyata: MAE, MFE, R-multiple vs fee BEI 0,40%."""
+    ordered = _chronological_execs(execs)
+    bars_map = {str(k).upper(): v for k, v in (bars_by_ticker or {}).items()}
+    fee_hurdle = round((config.IDX_BUY_FEE + config.IDX_SELL_FEE) * 100.0, 2)
+
+    cycles: dict[str, dict] = {}
+    trades: list[dict] = []
+    buy_slips: list[float] = []
+    sell_slips: list[float] = []
+
+    for e in ordered:
+        t = str(e.get("ticker") or "").upper()
+        side = str(e.get("side") or "").upper()
+        lots_e = int(e.get("lots") or 0)
+        px = float(e.get("exec_price") or 0.0)
+        if e.get("slippage_pct") is not None:
+            if side == "BELI":
+                buy_slips.append(float(e["slippage_pct"]))
+            elif side == "JUAL":
+                sell_slips.append(float(e["slippage_pct"]))
+
+        st = cycles.setdefault(t, {"lots": 0, "cost": 0.0, "entry_date": None, "sl": None})
+        if side == "BELI" and lots_e > 0 and px > 0:
+            if st["lots"] <= 0:
+                st["entry_date"] = e.get("trade_date")
+            st["lots"] += lots_e
+            st["cost"] += lots_e * 100.0 * px
+            if e.get("sl") is not None and float(e["sl"]) > 0:
+                st["sl"] = float(e["sl"])
+        elif side == "JUAL" and lots_e > 0 and px > 0:
+            avg_entry = (
+                st["cost"] / (st["lots"] * 100.0)
+                if st["lots"] > 0
+                else (float(e["avg_entry"]) if e.get("avg_entry") else None)
+            )
+            if not avg_entry or avg_entry <= 0:
+                continue
+            entry_dt = st["entry_date"] or e.get("entry_date")
+            sl_val = st["sl"] or (float(e["sl"]) if e.get("sl") else None)
+            exit_dt = e.get("trade_date")
+            exc = compute_trade_excursions(
+                bars_map.get(t),
+                entry_price=avg_entry,
+                exit_price=px,
+                sl=sl_val,
+                entry_date=entry_dt,
+                exit_date=exit_dt,
+                lots=lots_e,
+            )
+            exc["ticker"] = t
+            exc["entry_date"] = entry_dt
+            exc["exit_date"] = exit_dt
+            exc["net_pnl_pct"] = e.get("net_pnl_pct") if e.get("net_pnl_pct") is not None else exc["net_return_pct"]
+            trades.append(exc)
+
+            if st["lots"] > 0:
+                sold = min(st["lots"], lots_e)
+                st["lots"] -= sold
+                st["cost"] = st["lots"] * 100.0 * avg_entry if st["lots"] > 0 else 0.0
+                if st["lots"] <= 0:
+                    st.update({"lots": 0, "cost": 0.0, "entry_date": None, "sl": None})
+
+    with_ohlcv = [tr for tr in trades if tr["ok"]]
+    with_r = [tr for tr in trades if tr["r_multiple"] is not None]
+    with_cap = [tr for tr in with_ohlcv if tr["capture_ratio"] is not None]
+    maes = [tr["mae_pct"] for tr in with_ohlcv if tr["mae_pct"] is not None]
+    mfes = [tr["mfe_pct"] for tr in with_ohlcv if tr["mfe_pct"] is not None]
+    mae_rs = [tr["mae_r"] for tr in with_ohlcv if tr["mae_r"] is not None]
+    mfe_rs = [tr["mfe_r"] for tr in with_ohlcv if tr["mfe_r"] is not None]
+    r_nets = [tr["r_multiple"] for tr in with_r]
+    r_grosses = [tr["r_multiple_gross"] for tr in with_r if tr["r_multiple_gross"] is not None]
+    caps = [tr["capture_ratio"] for tr in with_cap]
+
+    beat_fee = sum(1 for tr in trades if tr.get("beat_bei_fee") is True)
+    eaten_by_fee = sum(
+        1 for tr in trades
+        if tr.get("gross_return_pct") is not None
+        and tr["gross_return_pct"] > 0
+        and tr.get("beat_bei_fee") is False
+    )
+
+    notes: list[str] = []
+    if trades and eaten_by_fee:
+        notes.append(
+            f"{eaten_by_fee}/{len(trades)} transaksi jual untung tipis bruto "
+            f"tetapi rugi neto tergerus biaya BEI ±{fee_hurdle:.2f}%."
+        )
+    if trades and not with_ohlcv:
+        notes.append("Histori OHLCV belum tersedia untuk menghitung MAE/MFE nyata.")
+    if trades and len(with_r) < len(trades):
+        notes.append(
+            f"{len(trades) - len(with_r)}/{len(trades)} trade tanpa SL awal tersimpan — "
+            "R-multiple tidak dihitung untuk posisi tanpa SL."
+        )
+    if caps and statistics.mean(caps) < 0.45 and mfes and statistics.mean(mfes) >= 3.0:
+        notes.append(
+            f"Rata-rata MFE +{statistics.mean(mfes):.1f}% tetapi hanya menangkap "
+            f"{statistics.mean(caps) * 100:.0f}% puncaknya — pertimbangkan scale-out TP1 & Chandelier trailing."
+        )
+    if buy_slips and statistics.mean(buy_slips) > 0.5:
+        notes.append(
+            f"Slippage beli rata-rata +{statistics.mean(buy_slips):.2f}% — "
+            "patuhi batas kejar agar entry tidak tergerus sebelum biaya BEI."
+        )
+
+    return {
+        "n_trades": len(trades),
+        "n_with_ohlcv": len(with_ohlcv),
+        "n_with_r": len(with_r),
+        "fee_hurdle_pct": fee_hurdle,
+        "beat_fee_count": beat_fee,
+        "eaten_by_fee_count": eaten_by_fee,
+        "avg_mae_pct": round(statistics.mean(maes), 2) if maes else None,
+        "avg_mfe_pct": round(statistics.mean(mfes), 2) if mfes else None,
+        "avg_mae_r": round(statistics.mean(mae_rs), 2) if mae_rs else None,
+        "avg_mfe_r": round(statistics.mean(mfe_rs), 2) if mfe_rs else None,
+        "avg_r_multiple": round(statistics.mean(r_nets), 2) if r_nets else None,
+        "avg_r_gross": round(statistics.mean(r_grosses), 2) if r_grosses else None,
+        "expectancy_r": round(statistics.mean(r_nets), 2) if r_nets else None,
+        "avg_capture_ratio": round(statistics.mean(caps), 2) if caps else None,
+        "avg_buy_slippage_pct": round(statistics.mean(buy_slips), 2) if buy_slips else None,
+        "avg_sell_slippage_pct": round(statistics.mean(sell_slips), 2) if sell_slips else None,
+        "trades": trades,
+        "notes": notes,
+    }
+
+
+def format_jurnal_diagnostics(diag: dict) -> str:
+    """Format ringkasan diagnostik MAE/MFE/R-multiple & efisiensi fee BEI."""
+    if not diag or not diag.get("n_trades"):
+        return ""
+    lines = [
+        f"• Diagnostik kualitas eksekusi ({diag['n_trades']} trade tutup · "
+        f"ambang impas fee BEI {diag['fee_hurdle_pct']:.2f}%):"
+    ]
+    if diag.get("avg_r_multiple") is not None:
+        r_net = f"{diag['avg_r_multiple']:+.2f}R".replace(".", ",")
+        r_gr = f"{diag['avg_r_gross']:+.2f}R".replace(".", ",") if diag.get("avg_r_gross") is not None else "—"
+        lines.append(
+            f"  R-multiple rata-rata: <b>{r_net}</b> neto (bruto {r_gr}, dari {diag['n_with_r']} trade ber-SL)"
+        )
+    else:
+        lines.append("  R-multiple rata-rata: tidak tersedia (SL awal belum tercatat)")
+
+    if diag.get("n_with_ohlcv"):
+        mae = _fmt_pct_id(diag.get("avg_mae_pct"))
+        mfe = _fmt_pct_id(diag.get("avg_mfe_pct"))
+        cap = (
+            f" · tangkap {diag['avg_capture_ratio'] * 100:.0f}% MFE"
+            if diag.get("avg_capture_ratio") is not None else ""
+        )
+        lines.append(f"  MAE rata-rata {mae} · MFE rata-rata {mfe}{cap}")
+    else:
+        lines.append("  MAE / MFE: data OHLCV tidak tersedia")
+
+    for note in diag.get("notes") or []:
+        lines.append(f"  💡 {esc(note)}")
+    return "\n".join(lines)

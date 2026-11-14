@@ -98,19 +98,23 @@ def _pos(ticker, lots, avg, sector):
 
 
 def test_summarize_pnl_bobot_dan_risiko():
+    # STOP_ATR = 1.0 selaras dengan saran.stop_price() (1x ATR, tick BEI):
+    # BBCA 9500 - 250 = 9250 (risk 500 lbr x 250 = 125.000),
+    # TLKM 2800 - 100 = 2700 (risk 200 lbr x 100 = 20.000) -> total 145.000 (2,7%).
     s = portofolio.summarize(
         [_pos("BBCA", 5, 9000, "Financials"), _pos("TLKM", 2, 3000, "Infra")],
         {"BBCA": {"close": 9500, "atr": 250},
          "TLKM": {"close": 2800, "atr": 100}})
     bbca = next(r for r in s["rows"] if r["ticker"] == "BBCA")
     assert bbca["pnl"] == 250_000
-    assert bbca["sl"] == 9000.0            # 9500 - 2x250
-    assert bbca["risk"] == 250_000         # 500 lembar x 500
+    assert bbca["sl"] == 9250.0            # 9500 - 1x250 (tick 25)
+    assert bbca["sl_source"] == "atr"
+    assert bbca["risk"] == 125_000         # 500 lembar x 250
     assert s["value"] == 5_310_000
     assert s["cost"] == 5_100_000
     assert s["pnl"] == 210_000
-    assert s["risk"] == 290_000
-    assert s["risk_pct"] == pytest.approx(5.5, abs=0.1)
+    assert s["risk"] == 145_000
+    assert s["risk_pct"] == pytest.approx(2.7, abs=0.1)
     assert bbca["weight_pct"] > 89
 
 
