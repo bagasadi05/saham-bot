@@ -296,11 +296,18 @@ sampel (12 emiten, 3 tahun) setiap Senin dan **gagal** bila IC rata-rata
 < 0 — alarm dini tanpa menunggu ada yang membuka repo. Laporan tetap
 diunggah sebagai artefak.
 
-**Lisensi.** Kode repo ini MIT (lihat `LICENSE`); data pasar tetap terikat
-ketentuan Yahoo/BEI.
-
 CI GitHub Actions menjalankan lint + seluruh tes offline pada tiap push/PR.
 Build Docker bisa dicek lokal: `docker build --build-arg SKIP_MODEL=1 -t saham-bot:slim .`
+
+## Lisensi
+
+Kode di repo ini berlisensi MIT (lihat [`LICENSE`](LICENSE)). Data pasar yang
+diambil bot berasal dari Yahoo Finance (via `yfinance`) dan data publik BEI,
+dan **tidak** termasuk dalam lisensi MIT: data BEI tidak boleh dipakai untuk
+tujuan komersial tanpa izin tertulis, sedangkan dataset referensi alternatif
+[Dataset-Saham-IDX](https://github.com/wildangunawan/Dataset-Saham-IDX)
+berlisensi CC BY-NC 4.0 (non-komersial). Rincian lengkap ada di bagian
+[Batasan data & lisensi](#batasan-data--lisensi).
 
 ## ⚠️ Disclaimer
 
