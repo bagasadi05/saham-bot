@@ -168,6 +168,40 @@ def _bandar_markup(ticker: str | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _order_ticket(plan: dict, deps) -> list[str]:
+    """Tiket order limit + kapan memasangnya (bukan janji untung)."""
+    entry = float(plan.get("entry") or 0)
+    if entry <= 0:
+        return []
+    sl = float(plan.get("sl") or 0)
+    tp = float(plan.get("tp") or 0)
+    last = float(plan.get("last_price") or entry)
+    lots = int(plan.get("lots") or 0)
+    lot_txt = f"<b>{lots} lot</b>" if lots else "sesuaikan anggaran"
+    chase = float(plan.get("chase_above") or entry)
+    lines = [
+        "🎫 <b>Tiket order limit</b>",
+        f"Limit <b>{deps._money(entry)}</b> · {lot_txt} · "
+        f"SL <b>{deps._money(sl)}</b> · TP <b>{deps._money(tp)}</b>",
+    ]
+    if last > entry:
+        lines.append(
+            f"Patokan penutupan <b>{deps._money(last)}</b> di atas limit — "
+            f"pasang limit di {deps._money(entry)} lalu tunggu harga turun; "
+            f"jangan beli di atas <b>{deps._money(chase)}</b>."
+        )
+    else:
+        lines.append(
+            f"Patokan penutupan <b>{deps._money(last)}</b> ≤ limit — "
+            "bisa dipasang sekarang; order hanya terisi kalau harga menyentuh limit."
+        )
+    lines.append(
+        "Berlaku hari ini (sesi bursa 09.00–16.00 WIB). Kalau tidak tersentuh "
+        "sampai tutup, batalkan dan evaluasi ulang besok."
+    )
+    return lines
+
+
 def _plan_card(p: dict, idx: int, deps) -> str:
     medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(idx, "▫️")
     name = esc(p.get("name") or "")
@@ -607,6 +641,7 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
     if warns:
         out.append("")
         out += ["⚠️ " + esc(w.replace(".", ",")) for w in warns]
+    out += [""] + _order_ticket(plan, deps)
     out += [
         "",
         "📱 <b>Pasang di Stockbit</b>: cari kode → <b>Limit Order</b> (bukan "

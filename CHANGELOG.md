@@ -21,6 +21,9 @@ Perbaikan dari review independen (REVIEW-IMPROVE.md, 8 temuan):
   untuk `BadRequest`; `NetworkError` diteruskan ke `on_error`.
 - **`/status`** ikut menghitung callback tombol dan input teks (dibungkus `timed`),
   dan re-sort BELI yang redundan dihapus.
+- **`/rencana` menampilkan tiket order limit**: harga limit, lot, SL/TP,
+  patokan penutupan, serta kapan dipasang/dibatalkan (termasuk jam bursa),
+  supaya order bisa langsung disalin ke Stockbit.
 - Dokumen: komentar requirements disinkronkan ke 764 tes / 86,05%, typo CHANGELOG
   diperbaiki, README menjelaskan cakupan pengingat dividen.
 

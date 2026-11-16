@@ -208,3 +208,10 @@ def test_rencana_tetap_jujur_bila_gagal_saringan(monkeypatch, tmp_store):
     teks = _teks(upd.effective_message.replies)
     assert "Tidak lolos saringan" in teks
     assert "likuiditas" in teks
+
+def test_rencana_menampilkan_tiket_order_limit(jalankan):
+    store.set_modal(100, 25_000_000)
+    teks = _teks(jalankan("/rencana BBCA 5000000"))
+    assert "Tiket order limit" in teks
+    assert "bisa dipasang sekarang" in teks or "tunggu harga turun" in teks
+    assert "batalkan" in teks

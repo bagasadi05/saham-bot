@@ -379,6 +379,7 @@ def make_plan(
         "sector": c.get("sector"),
         "grade": c.get("grade") or grade(c),
         "price": entry,
+        "last_price": round(float(c.get("price") or entry), 2),
         "entry": entry,
         "sl": sl,
         "tp": tp,
