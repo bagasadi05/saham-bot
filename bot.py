@@ -915,6 +915,34 @@ def load_validation(path: str = VALIDASI_FILE) -> dict | None:
         return None
 
 
+def _kuintil_warning(q: list) -> str | None:
+    """Peringatan bila pola kuintil OOS tidak monoton; None kalau oke/parsial.
+
+    Monoton dianggap oke bila excess Q5 > Q3 > Q1 dan Q2 >= Q1. Bila syarat
+    itu gagal, ekspektasi return per kuintil tidak bisa dibaca langsung.
+    Data parsial (bukan Q1..Q5 lengkap) tidak dinilai — jangan mengarang.
+    """
+    ex = {}
+    for r in q:
+        qi, ev = r.get("quintile"), r.get("excess_pct")
+        if isinstance(qi, int) and isinstance(ev, (int, float)):
+            ex[qi] = float(ev)
+    if set(ex) != {1, 2, 3, 4, 5}:
+        return None
+    reasons = []
+    if ex[2] < ex[1]:
+        reasons.append("Q2 < Q1")
+    if ex[5] <= ex[3]:
+        reasons.append("Q5 ≤ Q3")
+    if ex[3] <= ex[1]:
+        reasons.append("Q3 ≤ Q1")
+    if not reasons:
+        return None
+    return ("⚠️ Kalibrasi kuintil belum monoton (" + "; ".join(reasons)
+            + ") — ekspektasi return per kuintil belum bisa dipercaya; "
+              "pakai peringkat relatifnya saja.")
+
+
 def format_validasi(v: dict) -> str:
     """Susun laporan /validasi. Semua angka berasal dari file hasil uji."""
     m = v.get("meta", {})
@@ -976,6 +1004,9 @@ def format_validasi(v: dict) -> str:
         L.append("<b>4. Kuintil prediksi OOS</b> (excess per 20 hari)")
         L.append("  " + " · ".join(f"Q{r['quintile']} {r['excess_pct']:+.2f}%"
                                     for r in q))
+        warn = _kuintil_warning(q)
+        if warn:
+            L.append(f"  {warn}")
         L.append("")
 
     p = v.get("portfolio")
