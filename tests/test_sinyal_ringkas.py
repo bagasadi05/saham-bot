@@ -110,6 +110,8 @@ def test_peringatan_diterjemahkan_ke_kata_biasa():
         "laba tipis"
     assert sinyal_mod._peringatan({"ok": False, "label": "mahal"}) == \
         "harga sudah mahal"
+    assert sinyal_mod._peringatan({"ok": False, "label": "payout tinggi"}) == \
+        "dividen lebih besar dari laba"
     assert sinyal_mod._peringatan({"ok": True, "label": "sehat"}) == ""
     assert sinyal_mod._peringatan({"ok": None, "label": "belum dinilai"}) == ""
     assert sinyal_mod._peringatan(None) == ""

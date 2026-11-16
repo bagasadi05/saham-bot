@@ -82,6 +82,7 @@ _PERINGATAN_POLOS = {
     "merugi": "perusahaan sedang merugi",
     "ROE tipis": "laba tipis",
     "mahal": "harga sudah mahal",
+    "payout tinggi": "dividen lebih besar dari laba",
 }
 
 

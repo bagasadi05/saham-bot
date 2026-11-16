@@ -3,13 +3,20 @@
 Menilai tiga hal yang bisa dibaca dari data Yahoo — laba, ROE, dan valuasi —
 BUKAN probabilitas naik. Ambangnya ditulis di sini supaya bisa dibantah:
 
-    ROE_MIN  = 8%     di bawah ini = kualitas laba lemah
-    PER_MAX  = 25x    di atas ini  = mahal
-    PBV_MAX  = 4x     di atas ini  = mahal
+    ROE_MIN    = 8%     di bawah ini = kualitas laba lemah
+    PER_MAX    = 25x    di atas ini  = mahal
+    PBV_MAX    = 4x     di atas ini  = mahal
+    PAYOUT_MAX = 100%   di atas ini  = jebakan dividen (dividen > laba)
 
 Data tanpa ketiga angka itu dianggap "belum dinilai" (None), bukan lolos dan
 bukan ditolak — supaya `/sinyal beli bagus` tidak diam-diam membuang emiten
 yang fundamentalnya sekadar gagal diambil.
+
+Payout ratio diambil dari fraksi Yahoo `payoutRatio` yang memang sudah di-fetch
+`core/fundamental.py` (bukan angka karangan). Payout > 100% laba ditolak
+(jebakan dividen); kalau datanya kosong, emiten tetap dinilai dari tiga angka
+lain dan alasannya jujur menyebut "payout ratio tidak tersedia" — tidak
+diisi nol, tidak dikarang, dan bukan alasan penolakan.
 """
 from __future__ import annotations
 
@@ -21,6 +28,7 @@ from core import fundamental
 ROE_MIN = 8.0
 PER_MAX = 25.0
 PBV_MAX = 4.0
+PAYOUT_MAX = 100.0  # persen; di atas ini dividen dibayar > laba
 DAY = 24 * 3600
 CACHE_VERSION = fundamental.CACHE_VERSION
 
@@ -44,6 +52,7 @@ def judge(fund_raw: dict | None) -> dict:
     per = _f(raw.get("per"))
     pbv = _f(raw.get("pbv"))
     roe = fundamental.normalize_roe(raw.get("roe"), unit=raw.get("roe_unit"))
+    payout = fundamental.normalize_payout(raw.get("payout_ratio"))
     bits = []
     if per is not None:
         bits.append(f"PER {per:.1f}".replace(".", ","))
@@ -51,6 +60,8 @@ def judge(fund_raw: dict | None) -> dict:
         bits.append(f"PBV {pbv:.2f}".replace(".", ","))
     if roe is not None:
         bits.append(f"ROE {roe:.1f}%".replace(".", ","))
+    if payout is not None:
+        bits.append(f"Payout {payout:.0f}%")
 
     if per is None and pbv is None and roe is None:
         return {"ok": None, "label": "belum dinilai", "bits": [],
@@ -65,8 +76,14 @@ def judge(fund_raw: dict | None) -> dict:
     if (per is not None and per > PER_MAX) or (pbv is not None and pbv > PBV_MAX):
         return {"ok": False, "label": "mahal", "bits": bits,
                 "reason": "PER/PBV di atas ambang"}
-    return {"ok": True, "label": "sehat", "bits": bits,
-            "reason": "laba positif, ROE cukup, valuasi tidak ekstrem"}
+    if payout is not None and payout > PAYOUT_MAX:
+        return {"ok": False, "label": "payout tinggi", "bits": bits,
+                "reason": f"payout ratio {payout:.0f}% > 100% laba — dividen "
+                          "berisiko tidak berkelanjutan (jebakan dividen)"}
+    reason = "laba positif, ROE cukup, valuasi tidak ekstrem"
+    if payout is None:
+        reason += "; payout ratio tidak tersedia"
+    return {"ok": True, "label": "sehat", "bits": bits, "reason": reason}
 
 
 def passes(kval: dict | None) -> bool:

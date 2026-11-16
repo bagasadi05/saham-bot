@@ -30,6 +30,43 @@ def test_judge_roe_tipis_dan_mahal():
         "mahal"
 
 
+def test_judge_payout_di_atas_laba_gagal_jebakan_dividen():
+    # Fraksi Yahoo 1.25 = 125%: dividen dibayar melebihi laba -> tidak lolos
+    k = kualitas.judge({"per": 12.0, "pbv": 1.4, "roe": 18.0, "payout_ratio": 1.25})
+    assert k["ok"] is False and k["label"] == "payout tinggi"
+    assert "125%" in k["reason"]
+    assert "tidak tersedia" not in k["reason"]
+
+
+def test_judge_payout_fraksi_yahoo_normal_tercatat_di_bits():
+    # Fraksi Yahoo 0.45 = 45% -> tetap sehat dan payout tampil di bits
+    k = kualitas.judge({"per": 12.0, "pbv": 1.4, "roe": 18.0, "payout_ratio": 0.45})
+    assert k["ok"] is True and k["label"] == "sehat"
+    assert "Payout 45%" in k["bits"]
+    assert "tidak tersedia" not in k["reason"]
+
+
+def test_judge_payout_tidak_tersedia_disebut_jujur_bukan_menolak():
+    # Tanpa data payout, emiten tetap dinilai dari tiga angka lain + catatan jujur
+    k = kualitas.judge({"per": 12.0, "pbv": 1.4, "roe": 18.0})
+    assert k["ok"] is True and k["label"] == "sehat"
+    assert "payout ratio tidak tersedia" in k["reason"]
+    assert not any("Payout" in b for b in k["bits"])
+
+
+def test_judge_payout_nol_data_ada_bukan_hilang():
+    # 0 = memang tidak membayar dividen (data ada), bukan data tidak tersedia
+    k = kualitas.judge({"per": 12.0, "pbv": 1.4, "roe": 18.0, "payout_ratio": 0})
+    assert k["ok"] is True
+    assert "Payout 0%" in k["bits"]
+    assert "tidak tersedia" not in k["reason"]
+
+
+def test_judge_merugi_tetap_menang_atas_payout_tinggi():
+    k = kualitas.judge({"per": -5.0, "roe": -3.0, "payout_ratio": 1.5})
+    assert k["label"] == "merugi"
+
+
 def test_judge_tanpa_data_bukan_lolos_bukan_tolak():
     k = kualitas.judge(None)
     assert k["ok"] is None
