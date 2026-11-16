@@ -42,13 +42,24 @@ def fetch(url: str, out: str, tries: int = 60):
             url, headers={"User-Agent": UA, "Range": f"bytes={have}-{end}"})
         try:
             wrote = 0
-            with urllib.request.urlopen(rreq, timeout=120) as r, open(part, "ab") as f:
-                while True:
-                    b = r.read(1024 * 256)
-                    if not b:
-                        break
-                    f.write(b)
-                    wrote += len(b)
+            with urllib.request.urlopen(rreq, timeout=120) as r:
+                status = getattr(r, "status", None)
+                if status is not None and status != 206:
+                    # Server mengabaikan header Range dan mengirim body penuh
+                    # dari offset 0. Mode "ab" akan menggandakan byte -> model
+                    # korup. Mulai ulang dari nol.
+                    print(f"  server mengabaikan Range (HTTP {status}) — "
+                          f"mulai ulang {os.path.basename(out)}", flush=True)
+                    mode = "wb"
+                else:
+                    mode = "ab"
+                with open(part, mode) as f:
+                    while True:
+                        b = r.read(1024 * 256)
+                        if not b:
+                            break
+                        f.write(b)
+                        wrote += len(b)
             if wrote == 0:
                 failures += 1
                 time.sleep(2)

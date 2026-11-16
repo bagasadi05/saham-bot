@@ -8,6 +8,22 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ---
 
+## [Unreleased] — 2026-11-16
+
+Perbaikan dari review independen (REVIEW-IMPROVE.md, 8 temuan):
+
+- **Pengingat dividen tidak lagi hilang saat jaringan gagal**: pengiriman memakai
+  `send_with_retry` dan tanda dedup baru ditulis setelah sukses; cakupan watchlist
+  naik dari 15 menjadi `MAX_WATCH` (30) untuk pengingat dividen dan autoscan pagi.
+- **`download_model.py`** memulai ulang unduhan bila server mengabaikan header
+  `Range` (HTTP 200), mencegah `model.safetensors` korup senyap.
+- **`reply_long`**: fallback teks polos meng-unescape entity HTML dan hanya dipakai
+  untuk `BadRequest`; `NetworkError` diteruskan ke `on_error`.
+- **`/status`** ikut menghitung callback tombol dan input teks (dibungkus `timed`),
+  dan re-sort BELI yang redundan dihapus.
+- Dokumen: komentar requirements disinkronkan ke 764 tes / 86,05%, typo CHANGELOG
+  diperbaiki, README menjelaskan cakupan pengingat dividen.
+
 ## [Unreleased] — 2026-11-14
 
 Ringkasan: Track A (kontrol risiko rezim IHSG defensif + hysteresis turnover),
@@ -25,7 +41,7 @@ dokumentasi proyek), plus hotfix `yfinance` adaptif tanpa `scipy`, cooldown
 kuota/premium EODHD & Alpha Vantage, perbaikan unduhan chunk `download_model.py`,
 dan audit + perbaikan seluruh menu tombol & callback inline (`sg:scan`, `_safe_edit`
 pesan foto/media, input target/budget `manual:alert_add` & `manual:rencana`, serta
-dan ketahanan `do_paket`/`do_scan`/`exec:*`), penyederhanaan menu utama +
+ketahanan `do_paket`/`do_scan`/`exec:*`), penyederhanaan menu utama +
 panduan interaktif langkah demi langkah untuk pemula (`guide:start/beli/jual/cek/pemula`,
 `sub:more`, dan `result_markup` kontekstual), **Mode Pemula vs Expert**
 (`user_mode` & `onboard_state` di `chat_settings`, `mode:menu`, `/mode`),

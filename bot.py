@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import html
 import json
 import logging
 import os
@@ -206,12 +207,15 @@ async def reply_long(message, text: str, reply_markup=None, **kwargs) -> None:
             await send_with_retry(
                 lambda p=part, k=kw: message.reply_text(p, **k),
                 what="kirim laporan")
-        except Exception:
+        except BadRequest:
+            # Parser HTML menolak bagian ini: kirim teks polos. Entity di-unescape
+            # supaya user tidak melihat "&amp;". NetworkError setelah retry habis
+            # TIDAK masuk sini — biarkan on_error yang menangani.
             log.warning("bagian pesan ditolak parser HTML — dikirim sebagai teks polos")
             plain_kw = {k: v for k, v in kw.items() if k != "parse_mode"}
             await send_with_retry(
                 lambda p=part, k=plain_kw: message.reply_text(
-                    re.sub(r"<[^>]+>", "", p), **k),
+                    html.unescape(re.sub(r"<[^>]+>", "", p)), **k),
                 what="kirim laporan (teks polos)")
 
 
@@ -1218,7 +1222,7 @@ async def check_dividend_reminders(app: Application, today: date | None = None) 
     cal_cache: dict[str, dict | None] = {}
     for cid in auto_chats:
         for sym in (await asyncio.to_thread(store.get_watchlist,
-                                            cid))[:15]:
+                                            cid))[:MAX_WATCH]:
             try:
                 if sym not in cal_cache:
                     cal_cache[sym] = await asyncio.to_thread(
@@ -1230,9 +1234,8 @@ async def check_dividend_reminders(app: Application, today: date | None = None) 
                 if days_left not in (3, 1):
                     continue
                 ex_iso = info["ex_date"].isoformat()
-                ok_rem = await asyncio.to_thread(
-                    store.mark_div_reminder, cid, sym, ex_iso, days_left)
-                if not ok_rem:
+                if await asyncio.to_thread(store.has_div_reminder,
+                                           cid, sym, ex_iso, days_left):
                     continue
                 amt = info.get("amount")
                 amt_txt = f" (estimasi {fmt_rp(amt)}/lembar)" if amt else ""
@@ -1242,7 +1245,14 @@ async def check_dividend_reminders(app: Application, today: date | None = None) 
                     f"Ex-date diperkirakan <b>{esc(ex_iso)}</b> ({when}){amt_txt}.\n"
                     "ℹ️ <i>Cek pengumuman resmi emiten di BEI/KSEI. Bukan saran memburu dividen.</i>"
                 )
-                await app.bot.send_message(int(cid), msg_txt, parse_mode=ParseMode.HTML)
+                await send_with_retry(
+                    lambda c=int(cid), m=msg_txt: app.bot.send_message(
+                        c, m, parse_mode=ParseMode.HTML),
+                    what=f"pengingat dividen {sym}")
+                # Tandai SETELAH terkirim: kalau jaringan gagal, pengingat
+                # dicoba lagi pada putaran berikutnya, bukan hilang permanen.
+                await asyncio.to_thread(
+                    store.mark_div_reminder, cid, sym, ex_iso, days_left)
                 sent += 1
                 await asyncio.sleep(.2)
             except Exception:
@@ -1523,14 +1533,8 @@ async def _scan_summary_text(res: dict, intro: str,
                 f"🔴 JUAL <b>{counts.get('JUAL', 0)}</b> · "
                 f"⚪ TAHAN <b>{counts.get('TAHAN', 0)}</b>\n\n"
                 "Lihat: <code>/sinyal</code>")
-    buys_all = await asyncio.to_thread(store.load_market_scan, "BELI")
-    buys_all.sort(
-        key=lambda r: (
-            -(r.get("rel_pct") if r.get("rel_pct") is not None else -1),
-            r.get("ticker", ""),
-        )
-    )
-    buys = buys_all[:5]
+    # SQL sudah ORDER BY rel_pct DESC, ticker — tidak perlu sort ulang.
+    buys = (await asyncio.to_thread(store.load_market_scan, "BELI"))[:5]
     sells = (await asyncio.to_thread(store.load_market_scan, "JUAL"))[:5]
     skipped = int(m.get("skipped") or 0)
     failed = int(m.get("failed") or 0)
@@ -1723,8 +1727,9 @@ def main():
     reg("id", cmd_id)
     reg(["belajar", "learn", "apa"], cmd_belajar)
     ALLOWED_IDS.update(user_ids)
-    app.add_handler(CallbackQueryHandler(menu_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_text_input))
+    app.add_handler(CallbackQueryHandler(timed(menu_callback)))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                   timed(menu_text_input)))
 
     job_queue = app.job_queue
     job_queue.run_repeating(scan_alerts, interval=config.ALERT_SCAN_MINUTES * 60, first=10)

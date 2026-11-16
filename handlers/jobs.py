@@ -193,7 +193,7 @@ async def check_band_alerts(app: Application, bars_fn, deps) -> int:
     analysis_cache: dict[str, tuple[dict, dict, dict] | None] = {}
     for cid in auto_chats:
         for sym in (await asyncio.to_thread(store.get_watchlist,
-                                            cid))[:15]:
+                                            cid))[:deps.MAX_WATCH]:
             try:
                 if sym not in analysis_cache:
                     df = await asyncio.to_thread(bars_fn, sym)

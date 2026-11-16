@@ -552,6 +552,17 @@ def update_score_band(chat_id: int | str, symbol: str, band: str) -> str | None:
         return str(row["band"])
 
 
+def has_div_reminder(chat_id: int | str, symbol: str,
+                     ex_date: str, days_left: int) -> bool:
+    """True bila pengingat (event, H-3/H-1) ini sudah pernah terkirim."""
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM div_reminders WHERE chat_id=? AND symbol=? "
+            "AND ex_date=? AND days=?",
+            (str(chat_id), symbol, ex_date, int(days_left))).fetchone()
+        return row is not None
+
+
 def mark_div_reminder(chat_id: int | str, symbol: str,
                       ex_date: str, days_left: int) -> bool:
     """Catat pengingat dividen; True hanya jika pengingat ini baru pertama kali."""

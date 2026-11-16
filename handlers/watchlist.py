@@ -303,6 +303,8 @@ async def cmd_auto(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
             "🌅 <b>Auto-scan pagi: AKTIF</b>\n"
             " Tiap hari bursa ±08:30 WIB: ringkasan /saran + rekap watchlist "
             "dikirim otomatis di chat ini.\n"
+            f" Pengingat dividen mencakup seluruh watchlist "
+            f"(maks {deps.MAX_WATCH} emiten).\n"
             " Matikan: <code>/auto off</code>", parse_mode=ParseMode.HTML)
     elif sub in ("off", "mati", "nonaktif"):
         await asyncio.to_thread(store.set_auto, chat_id, False)
