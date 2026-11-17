@@ -14,7 +14,7 @@ from datetime import date
 import pandas as pd
 
 from config import IDX_BUY_FEE, IDX_SELL_FEE
-from core import marketcal, powerscore, pricing, regime, relatif, store
+from core import marketcal, powerscore, pricing, regime, relatif, store, universe
 
 log = logging.getLogger("sahambuddy.saran")
 
@@ -229,6 +229,10 @@ def pick(analyzed: list[dict], modal: int | None = None,
 
     # peringkat relatif di dalam universe pemindaian
     items = [a["res"] for a in analyzed if hasattr(a.get("res", {}).get("ind"), "iloc")]
+    for it in items:
+        # sektor dari analisis (yfinance) bila ada, kalau tidak dari peta statis
+        it["sector"] = (it.get("sector")
+                        or universe.sector_of(it.get("ticker", "")) or None)
     relatif.score_universe(items)
     by_ticker = {it["ticker"]: it for it in items}
     for c in cands:
@@ -236,6 +240,9 @@ def pick(analyzed: list[dict], modal: int | None = None,
         c["rel_pct"] = it.get("rel_pct")
         c["rel_quintil"] = it.get("rel_quintil")
         c["rel_ok"] = bool(it.get("rel_ok"))
+        c["rel_pct_sector"] = it.get("rel_pct_sector")
+        c["rel_quintil_sector"] = it.get("rel_quintil_sector")
+        c["rel_sector_ok"] = bool(it.get("rel_sector_ok"))
 
     hold_notes = hold_review(open_recs, by_ticker)
     use_rel = sum(1 for c in cands if c["rel_ok"]) >= relatif.MIN_UNIVERSE

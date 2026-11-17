@@ -1,0 +1,642 @@
+[
+  {
+    "ticker": "AADI",
+    "start": "2025-08-01",
+    "end": null
+  },
+  {
+    "ticker": "AALI",
+    "start": "2016-02-01",
+    "end": "2018-01-31"
+  },
+  {
+    "ticker": "ACES",
+    "start": "2020-02-03",
+    "end": "2022-02-01"
+  },
+  {
+    "ticker": "ACES",
+    "start": "2023-02-01",
+    "end": "2026-02-01"
+  },
+  {
+    "ticker": "ADHI",
+    "start": "2016-02-01",
+    "end": "2019-07-31"
+  },
+  {
+    "ticker": "ADMR",
+    "start": "2024-11-01",
+    "end": null
+  },
+  {
+    "ticker": "ADRO",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "AKRA",
+    "start": "2016-02-01",
+    "end": "2022-02-01"
+  },
+  {
+    "ticker": "AKRA",
+    "start": "2023-02-01",
+    "end": null
+  },
+  {
+    "ticker": "AMMN",
+    "start": "2024-05-02",
+    "end": null
+  },
+  {
+    "ticker": "AMRT",
+    "start": "2022-02-02",
+    "end": null
+  },
+  {
+    "ticker": "ANTM",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "ARTO",
+    "start": "2022-08-01",
+    "end": "2025-11-02"
+  },
+  {
+    "ticker": "ASII",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "ASRI",
+    "start": "2016-02-01",
+    "end": "2017-07-31"
+  },
+  {
+    "ticker": "BBCA",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "BBNI",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "BBRI",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "BBTN",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "BFIN",
+    "start": "2022-02-02",
+    "end": "2023-01-31"
+  },
+  {
+    "ticker": "BJBR",
+    "start": "2017-08-01",
+    "end": "2019-01-31"
+  },
+  {
+    "ticker": "BKSL",
+    "start": "2018-08-01",
+    "end": "2019-01-31"
+  },
+  {
+    "ticker": "BMRI",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "BMTR",
+    "start": "2016-02-01",
+    "end": "2017-01-31"
+  },
+  {
+    "ticker": "BMTR",
+    "start": "2017-08-01",
+    "end": "2018-07-31"
+  },
+  {
+    "ticker": "BREN",
+    "start": "2026-02-02",
+    "end": "2026-05-03"
+  },
+  {
+    "ticker": "BRIS",
+    "start": "2022-08-01",
+    "end": "2025-11-02"
+  },
+  {
+    "ticker": "BRPT",
+    "start": "2017-08-01",
+    "end": "2020-08-02"
+  },
+  {
+    "ticker": "BRPT",
+    "start": "2021-08-02",
+    "end": null
+  },
+  {
+    "ticker": "BSDE",
+    "start": "2016-02-01",
+    "end": "2022-02-01"
+  },
+  {
+    "ticker": "BTPS",
+    "start": "2019-08-01",
+    "end": "2021-08-01"
+  },
+  {
+    "ticker": "BUKA",
+    "start": "2021-09-29",
+    "end": "2025-02-02"
+  },
+  {
+    "ticker": "BUMI",
+    "start": "2017-02-01",
+    "end": "2018-07-31"
+  },
+  {
+    "ticker": "BUMI",
+    "start": "2025-11-03",
+    "end": null
+  },
+  {
+    "ticker": "CPIN",
+    "start": "2016-02-01",
+    "end": "2017-07-31"
+  },
+  {
+    "ticker": "CPIN",
+    "start": "2019-02-01",
+    "end": null
+  },
+  {
+    "ticker": "CTRA",
+    "start": "2019-08-01",
+    "end": "2021-08-01"
+  },
+  {
+    "ticker": "CTRA",
+    "start": "2025-02-03",
+    "end": "2026-05-03"
+  },
+  {
+    "ticker": "CUAN",
+    "start": "2026-05-04",
+    "end": "2026-11-01"
+  },
+  {
+    "ticker": "DEWA",
+    "start": "2026-05-04",
+    "end": null
+  },
+  {
+    "ticker": "DSSA",
+    "start": "2025-11-03",
+    "end": "2026-05-03"
+  },
+  {
+    "ticker": "ELSA",
+    "start": "2016-08-01",
+    "end": "2017-07-31"
+  },
+  {
+    "ticker": "ELSA",
+    "start": "2018-08-01",
+    "end": "2019-07-31"
+  },
+  {
+    "ticker": "ELSA",
+    "start": "2026-11-02",
+    "end": null
+  },
+  {
+    "ticker": "EMTK",
+    "start": "2022-02-02",
+    "end": "2024-05-01"
+  },
+  {
+    "ticker": "EMTK",
+    "start": "2025-11-03",
+    "end": null
+  },
+  {
+    "ticker": "ERAA",
+    "start": "2019-02-01",
+    "end": "2023-01-31"
+  },
+  {
+    "ticker": "ERAA",
+    "start": "2026-11-18",
+    "end": null
+  },
+  {
+    "ticker": "ESSA",
+    "start": "2023-02-01",
+    "end": "2025-07-31"
+  },
+  {
+    "ticker": "ESSA",
+    "start": "2026-05-04",
+    "end": null
+  },
+  {
+    "ticker": "EXCL",
+    "start": "2017-02-01",
+    "end": null
+  },
+  {
+    "ticker": "GGRM",
+    "start": "2016-02-01",
+    "end": "2022-07-31"
+  },
+  {
+    "ticker": "GGRM",
+    "start": "2023-08-01",
+    "end": "2024-10-31"
+  },
+  {
+    "ticker": "GGRM",
+    "start": "2026-11-18",
+    "end": null
+  },
+  {
+    "ticker": "GOTO",
+    "start": "2023-02-01",
+    "end": null
+  },
+  {
+    "ticker": "HEAL",
+    "start": "2025-11-03",
+    "end": "2026-05-03"
+  },
+  {
+    "ticker": "HMSP",
+    "start": "2016-02-01",
+    "end": "2023-01-31"
+  },
+  {
+    "ticker": "HRTA",
+    "start": "2026-05-04",
+    "end": null
+  },
+  {
+    "ticker": "HRUM",
+    "start": "2022-02-02",
+    "end": "2024-10-31"
+  },
+  {
+    "ticker": "ICBP",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "INCO",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "INDF",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "INDY",
+    "start": "2018-02-01",
+    "end": "2020-02-02"
+  },
+  {
+    "ticker": "INDY",
+    "start": "2022-08-01",
+    "end": "2024-01-31"
+  },
+  {
+    "ticker": "INDY",
+    "start": "2026-08-03",
+    "end": null
+  },
+  {
+    "ticker": "INKP",
+    "start": "2018-08-01",
+    "end": null
+  },
+  {
+    "ticker": "INTP",
+    "start": "2016-02-01",
+    "end": "2025-02-02"
+  },
+  {
+    "ticker": "ISAT",
+    "start": "2024-05-02",
+    "end": null
+  },
+  {
+    "ticker": "ITMG",
+    "start": "2018-08-01",
+    "end": null
+  },
+  {
+    "ticker": "JPFA",
+    "start": "2019-08-01",
+    "end": "2023-07-31"
+  },
+  {
+    "ticker": "JPFA",
+    "start": "2025-02-03",
+    "end": null
+  },
+  {
+    "ticker": "JSMR",
+    "start": "2016-02-01",
+    "end": "2022-02-01"
+  },
+  {
+    "ticker": "JSMR",
+    "start": "2024-08-01",
+    "end": "2025-11-02"
+  },
+  {
+    "ticker": "KLBF",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "LPKR",
+    "start": "2016-02-01",
+    "end": "2019-01-31"
+  },
+  {
+    "ticker": "LPPF",
+    "start": "2016-02-01",
+    "end": "2020-08-02"
+  },
+  {
+    "ticker": "LSIP",
+    "start": "2016-02-01",
+    "end": "2018-01-31"
+  },
+  {
+    "ticker": "MAPA",
+    "start": "2025-02-03",
+    "end": "2025-11-02"
+  },
+  {
+    "ticker": "MAPI",
+    "start": "2023-08-01",
+    "end": "2026-11-17"
+  },
+  {
+    "ticker": "MBMA",
+    "start": "2024-02-01",
+    "end": null
+  },
+  {
+    "ticker": "MDKA",
+    "start": "2020-08-03",
+    "end": null
+  },
+  {
+    "ticker": "MEDC",
+    "start": "2018-08-01",
+    "end": "2020-02-02"
+  },
+  {
+    "ticker": "MEDC",
+    "start": "2021-02-01",
+    "end": null
+  },
+  {
+    "ticker": "MIKA",
+    "start": "2020-08-03",
+    "end": "2023-01-31"
+  },
+  {
+    "ticker": "MNCN",
+    "start": "2016-02-01",
+    "end": "2023-01-31"
+  },
+  {
+    "ticker": "MPPA",
+    "start": "2016-02-01",
+    "end": "2017-01-31"
+  },
+  {
+    "ticker": "MTEL",
+    "start": "2024-02-01",
+    "end": "2025-02-02"
+  },
+  {
+    "ticker": "MYRX",
+    "start": "2016-02-01",
+    "end": "2018-07-31"
+  },
+  {
+    "ticker": "NCKL",
+    "start": "2025-11-03",
+    "end": "2026-05-03"
+  },
+  {
+    "ticker": "NCKL",
+    "start": "2026-08-03",
+    "end": "2026-11-17"
+  },
+  {
+    "ticker": "PGAS",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "PGEO",
+    "start": "2024-02-01",
+    "end": "2026-11-17"
+  },
+  {
+    "ticker": "PPRO",
+    "start": "2017-02-01",
+    "end": "2018-01-31"
+  },
+  {
+    "ticker": "PTBA",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "PTMP",
+    "start": "2024-02-01",
+    "end": "2024-05-01"
+  },
+  {
+    "ticker": "PTPP",
+    "start": "2016-02-01",
+    "end": "2022-07-31"
+  },
+  {
+    "ticker": "PWON",
+    "start": "2016-02-01",
+    "end": "2018-07-31"
+  },
+  {
+    "ticker": "PWON",
+    "start": "2019-02-01",
+    "end": "2022-02-01"
+  },
+  {
+    "ticker": "PWON",
+    "start": "2026-11-18",
+    "end": null
+  },
+  {
+    "ticker": "SCMA",
+    "start": "2016-02-01",
+    "end": "2021-01-31"
+  },
+  {
+    "ticker": "SCMA",
+    "start": "2023-02-01",
+    "end": "2024-01-31"
+  },
+  {
+    "ticker": "SCMA",
+    "start": "2025-08-01",
+    "end": "2026-11-01"
+  },
+  {
+    "ticker": "SIDO",
+    "start": "2023-02-01",
+    "end": "2025-07-31"
+  },
+  {
+    "ticker": "SILO",
+    "start": "2016-02-01",
+    "end": "2017-01-31"
+  },
+  {
+    "ticker": "SMGR",
+    "start": "2016-02-01",
+    "end": "2026-08-02"
+  },
+  {
+    "ticker": "SMGR",
+    "start": "2026-11-02",
+    "end": null
+  },
+  {
+    "ticker": "SMRA",
+    "start": "2016-02-01",
+    "end": "2018-01-31"
+  },
+  {
+    "ticker": "SMRA",
+    "start": "2020-08-03",
+    "end": "2021-09-28"
+  },
+  {
+    "ticker": "SMRA",
+    "start": "2024-11-01",
+    "end": "2025-11-02"
+  },
+  {
+    "ticker": "SRIL",
+    "start": "2016-02-01",
+    "end": "2021-01-31"
+  },
+  {
+    "ticker": "SRTG",
+    "start": "2023-02-01",
+    "end": "2024-07-31"
+  },
+  {
+    "ticker": "SSMS",
+    "start": "2016-02-01",
+    "end": "2019-01-31"
+  },
+  {
+    "ticker": "TBIG",
+    "start": "2016-02-01",
+    "end": "2016-07-31"
+  },
+  {
+    "ticker": "TBIG",
+    "start": "2020-02-03",
+    "end": "2024-01-31"
+  },
+  {
+    "ticker": "TINS",
+    "start": "2021-08-02",
+    "end": "2023-07-31"
+  },
+  {
+    "ticker": "TKIM",
+    "start": "2019-02-01",
+    "end": "2022-07-31"
+  },
+  {
+    "ticker": "TLKM",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "TOWR",
+    "start": "2020-02-03",
+    "end": "2026-08-02"
+  },
+  {
+    "ticker": "TPIA",
+    "start": "2018-02-01",
+    "end": "2020-02-02"
+  },
+  {
+    "ticker": "TPIA",
+    "start": "2021-02-01",
+    "end": "2024-01-31"
+  },
+  {
+    "ticker": "TRAM",
+    "start": "2018-02-01",
+    "end": "2018-07-31"
+  },
+  {
+    "ticker": "UNTR",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "UNVR",
+    "start": "2016-02-01",
+    "end": null
+  },
+  {
+    "ticker": "WIFI",
+    "start": "2026-05-04",
+    "end": null
+  },
+  {
+    "ticker": "WIKA",
+    "start": "2016-02-01",
+    "end": "2023-01-31"
+  },
+  {
+    "ticker": "WSBP",
+    "start": "2018-02-01",
+    "end": "2019-07-31"
+  },
+  {
+    "ticker": "WSKT",
+    "start": "2016-02-01",
+    "end": "2020-08-02"
+  },
+  {
+    "ticker": "WSKT",
+    "start": "2022-02-02",
+    "end": "2023-01-31"
+  }
+]

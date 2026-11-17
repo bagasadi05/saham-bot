@@ -93,6 +93,23 @@ def test_classify_fallback_uses_technical_score_when_relative_unavailable():
     assert sell == "JUAL"
 
 
+def test_classify_shows_sector_percentile_when_available():
+    sig, reason = screener.classify(
+        120, 115, 110, 60, 0.5, 5, 85, 5, True, 50,
+        rel_pct_sector=96, rel_sector_ok=True)
+    assert sig == "BELI"
+    assert "di sektornya 96/100" in reason
+    # tanpa skor sektor -> alasan sama seperti dulu, tanpa embel-embel
+    _, reason_plain = screener.classify(
+        120, 115, 110, 60, 0.5, 5, 85, 5, True, 50)
+    assert "di sektornya" not in reason_plain
+    # skor sektor TIDAK mengubah sinyal: tetap pakai persentil global
+    sig_low, _ = screener.classify(
+        120, 115, 110, 60, 0.5, 5, 55, 3, True, 50,
+        rel_pct_sector=99, rel_sector_ok=True)
+    assert sig_low == "TAHAN"
+
+
 # --------------------------------------------------------------- evaluate
 def test_evaluate_skips_short_history_and_attaches_names():
     frames = {

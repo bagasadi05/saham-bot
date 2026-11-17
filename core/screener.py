@@ -177,8 +177,15 @@ def _round_buy_levels(close: float, atr: float | None) -> tuple[float, float | N
 
 
 def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
-             rel_pct, rel_quintil, rel_ok, tech_pct) -> tuple[str, str]:
-    """Tentukan BELI / JUAL / TAHAN + alasan singkat (tanpa klaim berlebihan)."""
+             rel_pct, rel_quintil, rel_ok, tech_pct,
+             rel_pct_sector=None, rel_sector_ok=False) -> tuple[str, str]:
+    """Tentukan BELI / JUAL / TAHAN + alasan singkat (tanpa klaim berlebihan).
+
+    Bila peringkat di dalam sektor tersedia (rel_sector_ok), persentil sektor
+    ikut ditampilkan — saham bisa biasa saja secara global tapi terbaik di
+    sektornya, atau sebaliknya. Peringkat sektor TIDAK mengubah sinyal:
+    ambang BELI/JUAL tetap memakai persentil global yang tervalidasi OOS.
+    """
     if sma50 is None or close is None:
         return "TAHAN", "Riwayat harga terlalu pendek — tren belum terbentuk"
     up = (close > sma50
@@ -189,6 +196,9 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
             and (macd_hist is None or macd_hist < 0))
     rsi_show = 50.0 if rsi_v is None else rsi_v
     chase = ret20d is not None and ret20d > MAX_CHASE
+    sec_txt = ""
+    if rel_sector_ok and rel_pct_sector is not None:
+        sec_txt = f" · di sektornya {rel_pct_sector:.0f}/100"
 
     if rel_ok and rel_pct is not None:
         pct = f"{rel_pct:.0f}"
@@ -196,11 +206,11 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
         if up and rel_pct >= BUY_PCT and 40 <= rsi_show <= 75 and not chase:
             return ("BELI",
                     f"Tren naik (MA20 > MA50, MACD+), RSI {rsi_show:.0f}, "
-                    f"persentil {pct}{q}")
+                    f"persentil {pct}{q}{sec_txt}")
         if down and rel_pct <= SELL_PCT and rsi_show < 50:
             return ("JUAL",
                     f"Tren turun (MA20 < MA50, MACD−), RSI {rsi_show:.0f}, "
-                    f"persentil {pct}{q}")
+                    f"persentil {pct}{q}{sec_txt}")
         extra = " — sudah naik tajam, jangan dikejar" if chase and up else ""
         return ("TAHAN", f"Tren/peringkat belum selaras{extra}")
 
@@ -267,6 +277,7 @@ def _evaluate_detailed(
                 "ticker": sym, "ind": ind, "df": df,
                 "quality": qual, "stale_days": stale_days,
                 "recent_zero_vol": _recent_zero_vol_bars(df, 20),
+                "sector": universe.sector_of(sym),
             })
         except Exception:
             log.exception("indikator gagal untuk %s", sym)
@@ -318,9 +329,12 @@ def _evaluate_detailed(
         rel_pct = _f(it.get("rel_pct"))
         rel_quintil = it.get("rel_quintil") if it.get("rel_ok") else None
         rel_ok = bool(it.get("rel_ok"))
+        rel_pct_sector = _f(it.get("rel_pct_sector")) if it.get("rel_sector_ok") else None
 
         signal, reason = classify(close, sma20, sma50, rsi_v, hist, ret20d,
-                                  rel_pct, rel_quintil, rel_ok, tech_pct)
+                                  rel_pct, rel_quintil, rel_ok, tech_pct,
+                                  rel_pct_sector=rel_pct_sector,
+                                  rel_sector_ok=bool(it.get("rel_sector_ok")))
 
         dormant = recent_zero_vol >= MAX_ZERO_VOL_RECENT or q_flags.get("volume_nol", 0) >= 10
         if signal == "BELI" and dormant:
@@ -363,6 +377,11 @@ def _evaluate_detailed(
             "value_avg20": round(value_avg20, 0) if value_avg20 is not None else None,
             "tech_score": round(tech_pct, 1) if tech_pct is not None else None,
             "rel_pct": round(rel_pct, 1) if rel_pct is not None else None,
+            "sector": it.get("sector") or None,
+            "rel_pct_sector": (round(rel_pct_sector, 1)
+                               if rel_pct_sector is not None else None),
+            "rel_quintil_sector": (it.get("rel_quintil_sector")
+                                   if it.get("rel_sector_ok") else None),
             "signal": signal,
             "reason": reason,
             "entry": entry,

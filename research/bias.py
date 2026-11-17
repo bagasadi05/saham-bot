@@ -8,6 +8,11 @@ Format `--membership` (JSON):
     [{"ticker": "BBCA", "start": "2020-01-01", "end": "2024-12-31"}, ...]
 atau {"membership": [ ... ]}
 
+`end` boleh `null` — artinya masih anggota saat data dikumpulkan.
+Baris tanpa `ticker`/`start` tetap ditolak; `end` yang hilang (bukan null)
+dianggap masih anggota juga, tapi dicatat sebagai null eksplisit di
+data yang disimpan.
+
 Pakai:
     python research/bias.py --membership universe_membership.json
     python research/bias.py --dry-run          # tetap butuh file membership
@@ -19,11 +24,16 @@ import json
 import os
 import sys
 
-REQUIRED = ("ticker", "start", "end")
+REQUIRED = ("ticker", "start")
 
 
 def load_membership(path: str) -> list[dict]:
-    """Baca dan validasi daftar keanggotaan universe."""
+    """Baca dan validasi daftar keanggotaan universe.
+
+    `end` null (atau tidak ada) = masih anggota; disimpan sebagai None.
+    `ticker`/`start` yang hilang tetap ditolak keras — tanpa itu angkanya
+    tidak bisa dihitung tanpa mengarang.
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"{path} tidak ada — butuh keanggotaan universe point-in-time "
@@ -40,8 +50,10 @@ def load_membership(path: str) -> list[dict]:
         missing = [k for k in REQUIRED if not row.get(k)]
         if missing:
             raise ValueError(f"baris {i}: field wajib hilang: {', '.join(missing)}")
+        end = row.get("end")
         clean.append({"ticker": str(row["ticker"]).upper().replace(".JK", ""),
-                      "start": str(row["start"])[:10], "end": str(row["end"])[:10]})
+                      "start": str(row["start"])[:10],
+                      "end": str(end)[:10] if end else None})
     return clean
 
 

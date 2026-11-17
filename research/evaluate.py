@@ -41,6 +41,7 @@ from core import analysis, data, marketcal, saran  # noqa: E402
 WARMUP = 210
 MIN_TICKERS_PER_DATE = 8
 UNIVERSE_NAME = "LQ45_2026"   # komposisi saat evaluasi dijalankan
+ROUND_TRIP_COST = 0.004       # biaya transaksi pulang-pergi BEI (beli 0,15% + jual 0,25%)
 
 
 # ---------------------------------------------------------------- data
@@ -81,6 +82,8 @@ def build_dataset(tickers: list[str], period: str, horizon: int) -> pd.DataFrame
                 "score": float(sc["pct"]),
                 "rating": sc["rating"],
                 "fwd": float(fwd[i]),
+                # forward return bersih-biaya pulang-pergi BEI (0,40%)
+                "fwd_net": float(fwd[i]) - ROUND_TRIP_COST,
                 # fitur kontinu (kandidat skor v2)
                 "f_close_sma50": float(r["close"] / r["sma50"] - 1) if pd.notna(r["sma50"]) else np.nan,
                 "f_close_sma200": float(r["close"] / r["sma200"] - 1) if pd.notna(r["sma200"]) else np.nan,
@@ -498,6 +501,7 @@ def render_md(res: dict) -> str:
     s = res["ic_score"]
     L.append("| metrik | nilai |\n|---|---|")
     L.append(f"| rata-rata IC | {s['mean_ic']} |")
+    L.append(f"| rata-rata IC bersih-biaya | {res.get('ic_score_net', {}).get('mean_ic')} |")
     L.append(f"| IR (mean/std) | {s['ir']} |")
     L.append(f"| t-stat (naif) | {s['t']} |")
     L.append(f"| t-stat HAC (Newey-West) | {s.get('t_hac')} |")
@@ -644,6 +648,10 @@ def main():
 
     feats = [c for c in df.columns if c.startswith("f_")]
     ic_score = xs_ic(df, "score")
+    # hitung IC bersih-biaya (fallback untuk cache dataset lama tanpa fwd_net)
+    if "fwd_net" not in df.columns:
+        df["fwd_net"] = df["fwd"] - ROUND_TRIP_COST
+    ic_score_net = xs_ic(df, "score", ret="fwd_net")
     wf, oos_deciles, oos_pred = walk_forward(
         df, feats, args.horizon, [2022, 2023, 2024, 2025, 2026],
         args.embargo)
@@ -665,6 +673,7 @@ def main():
             "generated_wib": marketcal.now_wib().isoformat(timespec="seconds"),
         },
         "ic_score": ic_summary(ic_score, args.horizon),
+        "ic_score_net": ic_summary(ic_score_net, args.horizon),
         "ic_timeseries": time_series_ic(df, "score"),
         "deciles": decile_table(df, "score"),
         "ratings": rating_table(df),

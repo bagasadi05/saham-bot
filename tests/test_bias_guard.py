@@ -46,3 +46,18 @@ def test_row_without_dates_is_rejected(tmp_path):
     path.write_text(json.dumps([{"ticker": "BBCA"}]), encoding="utf-8")
     with pytest.raises(ValueError):
         bias.load_membership(str(path))
+
+
+def test_open_ended_membership_end_null_is_still_member(tmp_path, capsys):
+    path = tmp_path / "terbuka.json"
+    path.write_text(json.dumps([
+        {"ticker": "BBCA", "start": "2016-02-01", "end": None},
+        {"ticker": "BUKA", "start": "2021-09-29", "end": "2025-02-02"},
+    ]), encoding="utf-8")
+
+    rows = bias.load_membership(str(path))
+    assert rows[0] == {"ticker": "BBCA", "start": "2016-02-01", "end": None}
+    assert rows[1]["end"] == "2025-02-02"
+
+    assert bias.main(["--membership", str(path), "--dry-run"]) == 0
+    assert "2 baris" in capsys.readouterr().out

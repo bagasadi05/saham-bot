@@ -454,6 +454,45 @@ tersedia (keputusan pemilik, 2026-11-12).
 
 ---
 
+## Z-score relatif per sektor (17 Nov 2026)
+
+Sinyal relatif 12 faktor kini dihitung dua lapis: global (yang tervalidasi
+OOS, IC +0,0304) dan **di dalam sektornya sendiri**. Alasannya: membandingkan
+momentum bank dengan momentum tambang itu apel vs jeruk — saham yang biasa
+saja secara global bisa jadi yang terbaik di sektornya, dan sebaliknya.
+
+- **Sumber sektor**: `data/idx_sectors.json` — 916 emiten, 11 sektor gaya
+  yfinance (Financial Services 103, Basic Materials 98, Energy 58,
+  Industrials 176, Consumer Defensive 127, Consumer Cyclical 125,
+  Healthcare 40, Technology 36, Real Estate 89, Communication Services 52,
+  Utilities 12), diambil 17 Nov 2026 dari daftar publik tweenvest.com.
+  API IDX diblokir (403) dan Yahoo rate-limit (429) dari VM ini, jadi rute
+  yfinance/`fzn0x/idx` tidak bisa dipakai hari itu; `fzn0x/idx` v0.8.3
+  sudah terpasang di `~/.local/bin/idx` untuk dipakai nanti.
+  29 kode universe tak terpetakan (kemungkinan sudah tidak aktif).
+- **Aturan**: kelompok sektor < 8 emiten usable → tidak ada skor sektor
+  (`rel_sector_ok=False`, nilai None) — bukan memakai angka global yang
+  disamarkan. Peringkat global tidak berubah; ambang sinyal BELI/JUAL tetap
+  memakai persentil global. Skor sektor belum punya validasi OOS sendiri:
+  ia konteks, bukan penentu sinyal — jangan diklaim sebagai bukti.
+- **Tindak lanjut**: builder regenerasi `tools/build_sectors.py` (kandidat
+  sumber: yfinance `.info` bila rate-limit reda); validasi OOS skor sektor
+  bila ada data histori per sektor; bila skor sektor terbukti, pertimbangkan
+  memakainya sebagai tie-breaker ranking `/saran`.
+
+## Keanggotaan LQ45 point-in-time (Track B langkah 1, 17 Nov 2026)
+
+Data keanggotaan LQ45 Feb 2016 – Nov 2026 sudah dirangkai:
+`research/lq45_membership_2016-2026.json` (128 interval, 98 emiten, 45
+masih anggota) + provenance `research/lq45_membership_SOURCES.md`.
+Loader `research/bias.py` diperbaiki agar menerima `end: null` (masih
+anggota). **Belum ada angka bias** — pengukuran butuh `build_dataset`
+difilter per tanggal keanggotaan + evaluasi 10 tahun dua kali, dan data
+harga 10 tahun tidak bisa ditarik dari VM ini sekarang (Yahoo rate-limit;
+cache hanya 1y/6mo). Caveat: Mei 2019 missing (diperlakukan no-change
+secara inferensi), tanggal efektif Nov 2024 inferensi, pasangan
+BUKA/SMRA Sep 2021 deduksi eliminasi, baseline Feb 2016 left-censored.
+
 ## Urutan kerja yang disarankan (setelah sesi ini)
 
 | # | Pekerjaan | Kenapa sekarang | Ukuran selesai |

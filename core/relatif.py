@@ -112,23 +112,8 @@ def zscore(factors: dict[str, float], stats: dict[str, tuple[float, float]]) -> 
     return total
 
 
-def score_universe(items: list[dict]) -> list[dict]:
-    """Beri peringkat relatif untuk sekumpulan emiten pada tanggal yang sama.
-
-    items: [{"ticker": str, "ind": DataFrame indikator, ...}]
-    Mengembalikan list yang sama dengan tambahan:
-        rel_z       skor mentah (semakin tinggi semakin baik)
-        rel_pct     persentil 0–100 di dalam universe
-        rel_quintil 1–5 (5 = paling menarik menurut model)
-        rel_ok      False kalau universe terlalu kecil / data tak cukup
-    """
-    usable = [it for it in items if hasattr(it.get("ind"), "iloc")]
-    if len(usable) < MIN_UNIVERSE:
-        for it in items:
-            it.update(rel_z=None, rel_pct=None, rel_quintil=None, rel_ok=False)
-        return items
-
-    feats = [factors_from_ind(it["ind"]) for it in usable]
+def _stats_for(feats: list[dict]) -> dict[str, tuple[float, float]]:
+    """Rata-rata & simpangan baku per faktor (samakan std pandas, ddof=1)."""
     stats = {}
     for name in WEIGHTS:
         vals = [f[name] for f in feats if not pd.isna(f.get(name, float("nan")))]
@@ -139,11 +124,18 @@ def score_universe(items: list[dict]) -> list[dict]:
             stats[name] = (mu, math.sqrt(var))
         else:
             stats[name] = (0.0, 0.0)   # fitur tak tersedia → diabaikan
+    return stats
 
-    zscores = [zscore(f, stats) for f in feats]
+
+def _assign_pct_quintile(usable: list[dict], zscores: list[float],
+                         z_key: str, pct_key: str, q_key: str) -> None:
+    """Isi skor z, persentil & kuintil untuk satu kelompok (global/sektor).
+
+    Penanganan tie adil: nilai z yang sama persis mendapat persentil
+    rata-rata grup.
+    """
     order = sorted(range(len(usable)), key=lambda idx: zscores[idx])
     n = len(order)
-    # Penanganan tie adil: nilai z yang sama persis mendapat persentil rata-rata grup
     i = 0
     while i < n:
         j = i + 1
@@ -156,16 +148,87 @@ def score_universe(items: list[dict]) -> list[dict]:
         for k in range(i, j):
             idx = order[k]
             usable[idx].update(
-                rel_z=round(zscores[idx], 5),
-                rel_pct=round(pct, 1),
-                rel_quintil=q,
-                rel_ok=True,
+                **{z_key: round(zscores[idx], 5), pct_key: round(pct, 1),
+                   q_key: q},
             )
         i = j
+
+
+def score_universe(items: list[dict]) -> list[dict]:
+    """Beri peringkat relatif untuk sekumpulan emiten pada tanggal yang sama.
+
+    items: [{"ticker": str, "ind": DataFrame indikator, "sector": str | None, ...}]
+    Mengembalikan list yang sama dengan tambahan:
+        rel_z / rel_pct / rel_quintil / rel_ok
+            peringkat GLOBAL (tidak berubah sejak evaluasi OOS).
+        rel_z_sector / rel_pct_sector / rel_quintil_sector / rel_sector_ok
+            peringkat DI DALAM sektornya sendiri — hanya bila item membawa
+            "sector" dan kelompok sektor itu berisi >= MIN_UNIVERSE emiten
+            yang usable. Kelompok yang terlalu kecil atau tanpa sektor
+            mendapat rel_sector_ok=False dan nilai sektor None (jujur:
+            bukan memakai angka global yang disamarkan sebagai skor sektor).
+        rel_sector      nama sektor yang dipakai (atau None)
+        rel_sector_n    jumlah emiten usable dalam kelompok sektor itu
+    """
+    usable = [it for it in items if hasattr(it.get("ind"), "iloc")]
+    if len(usable) < MIN_UNIVERSE:
+        for it in items:
+            sec = it.get("sector")
+            sec = sec.strip() if isinstance(sec, str) else ""
+            it.update(rel_z=None, rel_pct=None, rel_quintil=None, rel_ok=False,
+                      rel_z_sector=None, rel_pct_sector=None,
+                      rel_quintil_sector=None, rel_sector_ok=False,
+                      rel_sector=sec or None, rel_sector_n=0)
+        return items
+
+    feats = [factors_from_ind(it["ind"]) for it in usable]
+    stats = _stats_for(feats)
+    zscores = [zscore(f, stats) for f in feats]
+    _assign_pct_quintile(usable, zscores, "rel_z", "rel_pct", "rel_quintil")
+    for it in usable:
+        it["rel_ok"] = True
+
+    # peringkat di dalam sektor (statistik per kelompok, bukan global)
+    groups: dict[str, list[int]] = {}
+    for pos, it in enumerate(usable):
+        sec = it.get("sector")
+        sec = sec.strip() if isinstance(sec, str) else ""
+        if sec:
+            groups.setdefault(sec, []).append(pos)
+    for sec, positions in groups.items():
+        n_group = len(positions)
+        for pos in positions:
+            usable[pos]["rel_sector"] = sec
+            usable[pos]["rel_sector_n"] = n_group
+        if n_group < MIN_UNIVERSE:
+            for pos in positions:
+                usable[pos].update(rel_z_sector=None, rel_pct_sector=None,
+                                   rel_quintil_sector=None,
+                                   rel_sector_ok=False)
+            continue
+        sub_feats = [feats[p] for p in positions]
+        sub_stats = _stats_for(sub_feats)
+        sub_z = [zscore(f, sub_stats) for f in sub_feats]
+        sub_items = [usable[p] for p in positions]
+        _assign_pct_quintile(sub_items, sub_z,
+                             "rel_z_sector", "rel_pct_sector",
+                             "rel_quintil_sector")
+        for it in sub_items:
+            it["rel_sector_ok"] = True
+
     # emiten yang datanya tidak layak tetap diberi status jujur
     for it in items:
         if not it.get("rel_ok"):
-            it.update(rel_z=None, rel_pct=None, rel_quintil=None, rel_ok=False)
+            sec = it.get("sector")
+            sec = sec.strip() if isinstance(sec, str) else ""
+            it.update(rel_z=None, rel_pct=None, rel_quintil=None, rel_ok=False,
+                      rel_z_sector=None, rel_pct_sector=None,
+                      rel_quintil_sector=None, rel_sector_ok=False,
+                      rel_sector=sec or None, rel_sector_n=0)
+        elif not it.get("rel_sector"):
+            it.update(rel_z_sector=None, rel_pct_sector=None,
+                      rel_quintil_sector=None, rel_sector_ok=False,
+                      rel_sector=None, rel_sector_n=0)
     return items
 
 
