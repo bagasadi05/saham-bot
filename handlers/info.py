@@ -115,6 +115,19 @@ async def do_validasi(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps,
                           reply_markup=rm)
 
 
+def jobs_status_line(job_status: dict | None) -> str:
+    """Ringkas status job terjadwal untuk /status (satu baris, HTML aman)."""
+    js = job_status or {}
+    bad = [(n, st) for n, st in sorted(js.items()) if st.get("fails")]
+    if bad:
+        return "Job bermasalah: " + " · ".join(
+            f"{esc(n)} ({st['fails']}x, {esc(st.get('last_error') or '—')[:60]})"
+            for n, st in bad) + "\n"
+    if js:
+        return f"Job terjadwal: {len(js)} terpantau, tidak ada kegagalan\n"
+    return ""
+
+
 async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     """Kesehatan bot: uptime, error, isi store, cache, status bursa."""
     user = update.effective_user
@@ -145,6 +158,7 @@ async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
             f"Snapshot /scan: bar {esc(td_txt)} | lolos {ok_n} "
             f"(dilewati basi {st_n}, kualitas {ql_n}, perbaikan bar {fl_n})\n"
         )
+    jobs_ln = jobs_status_line(getattr(deps, "JOB_STATUS", {}) or {})
     await update.effective_message.reply_text(
         "🩺 <b>Status SahamBuddy</b>\n"
         f"Uptime: {jam}j {menit}m | perintah: {deps.STATS['commands']} | "
@@ -158,6 +172,7 @@ async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         f"Histori sinyal: {h.get('total', 0)} baris "
         f"({h.get('pending', 0)} menunggu hasil)\n"
         f"{scan_ln}"
+        f"{jobs_ln}"
         f"Bursa: {'BUKA' if marketcal.market_open() else 'tutup'} | "
         f"hari ini {'hari bursa' if marketcal.is_trading_day(marketcal.now_wib().date()) else 'libur'}",
         parse_mode=ParseMode.HTML)

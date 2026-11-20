@@ -8,6 +8,16 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ---
 
+## [Unreleased] — 2026-11-20
+
+- **Gerbang coverage dinaikkan 75% → 86%** dan disamakan di CI, Makefile, dan README
+  (realitas 86,73%; `bot.py` sebelumnya 79%).
+- **Job terjadwal berteriak saat gagal**: `job_guard` mengirim alert admin
+  (best-effort, tidak melempar error) dan mencatat status per job; `/status`
+  menampilkan job bermasalah beserta error terakhirnya.
+- **Tes wiring `main()`**: 31 perintah, callback/teks, 7 job, error handler, dan
+  polling dipastikan terdaftar tanpa memanggil Telegram atau jaringan.
+
 ## [Unreleased] — 2026-11-16
 
 Perbaikan dari review independen (REVIEW-IMPROVE.md, 8 temuan):

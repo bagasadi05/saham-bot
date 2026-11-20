@@ -91,6 +91,8 @@ WIB = ZoneInfo("Asia/Jakarta")
 
 # Statistik ringan untuk /status (memori saja — hilang saat restart)
 STATS = {"commands": 0, "errors": 0, "ms": 0.0}
+# Status job terjadwal (memori; hilang saat restart) — dipakai /status dan alert admin.
+JOB_STATUS: dict[str, dict] = {}
 STARTED_AT = time.time()
 
 # Admin /status: env ADMIN_IDS; kosong = semua pemakai bot (bot pribadi)
@@ -1634,7 +1636,49 @@ async def notify_admin(app: Application, text: str) -> bool:
         return False
 
 
+def _job_mark(name: str, ok: bool, error: str = "") -> None:
+    """Catat hasil satu putaran job tanpa pernah melempar error."""
+    st = JOB_STATUS.setdefault(name, {"runs": 0, "fails": 0, "last_ok": "",
+                                      "last_error": "", "last_error_at": ""})
+    st["runs"] += 1
+    now = marketcal.now_wib().strftime("%Y-%m-%d %H:%M")
+    if ok:
+        st["last_ok"] = now
+        st["last_error"] = ""
+        st["last_error_at"] = ""
+    else:
+        st["fails"] += 1
+        st["last_error"] = error[:200]
+        st["last_error_at"] = now
+
+
+def job_guard(name: str):
+    """Bungkus job: gagal -> log + alert admin, sukses -> jejak di /status.
+
+    Job latar tidak punya user yang menunggu jawaban; tanpa ini kegagalan
+    hanya muncul di log dan bisa berhari-hari tanpa diketahui.
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        async def wrapper(app, *args, **kwargs):
+            try:
+                result = await fn(app, *args, **kwargs)
+            except Exception as exc:
+                _job_mark(name, False, f"{type(exc).__name__}: {exc}")
+                log.exception("job %s gagal", name)
+                await notify_admin(
+                    app,
+                    f"⚠️ <b>Job gagal: {esc(name)}</b>\n"
+                    f"<code>{esc(str(exc)[:300])}</code>")
+                return None
+            _job_mark(name, True)
+            return result
+        return wrapper
+    return deco
+
+
 # ------------------------- job terjadwal (kode di handlers/jobs.py)
+@job_guard("morning-scan")
 async def morning_scan(app: Application):
     await jobs_handler.morning_scan(app, sys.modules[__name__])
 
@@ -1644,6 +1688,7 @@ async def check_band_alerts(app: Application, bars_fn) -> int:
                                                 sys.modules[__name__])
 
 
+@job_guard("fill-open")
 async def fill_open(app: Application):
     await jobs_handler.fill_open(app, sys.modules[__name__])
 
@@ -1656,18 +1701,22 @@ async def check_zone_alerts(app: Application, bars) -> None:
     await jobs_handler.check_zone_alerts(app, bars, sys.modules[__name__])
 
 
+@job_guard("scan-alerts")
 async def scan_alerts(app: Application):
     await jobs_handler.scan_alerts(app, sys.modules[__name__])
 
 
+@job_guard("backup-store")
 async def backup_job(app: Application):
     await jobs_handler.backup_job(app, sys.modules[__name__])
 
 
+@job_guard("full-market-scan")
 async def full_market_scan_job(app: Application):
     await jobs_handler.full_market_scan_job(app, sys.modules[__name__])
 
 
+@job_guard("weekly-journal")
 async def weekly_journal_report(app: Application):
     await jobs_handler.weekly_journal_report(app, sys.modules[__name__])
 
