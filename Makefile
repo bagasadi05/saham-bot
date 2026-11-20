@@ -8,7 +8,7 @@ test:
 	pytest
 
 coverage:
-	pytest --cov=core --cov=handlers --cov=bot --cov=config --cov-report=term-missing --cov-fail-under=75
+	pytest --cov=core --cov=handlers --cov=bot --cov=config --cov-report=term-missing --cov-fail-under=86
 
 lint:
 	ruff check .

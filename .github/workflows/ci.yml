@@ -31,7 +31,7 @@ jobs:
       - name: Test + coverage
         run: >
           pytest --cov=core --cov=handlers --cov=bot --cov=config
-          --cov-report=term-missing --cov-report=xml --cov-fail-under=75
+          --cov-report=term-missing --cov-report=xml --cov-fail-under=86
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4
