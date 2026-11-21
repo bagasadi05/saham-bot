@@ -483,6 +483,8 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
             points -= 1
             b_status, b_head = "bad", "negatif"
             facts.append((-2, f"Sentimen berita negatif ({n_pct:+.0f})."))
+        elif (nsent or {}).get("label") == "CAMPURAN":
+            b_status, b_head = "warn", "campuran"
         else:
             b_status, b_head = "warn", "netral"
         b_detail = f"{n_count or 0} berita, sentimen {n_pct:+.0f}"

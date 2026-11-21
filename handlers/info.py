@@ -198,16 +198,20 @@ async def do_berita(update: Update, ticker: str, deps):
         )
         return
     sent = await asyncio.to_thread(news.news_sentiment, items)
-    n_ml = sent.get("engine_ml", 0)
-    if n_ml == sent["n"] and sent["n"] > 0:
-        engine_tag = "ML lokal"
-    elif n_ml > 0:
-        engine_tag = f"ML {n_ml}/{sent['n']} + lexicon"
-    else:
-        engine_tag = "lexicon"
+    cov = sent.get("engine_coverage") or {}
+    engine_tag = cov.get("summary")
+    if not engine_tag:
+        n_ml = sent.get("engine_ml", 0)
+        if n_ml == sent["n"] and sent["n"] > 0:
+            engine_tag = "ML lokal"
+        elif n_ml > 0:
+            engine_tag = f"ML {n_ml}/{sent['n']} + lexicon"
+        else:
+            engine_tag = "lexicon"
+    lbl = sent.get("label") or "NETRAL"
     lines = [
-        f"📰 <b>Berita {esc(t)}</b> — sentimen {sent['emoji']} "
-        f"({sent['pct']:+.0f}%, {sent['n']} berita, mesin: {engine_tag})"
+        f"📰 <b>Berita {esc(t)}</b> — sentimen {sent['emoji']} <b>{esc(lbl)}</b> "
+        f"({sent['pct']:+.0f}%, {sent['n']} berita, mesin: {esc(engine_tag)})"
     ]
     for d in sent["details"][:7]:
         har = f" {d['sent']:+.0f}" if d["sent"] else ""
