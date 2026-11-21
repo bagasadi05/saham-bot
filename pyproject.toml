@@ -1,13 +1,14 @@
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["vendor"]
+extend-exclude = ["vendor", ".agents/skills/alphaear-*"]
 
 [tool.ruff.lint]
 select = ["F", "E9", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = [".agents", "vendor", ".venv"]
 addopts = "-q"
 filterwarnings = [
     "ignore::DeprecationWarning",

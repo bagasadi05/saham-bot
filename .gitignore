@@ -30,3 +30,6 @@ htmlcov/
 *.log
 .DS_Store
 .zwork/
+
+# skill pihak ketiga lokal (skill repo resmi: .agents/skills/idx-*)
+.agents/skills/alphaear-*/
