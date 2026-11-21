@@ -14,7 +14,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from core import (fundamental, jurnal as jurnalmod, marketcal, store)
+from core import (data, fundamental, jurnal as jurnalmod, marketcal, store)
 from core.reports import esc
 
 log = logging.getLogger("sahambuddy")
@@ -268,6 +268,25 @@ async def _record_sell_and_reply(
     )
 
 
+async def _fetch_ihsg_close():
+    """Close harian IHSG (^JKSE) untuk alpha jurnal; best-effort, gagal -> None."""
+    try:
+        df = await asyncio.to_thread(data.fetch_history, "^JKSE", raw_symbol=True)
+    except Exception as exc:  # jaringan/Yahoo tidak boleh menggagalkan /jurnal
+        log.warning("IHSG untuk alpha jurnal gagal diambil: %s", exc)
+        return None
+    if df is None or getattr(df, "empty", True):
+        return None
+    try:
+        # fetch_history menormalkan kolom ke huruf kecil ("close"), bukan "Close".
+        col = next((c for c in df.columns if str(c).lower() == "close"), None)
+        if col is None:
+            return None
+        return df[col].dropna()
+    except Exception:
+        return None
+
+
 async def do_jurnal(update: Update, args: list[str], deps,
                     *, from_menu: bool = False) -> None:
     """Handler /jurnal [riwayat|beli|jual ...]."""
@@ -367,7 +386,10 @@ async def do_jurnal(update: Update, args: list[str], deps,
     positions = await asyncio.to_thread(store.real_positions, chat_id)
     real_sum = jurnalmod.summarize_executions(execs)
     paper_sum = jurnalmod.summarize_paper_realized(paper)
-    diag = jurnalmod.jurnal_diagnostics(execs)
+    bench_close = None
+    if any(str(e.get("side") or "").upper() == "JUAL" for e in execs):
+        bench_close = await _fetch_ihsg_close()
+    diag = jurnalmod.jurnal_diagnostics(execs, bench_close=bench_close)
     txt = jurnalmod.format_journal_report(
         real_sum, paper_sum, open_real_count=len(positions), diagnostics=diag,
     )

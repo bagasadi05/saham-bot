@@ -496,11 +496,111 @@ def _chronological_execs(execs: list[dict]) -> list[dict]:
     return list(execs)
 
 
+def _bench_window_closes(
+    bench_close: pd.Series | None,
+    entry_date: str | dt.date | None,
+    exit_date: str | dt.date | None,
+) -> tuple[float, float] | None:
+    """Close benchmark pertama >= entry & terakhir <= exit dalam jendela siklus.
+
+    Return (close_masuk, close_keluar) atau None bila seri kosong, tanggal tidak
+    lengkap/terbalik, atau tidak ada close di dalam jendela. Tidak pernah
+    mengarang harga pengganti.
+    """
+    if bench_close is None or not isinstance(bench_close, pd.Series) or bench_close.empty:
+        return None
+    start = _parse_trade_date(entry_date)
+    end = _parse_trade_date(exit_date)
+    if start is None or end is None or start > end:
+        return None
+    try:
+        closes = pd.to_numeric(bench_close, errors="coerce").dropna().sort_index()
+        if closes.empty:
+            return None
+        idx_dates = pd.to_datetime(closes.index).date
+        window = closes[(idx_dates >= start) & (idx_dates <= end)]
+    except Exception:
+        return None
+    if window.empty:
+        return None
+    first = float(window.iloc[0])
+    last = float(window.iloc[-1])
+    if first <= 0:
+        return None
+    return first, last
+
+
+def _bench_return_pct(
+    bench_close: pd.Series | None,
+    entry_date: str | dt.date | None,
+    exit_date: str | dt.date | None,
+) -> float | None:
+    """Return benchmark (%) antara entry & exit; None bila data tak tersedia."""
+    pair = _bench_window_closes(bench_close, entry_date, exit_date)
+    if pair is None:
+        return None
+    first, last = pair
+    return (last / first - 1.0) * 100.0
+
+
+def _alpha_stats(
+    trades: list[dict], bench_close: pd.Series | None
+) -> tuple[list[float], int, int, str | None]:
+    """Hitung alpha neto per siklus tutup vs benchmark.
+
+    Return (alphas, n_dated, n_no_bench, reason). Alphas hanya berisi siklus
+    yang punya entry_date, exit_date, net_pnl_pct, dan close benchmark di
+    jendelanya — sisanya dibiarkan None, bukan diisi nol.
+    """
+    alphas: list[float] = []
+    n_dated = 0
+    n_no_bench = 0
+    has_bench = isinstance(bench_close, pd.Series) and not bench_close.empty
+    for tr in trades:
+        tr["bench_return_pct"] = None
+        tr["alpha_pct"] = None
+        if (_parse_trade_date(tr.get("entry_date")) is None
+                or _parse_trade_date(tr.get("exit_date")) is None):
+            continue
+        n_dated += 1
+        bench_pct = _bench_return_pct(bench_close, tr["entry_date"], tr["exit_date"])
+        pnl_pct = tr.get("net_pnl_pct")
+        if bench_pct is None or pnl_pct is None:
+            if has_bench:
+                n_no_bench += 1
+            continue
+        try:
+            alpha = float(pnl_pct) - bench_pct
+        except (TypeError, ValueError):
+            n_no_bench += 1
+            continue
+        tr["bench_return_pct"] = round(bench_pct, 2)
+        tr["alpha_pct"] = round(alpha, 2)
+        alphas.append(alpha)
+
+    reason: str | None = None
+    if not trades:
+        reason = "belum ada siklus tutup"
+    elif not n_dated:
+        reason = "tanggal masuk/keluar siklus belum lengkap"
+    elif not has_bench:
+        reason = "riwayat IHSG harian tidak tersedia"
+    elif not alphas:
+        reason = "tidak ada close IHSG pada jendela masuk-keluar"
+    return alphas, n_dated, n_no_bench, reason
+
+
 def jurnal_diagnostics(
     execs: list[dict],
     bars_by_ticker: dict[str, pd.DataFrame] | None = None,
+    bench_close: pd.Series | None = None,
 ) -> dict:
-    """Evaluasi kualitas eksekusi beli & jual nyata: MAE, MFE, R-multiple vs fee BEI 0,40%."""
+    """Evaluasi kualitas eksekusi beli & jual nyata: MAE, MFE, R-multiple vs fee BEI 0,40%.
+
+    `bench_close` = close harian IHSG (index datetime) untuk alpha vs benchmark.
+    Bila tidak diberikan/tidak menutupi jendela siklus, alpha bernilai None
+    beserta alasannya — tidak diisi nol. Metrik lama tidak berubah.
+    """
     ordered = _chronological_execs(execs)
     bars_map = {str(k).upper(): v for k, v in (bars_by_ticker or {}).items()}
     fee_hurdle = round((config.IDX_BUY_FEE + config.IDX_SELL_FEE) * 100.0, 2)
@@ -562,6 +662,8 @@ def jurnal_diagnostics(
                 if st["lots"] <= 0:
                     st.update({"lots": 0, "cost": 0.0, "entry_date": None, "sl": None})
 
+    alphas, n_bench_dated, n_bench_missing, alpha_note = _alpha_stats(trades, bench_close)
+
     with_ohlcv = [tr for tr in trades if tr["ok"]]
     with_r = [tr for tr in trades if tr["r_multiple"] is not None]
     with_cap = [tr for tr in with_ohlcv if tr["capture_ratio"] is not None]
@@ -599,6 +701,11 @@ def jurnal_diagnostics(
             f"Rata-rata MFE +{statistics.mean(mfes):.1f}% tetapi hanya menangkap "
             f"{statistics.mean(caps) * 100:.0f}% puncaknya — pertimbangkan scale-out TP1 & Chandelier trailing."
         )
+    if n_bench_missing:
+        notes.append(
+            f"{n_bench_missing}/{n_bench_dated} siklus tutup tanpa close IHSG di jendelanya — "
+            f"alpha hanya dihitung dari {len(alphas)} siklus."
+        )
     if buy_slips and statistics.mean(buy_slips) > 0.5:
         notes.append(
             f"Slippage beli rata-rata +{statistics.mean(buy_slips):.2f}% — "
@@ -622,6 +729,13 @@ def jurnal_diagnostics(
         "avg_capture_ratio": round(statistics.mean(caps), 2) if caps else None,
         "avg_buy_slippage_pct": round(statistics.mean(buy_slips), 2) if buy_slips else None,
         "avg_sell_slippage_pct": round(statistics.mean(sell_slips), 2) if sell_slips else None,
+        "n_bench": len(alphas),
+        "n_bench_dated": n_bench_dated,
+        "mean_alpha_pct": round(statistics.mean(alphas), 2) if alphas else None,
+        "win_vs_bench_pct": (
+            round(sum(1 for a in alphas if a > 0) / len(alphas) * 100.0, 1) if alphas else None
+        ),
+        "alpha_note": alpha_note,
         "trades": trades,
         "notes": notes,
     }
@@ -654,6 +768,19 @@ def format_jurnal_diagnostics(diag: dict) -> str:
         lines.append(f"  MAE rata-rata {mae} · MFE rata-rata {mfe}{cap}")
     else:
         lines.append("  MAE / MFE: data OHLCV tidak tersedia")
+
+    if diag.get("n_bench"):
+        alpha_line = (
+            f"  Alpha vs IHSG: {_fmt_pct_id(diag.get('mean_alpha_pct'))} "
+            f"(n={diag['n_bench']}, "
+            f"menang {_fmt_pct_id(diag.get('win_vs_bench_pct'), sign=False)})"
+        )
+        if diag["n_bench"] < 10:
+            alpha_line += " (sampel kecil, belum signifikan)"
+        lines.append(alpha_line)
+    else:
+        suffix = f" — {esc(diag['alpha_note'])}" if diag.get("alpha_note") else ""
+        lines.append(f"  Alpha vs IHSG: tidak tersedia{suffix}")
 
     for note in diag.get("notes") or []:
         lines.append(f"  💡 {esc(note)}")

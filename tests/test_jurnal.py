@@ -7,6 +7,7 @@ import sqlite3
 import types
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import bot
@@ -153,6 +154,165 @@ def test_summarize_asli_dan_paper_terpisah(tmp_store):
     assert "tanpa login stockbit" in report.lower()
 
 
+# ------------------------------------------------------------ alpha vs IHSG
+def _bench_series() -> pd.Series:
+    idx = pd.to_datetime([
+        "2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06",
+        "2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13",
+    ])
+    return pd.Series(
+        [6000, 6000, 6030, 6060, 6090, 6120, 6120, 6100, 6080, 6060],
+        index=idx, dtype="float64",
+    )
+
+
+def _closed_execs(pnl_a: float = 4.0, pnl_b: float = -2.0) -> list[dict]:
+    return [
+        {"ticker": "BBCA", "side": "BELI", "lots": 5, "exec_price": 9000.0,
+         "trade_date": "2026-11-03", "signal_price": 9000.0},
+        {"ticker": "BBCA", "side": "JUAL", "lots": 5, "exec_price": 9360.0,
+         "trade_date": "2026-11-06", "net_pnl_pct": pnl_a},
+        {"ticker": "TLKM", "side": "BELI", "lots": 2, "exec_price": 3000.0,
+         "trade_date": "2026-11-10", "signal_price": 3000.0},
+        {"ticker": "TLKM", "side": "JUAL", "lots": 2, "exec_price": 2940.0,
+         "trade_date": "2026-11-13", "net_pnl_pct": pnl_b},
+    ]
+
+
+def test_alpha_vs_ihsg_memakai_close_dalam_jendela():
+    diag = jurnal.jurnal_diagnostics(_closed_execs(), bench_close=_bench_series())
+    assert diag["n_trades"] == 2
+    assert diag["n_bench"] == 2
+    assert diag["n_bench_dated"] == 2
+    assert diag["alpha_note"] is None
+    # Siklus A: IHSG +1,50%, neto saham +4,00% -> alpha +2,50%
+    # Siklus B: IHSG -0,98%, neto saham -2,00% -> alpha -1,02%
+    assert diag["mean_alpha_pct"] == pytest.approx(0.74, abs=0.01)
+    assert diag["win_vs_bench_pct"] == 50.0
+    first, second = diag["trades"]
+    assert first["bench_return_pct"] == pytest.approx(1.5)
+    assert first["alpha_pct"] == pytest.approx(2.5)
+    assert second["bench_return_pct"] == pytest.approx(-0.98, abs=0.01)
+    assert second["alpha_pct"] == pytest.approx(-1.02, abs=0.01)
+    # Metrik lama tetap ada & tidak berubah arti
+    assert "avg_r_multiple" in diag and "fee_hurdle_pct" in diag
+
+
+def test_format_alpha_caveat_sampel_kecil_dan_n_cukup():
+    diag = jurnal.jurnal_diagnostics(_closed_execs(), bench_close=_bench_series())
+    txt = jurnal.format_jurnal_diagnostics(diag)
+    assert "Alpha vs IHSG: +0,74% (n=2, menang 50,0%)" in txt
+    assert "sampel kecil, belum signifikan" in txt
+
+    # 12 siklus identik -> caveat hilang, menang 100%
+    execs: list[dict] = []
+    for i in range(12):
+        tk = f"T{i:02d}"
+        execs += [
+            {"ticker": tk, "side": "BELI", "lots": 1, "exec_price": 9000.0,
+             "trade_date": "2026-11-03", "signal_price": 9000.0},
+            {"ticker": tk, "side": "JUAL", "lots": 1, "exec_price": 9360.0,
+             "trade_date": "2026-11-06", "net_pnl_pct": 4.0},
+        ]
+    diag12 = jurnal.jurnal_diagnostics(execs, bench_close=_bench_series())
+    assert diag12["n_bench"] == 12
+    txt12 = jurnal.format_jurnal_diagnostics(diag12)
+    assert "Alpha vs IHSG: +2,50% (n=12, menang 100,0%)" in txt12
+    assert "sampel kecil" not in txt12
+
+
+def test_alpha_tanpa_bench_tidak_diisi_nol():
+    diag = jurnal.jurnal_diagnostics(_closed_execs(), bench_close=None)
+    assert diag["n_bench"] == 0
+    assert diag["mean_alpha_pct"] is None
+    assert diag["win_vs_bench_pct"] is None
+    assert all(tr["alpha_pct"] is None for tr in diag["trades"])
+    assert diag["alpha_note"] and "IHSG" in diag["alpha_note"]
+    txt = jurnal.format_jurnal_diagnostics(diag)
+    alpha_line = next(line for line in txt.splitlines() if "Alpha vs IHSG" in line)
+    assert "Alpha vs IHSG: tidak tersedia" in alpha_line
+    assert "0,00" not in alpha_line
+
+
+def test_alpha_tanpa_entry_date_tidak_dihitung():
+    execs = [
+        {"ticker": "BBCA", "side": "JUAL", "lots": 5, "exec_price": 9360.0,
+         "trade_date": "2026-11-06", "avg_entry": 9000.0, "net_pnl_pct": 4.0},
+    ]
+    diag = jurnal.jurnal_diagnostics(execs, bench_close=_bench_series())
+    assert diag["n_trades"] == 1
+    assert diag["trades"][0]["entry_date"] is None
+    assert diag["n_bench"] == 0
+    assert diag["n_bench_dated"] == 0
+    assert diag["mean_alpha_pct"] is None
+    assert diag["alpha_note"] and "tanggal" in diag["alpha_note"]
+
+
+def test_alpha_tanpa_close_di_jendela_none_beserta_alasan():
+    bench = pd.Series(
+        [5800.0, 5820.0],
+        index=pd.to_datetime(["2026-10-01", "2026-10-02"]),
+    )
+    diag = jurnal.jurnal_diagnostics(_closed_execs(), bench_close=bench)
+    assert diag["n_bench_dated"] == 2
+    assert diag["n_bench"] == 0
+    assert diag["mean_alpha_pct"] is None
+    assert diag["alpha_note"] and "jendela" in diag["alpha_note"]
+    assert any("tanpa close IHSG" in n for n in diag["notes"])
+
+
+def test_handler_jurnal_mengambil_ihsg_sekali(monkeypatch, tmp_store):
+    bot.ALLOWED_IDS.clear()
+    bot._last_used.clear()
+    bot.PENDING.clear()
+    store.record_execution_buy(100, "BBCA", 5, 9000.0, "2026-11-03", signal_price=9000.0)
+    store.record_execution_sell(100, "BBCA", 5, 9360.0, "2026-11-06")
+    calls: list[tuple] = []
+
+    def fake_fetch(ticker, period="1y", raw_symbol=False):
+        calls.append((ticker, raw_symbol))
+        return pd.DataFrame({"Close": _bench_series()})
+
+    monkeypatch.setattr(data, "fetch_history", fake_fetch)
+    upd = _Update("/jurnal")
+    asyncio.run(bot.cmd_jurnal(upd, _ctx()))
+    txt = upd.effective_message.replies[-1][0]
+    assert calls == [("^JKSE", True)]
+    assert "Alpha vs IHSG: " in txt and "n=1" in txt
+
+
+def test_handler_jurnal_ihsg_gagal_tetap_menampilkan_laporan(monkeypatch, tmp_store):
+    bot.ALLOWED_IDS.clear()
+    bot._last_used.clear()
+    bot.PENDING.clear()
+    store.record_execution_buy(100, "BBCA", 5, 9000.0, "2026-11-03", signal_price=9000.0)
+    store.record_execution_sell(100, "BBCA", 5, 9360.0, "2026-11-06")
+
+    def boom(*a, **k):
+        raise RuntimeError("yahoo tidak bisa dihubungi")
+
+    monkeypatch.setattr(data, "fetch_history", boom)
+    upd = _Update("/jurnal")
+    asyncio.run(bot.cmd_jurnal(upd, _ctx()))
+    txt = upd.effective_message.replies[-1][0]
+    assert "Alpha vs IHSG: tidak tersedia" in txt
+    assert "JURNAL EKSEKUSI" in txt
+
+
+def test_handler_jurnal_tanpa_jual_tidak_memanggil_ihsg(monkeypatch, tmp_store):
+    bot.ALLOWED_IDS.clear()
+    bot._last_used.clear()
+    bot.PENDING.clear()
+    store.record_execution_buy(100, "BBCA", 2, 9000.0, "2026-11-03", signal_price=9000.0)
+    called: list[int] = []
+    monkeypatch.setattr(
+        data, "fetch_history", lambda *a, **k: called.append(1) or None
+    )
+    upd = _Update("/jurnal")
+    asyncio.run(bot.cmd_jurnal(upd, _ctx()))
+    assert called == []
+
+
 # ------------------------------------------------------------ store migration v5
 def test_store_migrasi_v4_ke_v5_aman(tmp_store):
     store.add_real_position(100, "BBCA", 2, 9000, "2026-11-12", "Financials")
@@ -190,6 +350,7 @@ def test_alur_konfirmasi_stockbit_dari_rencana_sampai_jurnal(monkeypatch, tmp_st
     bot.ALLOWED_IDS.clear()
     bot._last_used.clear()
     bot.PENDING.clear()
+    monkeypatch.setattr(data, "fetch_history", lambda *a, **k: None)  # tetap offline
     store.set_modal(100, 25_000_000)
 
     ind = make_prices(np.linspace(8500, 9000, 80), volume=10_000_000)
