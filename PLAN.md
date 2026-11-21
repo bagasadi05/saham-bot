@@ -1,10 +1,10 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
-> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-14 (pasca-Wave 2A, Wave 2B, hotfix `scipy`/EODHD/AV/`download_model`, audit tombol, menu utama sederhana, Mode Pemula vs Expert, panduan linear 5-tahap, & alur tindak lanjut lintas handler)
-> **Baseline terukur saat ini:** **`764 passed`** (`0 skipped`, `0 failed`; naik dari 678 pasca-menu sederhana, 676 pasca-audit menu, 670 pasca-hotfix `scipy`, 666 di Wave 2B, 653 di Wave 2A, 586 pra-Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
-> coverage target CI (`core+handlers+bot+config`) **`TOTAL 86%`** (`86.05%`; gerbang CI `>= 75%`) · `bot.py` **1.757 baris** +
-> 12 modul `handlers/` (analisis, cek, info, jobs, jurnal, market, menu, portfolio, sektor,
-> sinyal, trading, watchlist) + 33 modul `core/` (`SCHEMA_VERSION = 6`).
+> **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-21 (pasca-Wave 2A/2B, Mode Pemula vs Expert, VaR historis/ES & batas sektor, alpha jurnal vs IHSG, serta gelombang W0–W4: housekeeping skill, audit sentimen berita gold/CAMPURAN, `/pasar` + job penutupan 16:15 WIB & ringkasan pagi, dan pelacak tesis posisi `core/tesis.py`)
+> **Baseline terukur saat ini:** **`838 passed`** (`0 skipped`, `0 failed`; naik dari 793 pasca-risk/jurnal, 764 pasca-Mode Pemula/Expert, 678 pasca-menu sederhana, 653 di Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
+> coverage target CI (`core+handlers+bot+config`) **`TOTAL 87%`** (`87.37%`; gerbang CI `>= 86%`) · `bot.py` **1.865 baris** +
+> 13 modul `handlers/` (analisis, cek, info, jobs, jurnal, market, menu, pasar, portfolio, sektor,
+> sinyal, trading, watchlist) + 35 modul `core/` (`SCHEMA_VERSION = 6`).
 >
 > **Prinsip utama:** bot ini adalah alat bantu riset dan belajar saham BEI yang
 > jujur terhadap bukti statistik — setiap sinyal, ukuran posisi, dan klaim

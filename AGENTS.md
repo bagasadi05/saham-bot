@@ -6,12 +6,14 @@ boleh dilanggar, peta kode, dan status terakhir. Riwayat perubahan ada di
 [`CHANGELOG.md`](CHANGELOG.md); rencana & status per fase ada di
 [`PLAN.md`](PLAN.md).
 
-Terakhir diperbarui: **2026-11-14** (Wave 2A, Wave 2B, perbaikan `yfinance` adaptif
-tanpa `scipy` / EODHD & AV cooldown / `download_model.py`, audit & perbaikan
-tombol menu/callback, penyederhanaan menu utama + panduan `guide:*` / `sub:more`,
-Mode Pemula vs Expert `/mode` + `user_mode`/`onboard_state` di `chat_settings`,
-panduan linear 5-tahap `onboard:s1..s5`, serta tombol tindak lanjut lintas semua
-hasil `sinyal`/`market`/`cek`/`trading`/`portfolio`/`jurnal`/`analisis`; lihat `git log`).
+Terakhir diperbarui: **2026-11-21** (gelombang W0–W4: housekeeping skill
+`.agents/skills/alphaear-*`, audit & perbaikan sentimen berita `CAMPURAN`/negasi/frasa +
+dataset emas `news_sentiment_gold.json` & `research/evaluate_sentiment.py`, laporan
+kondisi pasar `/pasar` (`/market`) + `fetch_market_news` + job penutupan 16:15 WIB &
+ringkasan di `morning_scan`, pelacak tesis posisi `core/tesis.py`
+(`GUGUR`/`MELEMAH`/`MENGUAT`/`TETAP`) di `/portofolio` & alert exit hanya saat status
+berubah, plus VaR historis/ES, batas sektor, alpha jurnal vs IHSG, `job_guard`, dan
+tes wiring `main()`; lihat `git log`).
 
 ---
 
@@ -21,8 +23,9 @@ hasil `sinyal`/`market`/`cek`/`trading`/`portfolio`/`jurnal`/`analisis`; lihat `
 python -m venv .venv
 .venv\Scripts\activate            # Windows; Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest -q                         # harus 764 passed (0 skipped, coverage 86% / 86.05% target CI), offline
+pytest -q                         # harus 838 passed (0 skipped, coverage 87% / 87.37%, gerbang CI 86%), offline
 ruff check .                      # harus bersih
+python research/evaluate_sentiment.py  # audit offline akurasi & macro-F1 sentimen berita
 python tools/check_sync.py        # audit sinkronisasi riset, LQ45, umur data & backup DB
 python tools/record_fixtures.py --verify  # audit struktur fixture offline
 python bot.py                     # butuh BOT_TOKEN di .env
@@ -49,8 +52,8 @@ Kalau butuh data, pakai fixture di `tests/fixtures/` atau data sintetis dari
 ## 3. Peta arsitektur
 
 ```
-bot.py                  entrypoint + menu/aksi + markup + helper aplikasi (1.757 baris)
-core/                   logika domain (tanpa Telegram), 33 modul, bisa diuji offline
+bot.py                  entrypoint + menu/aksi + markup + helper aplikasi (1.865 baris)
+core/                   logika domain (tanpa Telegram), 35 modul, bisa diuji offline
   alerts.py             deteksi kondisi alert harga/indikator & zona beli watchlist
   analysis.py           indikator teknikal, skor momentum, trend_label & snapshot
   bandar.py             ringkasan saham/indeks/asing BEI (idx.co.id via cloudscraper)
@@ -67,8 +70,9 @@ core/                   logika domain (tanpa Telegram), 33 modul, bisa diuji off
   learn.py              kamus edukasi indikator & rasio (/belajar)
   logsetup.py           logging teks/JSON terstruktur (LOG_JSON=1)
   marketcal.py          kalender bursa XIDX (exchange_calendars) & zona waktu WIB
-  news.py               berita Google News RSS (query ketat) & agregasi sentimen
+  news.py               berita emiten & pasar (Google News RSS) + sentimen lexicon/CAMPURAN/cakupan mesin
   news_ml.py            inferensi sentimen ML lokal indo-roBERTa (fallback lexicon)
+  pasar.py              laporan kondisi pasar BEI (IHSG/rezim, breadth, sektor, asing, berita)
   portofolio.py         ringkasan PnL/risiko portofolio asli (SL 1×ATR / eksekusi + exit)
   powerscore.py         kombinasi 3 pin (teknikal, fundamental + penalti forensik, berita)
   pricing.py            fraksi tick BEI, batas ARA/ARB 2026 (Kep-00136 Rp1 & Kep-00158 7%)
@@ -83,15 +87,17 @@ core/                   logika domain (tanpa Telegram), 33 modul, bisa diuji off
   sektor.py             parser indeks sektor BEI (defensif)
   store.py              SQLite (SCHEMA_VERSION = 6): watchlist, alert, paper, scan_history,
                         real_positions/real_trades, zone_state, signal_context (intent),
-                        real_executions, chat_settings (batas risiko, user_mode, onboard_state)
+                        real_executions, chat_settings (batas risiko, user_mode, onboard_state,
+                        thesis_state:<TICKER>)
+  tesis.py              pelacak tesis posisi (GUGUR/MELEMAH/MENGUAT/TETAP) & aturan transisi alert
   textutil.py           formatter rupiah & parser nominal (parse_rupiah)
   universe.py           pemuat daftar 944 emiten BEI (data/idx_universe.json) & papan pencatatan
-handlers/               12 modul handler Telegram, pola `deps`
-  analisis, cek, info, jobs, jurnal, market, menu, portfolio, sektor, sinyal,
-  trading, watchlist
-research/               harness riset (evaluate, experiments, portfolio, publish,
-                        horizons, evaluate_kronos, bias)
-tests/                  764 tes offline (0 skipped, coverage 86% / 86.05% target CI) + fixtures/
+handlers/               13 modul handler Telegram, pola `deps`
+  analisis, cek, info, jobs, jurnal, market, menu, pasar, portfolio, sektor,
+  sinyal, trading, watchlist
+research/               harness riset (evaluate, evaluate_sentiment, experiments, portfolio,
+                        publish, horizons, evaluate_kronos, bias)
+tests/                  838 tes offline (0 skipped, coverage 87% / 87.37%, gerbang CI 86%) + fixtures/
 tools/                  skrip utilitas (backup_db, build_universe, check_sync, record_fixtures)
 ```
 
@@ -132,7 +138,7 @@ dipanggil via `to_thread`.
 - Setelah mengubah perilaku pengguna, perbarui `README.md`, `PLAN.md`, dan
   `CHANGELOG.md`.
 
-## 5. Status saat ini (2026-11-14)
+## 5. Status saat ini (2026-11-21)
 
 | Area | Status |
 |---|---|
@@ -142,15 +148,11 @@ dipanggil via `to_thread`.
 | Fase 3 (P12–P18) | selesai, termasuk `/sektor` |
 | Fase 4 (modularisasi, CI, backup, log, LICENSE) | selesai |
 | Uji chat di host | ⛔ diblokir akses token (lihat `deploy.md`) |
-| P23/P24 (risiko portofolio) | selesai; batas kustom (`/portofolio batas`) + bobot *inv-vol* |
-| P28 (jurnal eksekusi Stockbit & slippage) | selesai (tanpa auto-trading / kredensial; + MAE/MFE & R-multiple) |
+| P23/P24 (risiko portofolio) | selesai; batas kustom (`/portofolio batas`), bobot *inv-vol* dua lapis (posisi+sektor), VaR historis + ES |
+| P28 (jurnal eksekusi Stockbit & slippage) | selesai (tanpa auto-trading / kredensial; + MAE/MFE, R-multiple & alpha vs IHSG) |
 | Audit forensik kas + Pro/Risiko (`/cek`, `/fundamental`) | selesai (`.agents/skills/idx-equity-research/`, penalti skor & mata uang non-IDR) |
-| Wave 2A (akurasi, exit/risiko, infra/Docker, sync riset) | selesai di merge `8489697` (`653 passed` offline; `Dockerfile` menyalin `handlers/` & `vendor/`) |
-| Wave 2B (`handlers/bot` provenance & exit UX, skills & docs) | selesai (`666 passed` offline, coverage `core+handlers` **84%**, `bot.py` 1.737 baris) |
-| Hotfix `repair` adaptif tanpa `scipy`, cooldown EODHD/AV & `download_model` | selesai (**670 passed** offline, coverage target CI **83%**, EODHD & AV `.env` terverifikasi live) |
-| Audit & perbaikan menyeluruh tombol menu, callback inline & input manual | selesai (**676 passed** offline, coverage target CI **84%**, `sg:scan` / media `_safe_edit` / `manual:alert_add` / `manual:rencana` / `do_paket`) |
-| Menu utama sederhana & panduan interaktif langkah demi langkah pemula | selesai (**678 passed** offline, coverage target CI **84%**, `guide:start/beli/jual/cek/pemula`, `sub:more`, `result_markup` kontekstual) |
-| Mode Pemula vs Expert, panduan linear 5-tahap & tombol tindak lanjut lintas handler | selesai (**764 passed** offline, `0 skipped`, `0 failed`, coverage target CI **86%** / `86.05%`, `bot.py` 1.757 baris; `user_mode` & `onboard_state` di `chat_settings`, `mode:menu`, `/mode`, `onboard:s1..s5` incl. preset Rp500rb/Rp1jt & keterjangkauan 1 lot, serta tindak lanjut `sinyal`/`market`/`cek`/`trading`/`portfolio`/`jurnal`/`analisis`) |
+| Mode Pemula vs Expert, panduan linear 5-tahap & tombol tindak lanjut lintas handler | selesai (`user_mode` & `onboard_state` di `chat_settings`, `/mode`, `onboard:s1..s5`, tindak lanjut semua handler) |
+| Gelombang W0–W4 (skill housekeeping, sentimen berita gold/`CAMPURAN`, `/pasar` + job 16:15 WIB & brief pagi, pelacak tesis posisi `core/tesis.py`) | selesai (**838 passed** offline, `0 skipped`, `0 failed`, coverage CI **87.37%** ≥ 86%, `ruff check .` bersih, `tools/check_sync.py` PASS) |
 
 Angka riset terbaru (`data/validation.json`, konfigurasi `--hold 0.6 --min-hold 2 --regime sma50_200_half --offline`, biaya BEI `0,40%` pulang-pergi):
 turnover satu arah **21,7%** (dua arah **43,4%**); eksposur **79,8%**; MDD **−20,0%**;
@@ -172,6 +174,10 @@ IC skor `t_hac` **0,85** (tidak signifikan).
 6. Refactor `bot.py` sekaligus — satu domain per commit, wrapper dipertahankan.
 7. Menjalankan `python bot.py` di mesin yang sama dengan host produksi
    (bentrok polling Telegram).
+8. Menambahkan dependensi skill pihak ketiga (`.agents/skills/alphaear-*`) ke
+   `requirements*.txt` atau memasukkannya ke commit; skill resmi repo hanya
+   `.agents/skills/idx-equity-research/` & `.agents/skills/idx-quant-research/`
+   (sementara `alphaear-*` diabaikan oleh `.gitignore`, `ruff`, dan `pytest`).
 
 ## 7. Kalau ada yang aneh
 

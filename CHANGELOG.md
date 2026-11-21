@@ -10,6 +10,17 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ## [Unreleased] — 2026-11-21
 
+- **Housekeeping skill & tooling (W0)**: `.agents/skills/alphaear-*` diabaikan di `.gitignore`, `pyproject.toml` (`extend-exclude` & `norecursedirs`), serta didokumentasikan di `AGENTS.md` tanpa menambah dependensi ke `requirements*.txt`.
+- **Audit & perbaikan sentimen berita (W1)**:
+  - Dataset emas offline 60 judul berita IDX (`tests/fixtures/news_sentiment_gold.json`), harness `research/evaluate_sentiment.py`, dan tes regresi `tests/test_sentiment_gold.py`.
+  - Perbaikan lexicon & negasi di `core/news.py`: frasa majemuk pasar modal (`POS_PHRASES`/`NEG_PHRASES`), frasa akuntansi netral (`NEUTRAL_PHRASES` seperti `laporan laba rugi`), pemulihan `rugi ... menyusut`, batas klausa agar negasi tidak bocor, status **`CAMPURAN` (`🟡`)** saat berita positif & negatif saling tarik-menarik, serta metrik **cakupan mesin** (`engine_lexicon`, `engine_coverage`) yang ditampilkan di `/berita`.
+- **Laporan kondisi pasar `/pasar` (`/market`) (W2)**:
+  - Tambah `fetch_market_news` di `core/news.py`, logika domain `core/pasar.py` (IHSG & rezim `^JKSE`, breadth snapshot `/scan`, rotasi sektor BEI, arus asing opsional, sentimen berita pasar, dengan degradasi jujur `"tidak tersedia"` saat sumber gagal/diblokir), dan handler `handlers/pasar.py`.
+  - Tombol menu `🌐 Kondisi Pasar` (`run:pasar`) di Mode Expert, `sub:ide`, `sub:more`, dan `sub:allcmd`; job harian penutupan **16:15 WIB** (`closing-market-report`, terbungkus `job_guard`) ke chat `/auto on`, serta ringkasan kondisi pasar ringkas di `morning_scan`.
+  - Tes baru `tests/test_pasar.py` & pembaruan `tests/test_main_wiring.py` (32 `CommandHandler` + callback/teks = 34 handler, 8 job terdaftar).
+- **Pelacak tesis posisi (W3)**:
+  - Modul `core/tesis.py` mengklasifikasikan posisi asli menjadi **`GUGUR` / `MELEMAH` / `MENGUAT` / `TETAP`** (atau `TIDAK_TERSEDIA` bila harga kosong) berdasarkan SL/Chandelier, tren & MA50, peringkat relatif vs pita tahan 60%, time-stop, berita, forensik fundamental, dan rezim IHSG.
+  - Status tesis tersimpan persisten per `(chat_id, ticker)` di `chat_settings` (`thesis_state:<TICKER>`, tanpa perlu menaikkan `SCHEMA_VERSION = 6`, dan otomatis dibersihkan saat posisi terjual habis), tampil di `/portofolio` (termasuk transisi `dari <sebelumnya>`), serta memicu alert exit di `scan_alerts` **hanya saat status berubah** (`tests/test_tesis.py`).
 - **Risiko portofolio lebih jujur**: bobot inv-vol dibatasi per posisi **dan per sektor**
   (water-filling dua lapis; sisa yang tak teralokasi dilaporkan sebagai tunai), plus
   **kontribusi risiko** per posisi. `/portofolio` menampilkan VaR historis 95%,
