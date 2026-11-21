@@ -1065,6 +1065,10 @@ def _record_sell_ledger_conn(
         conn.execute(
             "DELETE FROM signal_context WHERE chat_id=? AND ticker=?",
             (str(chat_id), t))
+    if int(pos.get("lots_left") or 0) <= 0:
+        conn.execute(
+            "DELETE FROM chat_settings WHERE chat_id=? AND key=?",
+            (str(chat_id), _thesis_key(t)))
     return {
         **pos,
         "exec_price": p,
@@ -1680,3 +1684,109 @@ def clear_onboard_state(chat_id: int | str) -> None:
             "DELETE FROM chat_settings WHERE chat_id=? AND key=?",
             (str(chat_id), _ONBOARD_STATE_KEY),
         )
+
+
+# ------------------------------------------- pelacak tesis posisi (W3) --------
+_THESIS_KEY_PREFIX = "thesis_state:"
+
+
+def _thesis_key(ticker: str) -> str:
+    return f"{_THESIS_KEY_PREFIX}{str(ticker or '').strip().upper().removesuffix('.JK')}"
+
+
+def _decode_thesis_state(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict) or not parsed.get("status"):
+        return None
+    return dict(parsed)
+
+
+def get_position_thesis(chat_id: int | str, ticker: str) -> dict | None:
+    """Ambil status tesis terakhir posisi (None bila belum tercatat / rusak)."""
+    with _db() as conn:
+        raw = _read_chat_setting(conn, str(chat_id), _thesis_key(ticker))
+    return _decode_thesis_state(raw)
+
+
+def set_position_thesis(
+    chat_id: int | str,
+    ticker: str,
+    *,
+    status: str,
+    score: int = 0,
+    reasons: list[str] | None = None,
+    updated_at: str | None = None,
+    alerted_status: str | None = None,
+    preserve_alerted: bool = False,
+) -> dict:
+    """Simpan status tesis terkini untuk posisi `(chat_id, ticker)` di `chat_settings`.
+
+    `preserve_alerted=True` dipakai jalur tampilan (`/portofolio`) agar status
+    alert terakhir (`alerted_status`) yang dipakai `scan_alerts` tidak tertimpa
+    sebelum notifikasi perubahan tesis benar-benar terkirim.
+    """
+    t = str(ticker or "").strip().upper().removesuffix(".JK")
+    st = str(status).strip().upper()
+    key = _thesis_key(t)
+    with _db() as conn:
+        if preserve_alerted:
+            prev = _decode_thesis_state(_read_chat_setting(conn, str(chat_id), key))
+            if prev is not None:
+                eff_alerted = (
+                    prev.get("alerted_status")
+                    if "alerted_status" in prev
+                    else prev.get("status")
+                )
+            else:
+                eff_alerted = st if st in ("TETAP", "MENGUAT") else None
+        elif alerted_status is not None:
+            eff_alerted = str(alerted_status).strip().upper()
+        else:
+            eff_alerted = st
+
+        payload = {
+            "ticker": t,
+            "status": st,
+            "alerted_status": eff_alerted,
+            "score": int(score),
+            "reasons": [str(r) for r in (reasons or [])[:5]],
+            "updated_at": updated_at or _stamp(),
+        }
+        _upsert_chat_setting(
+            conn,
+            str(chat_id),
+            key,
+            json.dumps(payload, ensure_ascii=False),
+        )
+    return payload
+
+
+def clear_position_thesis(chat_id: int | str, ticker: str) -> None:
+    """Hapus status tesis tersimpan untuk satu posisi."""
+    with _db() as conn:
+        conn.execute(
+            "DELETE FROM chat_settings WHERE chat_id=? AND key=?",
+            (str(chat_id), _thesis_key(ticker)),
+        )
+
+
+def get_all_position_theses(chat_id: int | str) -> dict[str, dict]:
+    """Ambil seluruh status tesis posisi tersimpan milik `chat_id`."""
+    prefix = _THESIS_KEY_PREFIX
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT key, value FROM chat_settings WHERE chat_id=? AND key LIKE ?",
+            (str(chat_id), f"{prefix}%"),
+        ).fetchall()
+    out: dict[str, dict] = {}
+    for r in rows:
+        dec = _decode_thesis_state(r["value"])
+        if dec:
+            sym = str(r["key"])[len(prefix):].upper()
+            out[sym] = dec
+    return out

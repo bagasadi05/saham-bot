@@ -16,7 +16,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction, ParseMode
 
 from core import (data, fundamental, marketcal, portofolio as portmod,
-                  risk as riskmod, store)
+                  regime as regimemod, risk as riskmod, saran as saranmod,
+                  store, tesis as tesismod)
 from core.reports import esc
 
 log = logging.getLogger("sahambuddy")
@@ -153,16 +154,23 @@ async def _porto_quotes(tickers: list[str], deps) -> dict[str, dict]:
     return out
 
 
-def _bench_rets():
-    """Return harian IHSG 6 bulan untuk beta; None bila tidak tersedia."""
+def _bench_context():
+    """Ambil return IHSG + evaluasi rezim (^JKSE) dalam satu panggilan cache."""
     try:
-        df = data.fetch_history("^JKSE", "6mo", raw_symbol=True)
+        df = data.fetch_history("^JKSE", "2y", raw_symbol=True)
     except Exception:
         log.warning("IHSG untuk risiko portofolio gagal", exc_info=True)
-        return None
+        return None, None
     if df is None or len(df) < 25:
-        return None
-    return df["close"].pct_change().dropna()
+        return None, None
+    reg = regimemod.evaluate_ihsg(df)
+    return df["close"].pct_change().dropna(), reg
+
+
+def _bench_rets():
+    """Return harian IHSG untuk beta; None bila tidak tersedia."""
+    rets, _ = _bench_context()
+    return rets
 
 
 def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> str:
@@ -214,8 +222,16 @@ def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> st
                     f"   ⏱️ <i>Time-stop: pegang {r['days_held']} hari bursa "
                     "(>= 20 hari horizon model — evaluasi keluar/rotasi)</i>"
                 )
+            if r.get("tesis"):
+                out.append(
+                    "   " + tesismod.format_portfolio_line(
+                        r["tesis"], prev_status=r.get("tesis_prev")
+                    )
+                )
         else:
             out.append("   ❔ harga tidak tersedia — tidak dihitung di total")
+            if r.get("tesis"):
+                out.append("   " + tesismod.format_portfolio_line(r["tesis"]))
     if summary.get("unpriced"):
         out += ["", f"⚠️ {summary['unpriced']} posisi tanpa harga; total di "
                     "atas hanya posisi yang harganya terbaca."]
@@ -533,9 +549,71 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
     quotes = await _porto_quotes([p["ticker"] for p in active], deps)
     open_execs = await asyncio.to_thread(store.open_executions_by_ticker, chat_id)
     summary = portmod.summarize(active, quotes, open_execs=open_execs)
+    bench, bench_regime = await asyncio.to_thread(_bench_context)
+    scan_rows = await asyncio.to_thread(store.load_market_scan)
+    rel_map = {
+        str(sr["ticker"]).upper(): sr.get("rel_pct")
+        for sr in (scan_rows or [])
+        if sr.get("ticker")
+    }
+    prev_theses = await asyncio.to_thread(store.get_all_position_theses, chat_id)
+    for r in summary.get("rows") or []:
+        tk = str(r.get("ticker") or "").upper()
+        q = quotes.get(tk) or {}
+        df_q = q.get("df")
+        low_px = None
+        if df_q is not None and len(df_q) > 0 and "low" in df_q:
+            try:
+                lv = float(df_q["low"].iloc[-1])
+                if lv > 0:
+                    low_px = lv
+            except (KeyError, IndexError, TypeError, ValueError):
+                low_px = None
+        avg_v = float(r.get("avg_price") or 0.0)
+        atr_v = q.get("atr")
+        ex_info = open_execs.get(tk) or {}
+        if r.get("sl_source") == "eksekusi":
+            sl_tesis = r.get("sl")
+        elif avg_v > 0 and atr_v and float(atr_v) > 0:
+            sl_tesis = float(saranmod.stop_price(avg_v, float(atr_v)))
+        else:
+            sl_tesis = None
+        if ex_info.get("tp"):
+            tp_tesis = r.get("tp")
+        elif avg_v > 0 and atr_v and float(atr_v) > 0:
+            tp_tesis = float(saranmod.target_price(avg_v, float(atr_v)))
+        else:
+            tp_tesis = None
+        t_res = tesismod.evaluate_position(
+            tk,
+            r.get("avg_price"),
+            r.get("close"),
+            low=low_px,
+            df=df_q,
+            sl=sl_tesis,
+            tp=tp_tesis,
+            trailing_sl=r.get("trailing_sl"),
+            trailing_hit=bool(r.get("trailing_hit")),
+            days_held=r.get("days_held"),
+            time_stop_flag=bool(r.get("time_stop_flag")),
+            pnl_net_pct=r.get("pnl_net_pct"),
+            rel_pct=rel_map.get(tk),
+            market_regime=bench_regime,
+        )
+        r["tesis"] = t_res
+        r["tesis_prev"] = (prev_theses.get(tk) or {}).get("status")
+        if t_res.get("data_ok"):
+            await asyncio.to_thread(
+                store.set_position_thesis,
+                chat_id,
+                tk,
+                status=t_res["status"],
+                score=t_res["score"],
+                reasons=t_res["reasons"],
+                preserve_alerted=True,
+            )
     modal = await asyncio.to_thread(store.get_modal, chat_id)
     max_pos, max_sec = await asyncio.to_thread(store.get_risk_limits, chat_id)
-    bench = await asyncio.to_thread(_bench_rets)
     risk = riskmod.portfolio_risk(
         active, quotes, bench,
         max_pos_pct=max_pos, max_sector_pct=max_sec,
