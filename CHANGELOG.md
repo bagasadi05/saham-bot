@@ -8,6 +8,15 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ---
 
+## [Unreleased] — 2026-11-21
+
+- **Risiko portofolio lebih jujur**: bobot inv-vol dibatasi per posisi **dan per sektor**
+  (water-filling dua lapis; sisa yang tak teralokasi dilaporkan sebagai tunai), plus
+  **kontribusi risiko** per posisi. `/portofolio` menampilkan VaR historis 95%,
+  Expected Shortfall, jumlah hari, dan pelanggaran VaR vs ekspektasi.
+- **Jurnal menampilkan alpha vs IHSG** per siklus tutup (entry→exit), dengan caveat
+  sampel kecil; bila riwayat IHSG tidak tersedia, ditulis "tidak tersedia" — bukan nol.
+
 ## [Unreleased] — 2026-11-20
 
 - **Gerbang coverage dinaikkan 75% → 86%** dan disamakan di CI, Makefile, dan README
