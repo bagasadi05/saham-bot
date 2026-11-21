@@ -145,13 +145,14 @@ def main_menu_markup(mode: str = "pemula") -> InlineKeyboardMarkup:
             [InlineKeyboardButton("📡 Sinyal IDX", callback_data="run:sinyal"),
              InlineKeyboardButton("✨ BELI Bagus", callback_data="run:sinyal_bagus")],
             [InlineKeyboardButton("💡 Ide Harian", callback_data="run:saran"),
-             InlineKeyboardButton("🏭 Sektor BEI", callback_data="run:sektor")],
-            [InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio"),
-             InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal")],
-            [InlineKeyboardButton("👀 Pantau", callback_data="sub:pantau"),
-             InlineKeyboardButton("🧪 Riset & Pro", callback_data="sub:pro")],
-            [InlineKeyboardButton("📋 Semua Perintah", callback_data="sub:allcmd"),
-             InlineKeyboardButton("🎚️ Level: Expert (Ganti)", callback_data="mode:menu")],
+             InlineKeyboardButton("🌐 Kondisi Pasar", callback_data="run:pasar")],
+            [InlineKeyboardButton("🏭 Sektor BEI", callback_data="run:sektor"),
+             InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio")],
+            [InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal"),
+             InlineKeyboardButton("👀 Pantau", callback_data="sub:pantau")],
+            [InlineKeyboardButton("🧪 Riset & Pro", callback_data="sub:pro"),
+             InlineKeyboardButton("📋 Semua Perintah", callback_data="sub:allcmd")],
+            [InlineKeyboardButton("🎚️ Level: Expert (Ganti)", callback_data="mode:menu")],
         ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🧭 Pandu Aku Langkah demi Langkah", callback_data="guide:start")],
@@ -520,16 +521,18 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
     if group == "ide":
         return (
             "💡 <b>Ide Saham &amp; Sinyal Pasar</b>\n\n"
+            "• <b>Kondisi Pasar</b>: ringkasan IHSG, rezim, luas pasar, sektor &amp; berita.\n"
             "• <b>Ide Hari Ini</b>: scan kandidat teratas + ukuran lot aman.\n"
             "• <b>Beli Berkualitas</b>: khusus sinyal BELI yang labanya sehat.\n"
             "• <b>Sinyal Pasar</b>: rangkuman sinyal seluruh BEI (±944 emiten).\n"
             "• <b>Sektor Terkuat</b>: lihat sektor yang sedang banyak diminati.",
             InlineKeyboardMarkup([
-                [InlineKeyboardButton("💡 Ide Hari Ini", callback_data="run:saran"),
-                 InlineKeyboardButton("✨ Beli Berkualitas", callback_data="run:sinyal_bagus")],
-                [InlineKeyboardButton("📡 Sinyal Pasar", callback_data="run:sinyal"),
-                 InlineKeyboardButton("🏭 Sektor Terkuat", callback_data="run:sektor")],
-                [InlineKeyboardButton("⬅️ Menu Utama", callback_data="menu")],
+                [InlineKeyboardButton("🌐 Kondisi Pasar", callback_data="run:pasar"),
+                 InlineKeyboardButton("💡 Ide Hari Ini", callback_data="run:saran")],
+                [InlineKeyboardButton("✨ Beli Berkualitas", callback_data="run:sinyal_bagus"),
+                 InlineKeyboardButton("📡 Sinyal Pasar", callback_data="run:sinyal")],
+                [InlineKeyboardButton("🏭 Sektor Terkuat", callback_data="run:sektor"),
+                 InlineKeyboardButton("⬅️ Menu Utama", callback_data="menu")],
             ]),
         )
     if group == "rencana":
@@ -598,6 +601,7 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
             "• <code>/beli BBCA</code> / <code>/jual BBCA</code> — tanya layak beli/jual\n"
             "• <code>/belajar RSI</code> — kamus istilah saham\n\n"
             "<b>Ide Pasar, Modal &amp; Portofolio:</b>\n"
+            "• <code>/pasar</code> (alias <code>/market</code>) — laporan kondisi pasar BEI (IHSG, rezim, breadth, sektor &amp; berita)\n"
             "• <code>/saran</code> · <code>/saran lq45</code> · <code>/saran list</code> — kandidat harian &amp; posisi latihan\n"
             "• <code>/paket</code> — paket multi-saham siap Stockbit\n"
             "• <code>/sinyal</code> · <code>/sinyal beli bagus</code> — sinyal seluruh IDX\n"
@@ -628,10 +632,11 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
                 [InlineKeyboardButton("📊 Analisis Lengkap", callback_data="pick:analisis"),
                  InlineKeyboardButton("🎯 Hitung Modal & Lot", callback_data="sub:rencana")],
                 [InlineKeyboardButton("💡 Ide & Sinyal", callback_data="sub:ide"),
-                 InlineKeyboardButton("👀 Watchlist & Alarm", callback_data="sub:pantau")],
-                [InlineKeyboardButton("📖 Panduan & Contoh", callback_data="run:help"),
-                 InlineKeyboardButton("🧪 Fitur Lanjutan & Riset", callback_data="sub:pro")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+                 InlineKeyboardButton("🌐 Kondisi Pasar", callback_data="run:pasar")],
+                [InlineKeyboardButton("👀 Watchlist & Alarm", callback_data="sub:pantau"),
+                 InlineKeyboardButton("📖 Panduan & Contoh", callback_data="run:help")],
+                [InlineKeyboardButton("🧪 Fitur Lanjutan & Riset", callback_data="sub:pro"),
+                 InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
             ]),
         )
     return None
@@ -1354,6 +1359,8 @@ async def run_menu_action(update: Update, action: str, tickers: list[str], deps)
         await deps._do_jurnal(update, ["riwayat"], from_menu=True)
     elif action == "sektor":
         await deps._do_sektor(update, [], from_menu=True)
+    elif action == "pasar":
+        await deps._do_pasar(update, [], from_menu=True)
     elif action == "sinyal":
         await deps._do_sinyal(update, [], from_menu=True)
     elif action == "sinyal_bagus":
@@ -1431,6 +1438,12 @@ async def _handle_run(update: Update, msg, ctx, action: str, deps):
             reply_markup=deps.home_markup(),
         )
         await deps.run_menu_action(update, "sektor", [])
+    elif action == "pasar":
+        await deps._safe_edit(
+            msg, "⏳ Menyusun laporan kondisi pasar BEI...",
+            reply_markup=deps.home_markup(),
+        )
+        await deps.run_menu_action(update, "pasar", [])
     elif action == "scan":
         await deps._do_scan(update, [], ctx.job_queue, from_menu=True)
     else:

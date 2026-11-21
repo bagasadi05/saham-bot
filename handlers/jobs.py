@@ -17,9 +17,11 @@ from telegram.constants import ParseMode
 from telegram.ext import Application
 
 from core import (alerts, analysis, data, fundamental, jurnal as jurnalmod,
-                  marketcal, powerscore, regime, saran as saranmod, store)
+                  marketcal, pasar as pasarmod, powerscore, regime,
+                  saran as saranmod, store, tesis as tesismod)
 from core.reports import esc, fmt_rp
 from core.textutil import split_message
+from handlers import pasar as pasar_handler
 
 log = logging.getLogger("sahambuddy")
 
@@ -153,12 +155,21 @@ def _exit_alert_should_send(
 
 
 async def morning_scan(app: Application, deps):
-    """[P6] Auto-scan pagi: ringkasan /saran + rekap watchlist, 08:30 WIB,
-    Senin–Jumat — hanya ke chat yang mengaktifkan /auto on."""
+    """[P6] Auto-scan pagi: ringkasan kondisi pasar + /saran + rekap watchlist,
+    08:30 WIB, Senin–Jumat — hanya ke chat yang mengaktifkan /auto on."""
     now = marketcal.now_wib()
     if not marketcal.is_trading_day(now.date()):
         return  # Sabtu/Minggu & libur bursa tidak jalan
-    for cid in await asyncio.to_thread(store.get_auto_chats):
+    chats = await asyncio.to_thread(store.get_auto_chats)
+    market_brief = ""
+    if chats:
+        try:
+            ph = getattr(deps, "pasar_handler", pasar_handler)
+            market_brief = await ph.gather_market_brief(deps)
+        except Exception:
+            log.warning("ringkasan kondisi pasar pagi gagal pada morning_scan", exc_info=True)
+            market_brief = ""
+    for cid in chats:
         try:
             txt = await deps.saran_scan_text(int(cid))
             if txt is None:
@@ -173,7 +184,8 @@ async def morning_scan(app: Application, deps):
                     continue
             if recap:
                 txt += "\n\n📋 <b>Rekap watchlist</b>\n" + "\n".join(recap)
-            body = f"🌅 <b>AUTOSCAN {now:%a, %d %b %Y}</b>\n\n" + txt
+            brief_blk = f"{market_brief}\n\n" if market_brief else ""
+            body = f"🌅 <b>AUTOSCAN {now:%a, %d %b %Y}</b>\n\n{brief_blk}" + txt
             for part in split_message(body):
                 await app.bot.send_message(
                     int(cid), part, parse_mode=ParseMode.HTML,
@@ -182,6 +194,43 @@ async def morning_scan(app: Application, deps):
             log.exception("autoscan gagal utk %s", cid)
         await asyncio.sleep(1)
     await deps.check_dividend_reminders(app, now.date())
+
+
+async def closing_market_report(
+    app: Application, deps, *, force: bool = False
+) -> int:
+    """Laporan penutupan pasar 16:15 WIB ke chat `/auto on` (hari bursa)."""
+    now = marketcal.now_wib()
+    if not force and not marketcal.is_trading_day(now.date()):
+        return 0
+    chats = await asyncio.to_thread(store.get_auto_chats)
+    if not chats:
+        return 0
+    ph = getattr(deps, "pasar_handler", pasar_handler)
+    report = await ph.gather_market_data(deps, include_idx=True, include_news=True)
+    title = f"🌆 <b>LAPORAN PENUTUPAN PASAR — {now:%a, %d %b %Y}</b>"
+    body = pasarmod.format_market_report(
+        report,
+        title=title,
+        disclaimer=getattr(deps, "_SINYAL_DISCLAIMER", None),
+    )
+    kb = ph.pasar_markup()
+    sent = 0
+    for cid in chats:
+        try:
+            parts = split_message(body)
+            for i, part in enumerate(parts):
+                rm = kb if i == len(parts) - 1 else None
+                await deps.send_with_retry(
+                    lambda c=int(cid), p=part, m=rm: app.bot.send_message(
+                        c, p, parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True, reply_markup=m),
+                    what="kirim laporan penutupan pasar",
+                )
+            sent += 1
+        except Exception:
+            log.exception("kirim laporan penutupan pasar ke %s gagal", cid)
+    return sent
 
 
 async def check_band_alerts(app: Application, bars_fn, deps) -> int:
@@ -351,6 +400,15 @@ async def _scan_real_position_exits(
     today_d = marketcal.now_wib().date()
     today_iso = today_d.isoformat()
     sent_count = 0
+    try:
+        scan_rows = await asyncio.to_thread(store.load_market_scan)
+    except Exception:
+        scan_rows = []
+    rel_map = {
+        str(r["ticker"]).upper(): r.get("rel_pct")
+        for r in (scan_rows or [])
+        if r.get("ticker")
+    }
 
     for chat_id in pos_chats:
         try:
@@ -472,8 +530,44 @@ async def _scan_real_position_exits(
                         "&amp; hindari tambah muatan baru.",
                     ))
 
-                if not candidates:
-                    continue
+                # Pelacak tesis posisi (W3): alert hanya saat status tesis berubah
+                t_res = tesismod.evaluate_position(
+                    sym,
+                    avg_px,
+                    close_px,
+                    low=low_px,
+                    ind=ind,
+                    sl=sl_lvl or None,
+                    tp=eg.get("tp_target"),
+                    trailing_sl=ch.get("stop"),
+                    trailing_hit=bool(ch.get("hit")),
+                    days_held=ts.get("days_held"),
+                    time_stop_flag=bool(ts.get("triggered")),
+                    pnl_net_pct=eg.get("pnl_net_pct"),
+                    rel_pct=rel_map.get(sym),
+                    market_regime=reg,
+                )
+                prev_tesis = await asyncio.to_thread(
+                    store.get_position_thesis, chat_id, sym
+                )
+                prev_alerted = (
+                    prev_tesis.get("alerted_status")
+                    if (prev_tesis and "alerted_status" in prev_tesis)
+                    else (prev_tesis or {}).get("status")
+                )
+                t_trans = tesismod.evaluate_transition(
+                    prev_alerted, t_res["status"]
+                )
+                if t_res.get("data_ok") and not t_trans.get("should_alert"):
+                    await asyncio.to_thread(
+                        store.set_position_thesis,
+                        chat_id,
+                        sym,
+                        status=t_res["status"],
+                        score=t_res["score"],
+                        reasons=t_res["reasons"],
+                        alerted_status=t_res["status"],
+                    )
 
                 fresh_lines: list[str] = []
                 for trig_key, trig_line in candidates:
@@ -482,6 +576,8 @@ async def _scan_real_position_exits(
                     )
                     if should_send:
                         fresh_lines.append("• " + trig_line)
+                if t_trans.get("should_alert"):
+                    fresh_lines.append("• " + tesismod.format_alert_line(t_res, t_trans))
 
                 if not fresh_lines:
                     continue
@@ -524,6 +620,16 @@ async def _scan_real_position_exits(
                     parse_mode=ParseMode.HTML,
                     reply_markup=kb,
                 )
+                if t_res.get("data_ok") and t_trans.get("should_alert"):
+                    await asyncio.to_thread(
+                        store.set_position_thesis,
+                        chat_id,
+                        sym,
+                        status=t_res["status"],
+                        score=t_res["score"],
+                        reasons=t_res["reasons"],
+                        alerted_status=t_res["status"],
+                    )
                 sent_count += 1
                 await asyncio.sleep(0.3)
             except Exception:

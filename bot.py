@@ -71,6 +71,7 @@ from handlers import jobs as jobs_handler
 from handlers import jurnal as jurnal_handler
 from handlers import market as market_handler
 from handlers import menu as menu_handler
+from handlers import pasar as pasar_handler
 from handlers import sektor as sektor_handler
 from handlers import sinyal as sinyal_handler
 from handlers import trading as trading_handler
@@ -832,6 +833,7 @@ async def _post_init(app: Application):
             BotCommand("watch", "Daftar saham pantauan (watchlist)"),
             BotCommand("alert", "Pasang alarm harga otomatis"),
             BotCommand("sinyal", "Sinyal pasar seluruh BEI (±944 emiten)"),
+            BotCommand("pasar", "Laporan kondisi pasar BEI (IHSG, sektor & berita)"),
             BotCommand("sektor", "Sektor industri terkuat & terlemah"),
             BotCommand("skor", "Nilai cepat kondisi saham"),
             BotCommand("berita", "Berita terbaru + sentimen"),
@@ -1555,6 +1557,17 @@ async def cmd_sektor(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await _do_sektor(update, tokens(update))
 
 
+async def _do_pasar(update: Update, args: list[str] | None = None,
+                    *, from_menu: bool = False):
+    await pasar_handler.do_pasar(update, args or [], sys.modules[__name__],
+                                 from_menu=from_menu)
+
+
+async def cmd_pasar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Laporan kondisi pasar BEI (IHSG, rezim, breadth, sektor, berita): /pasar."""
+    await pasar_handler.cmd_pasar(update, ctx, sys.modules[__name__])
+
+
 async def _scan_summary_text(res: dict, intro: str,
                              kval: dict | None = None) -> str:
     m = res.get("meta") or {}
@@ -1716,6 +1729,11 @@ async def full_market_scan_job(app: Application):
     await jobs_handler.full_market_scan_job(app, sys.modules[__name__])
 
 
+@job_guard("closing-market-report")
+async def closing_market_report_job(app: Application):
+    await jobs_handler.closing_market_report(app, sys.modules[__name__])
+
+
 @job_guard("weekly-journal")
 async def weekly_journal_report(app: Application):
     await jobs_handler.weekly_journal_report(app, sys.modules[__name__])
@@ -1791,6 +1809,7 @@ def main():
     reg(["cek", "checklist", "periksa"], cmd_cek)
     reg(["portofolio", "porto"], cmd_portofolio)
     reg(["jurnal", "journal"], cmd_jurnal)
+    reg(["pasar", "market"], cmd_pasar)
     reg(["sektor", "sector"], cmd_sektor)
     reg(["scan", "pindai"], cmd_scan)
     reg(["beli", "buy"], cmd_beli)
@@ -1823,6 +1842,10 @@ def main():
     job_queue.run_daily(full_market_scan_job,
                         time=_dt.time(16, 15, tzinfo=WIB),
                         name="full-market-scan")
+    # laporan kondisi pasar penutupan 16:15 WIB ke chat /auto on
+    job_queue.run_daily(closing_market_report_job,
+                        time=_dt.time(16, 15, tzinfo=WIB),
+                        name="closing-market-report")
     # [P28] laporan berkala mingguan (Jumat 16:45 WIB) realisasi asli vs paper
     job_queue.run_daily(weekly_journal_report,
                         time=_dt.time(16, 45, tzinfo=WIB),

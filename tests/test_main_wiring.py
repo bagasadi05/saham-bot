@@ -82,14 +82,15 @@ def test_main_wiring_lengkap(monkeypatch):
     expected = {
         "start", "menu", "mode", "help", "analisis", "skor", "berita",
         "fundamental", "backtest", "watch", "saran", "sinyal", "rencana",
-        "paket", "cek", "portofolio", "jurnal", "sektor", "scan", "beli",
-        "jual", "bandar", "banding", "alert", "agenda", "validasi", "jejak",
-        "modal", "auto", "status", "id", "belajar",
+        "paket", "cek", "portofolio", "jurnal", "pasar", "market", "sektor",
+        "scan", "beli", "jual", "bandar", "banding", "alert", "agenda",
+        "validasi", "jejak", "modal", "auto", "status", "id", "belajar",
     }
     assert expected <= cmds
-    # 31 CommandHandler + CallbackQueryHandler + MessageHandler
-    assert len(app.handlers) == 33
+    # 32 CommandHandler + CallbackQueryHandler + MessageHandler
+    assert len(app.handlers) == 34
 
     names = {name for _, name, _ in app.job_queue.registered}
     assert {"morning-scan", "fill-open", "full-market-scan",
-            "weekly-journal", "heartbeat", "backup-store"} <= names
+            "closing-market-report", "weekly-journal", "heartbeat",
+            "backup-store"} <= names
