@@ -10,6 +10,14 @@ Asumsi yang ditulis terbuka:
     dipegang", bukan return realisasi.
   - Drawdown dihitung dari kurva ekuitas sintetis dengan bobot itu.
   - VaR 95% = 1,645 x vol harian x nilai portofolio (parametrik, bukan janji).
+  - VaR historis 95% = persentil 5% return portofolio harian; ES 95% =
+    rata-rata return di ekor itu. Keduanya dilaporkan sebagai **besar
+    kerugian** (positif), jadi ES >= VaR selalu berlaku.
+  - Kontribusi risiko RC_i = w_i (Σw)_i / σ_p² x 100, memakai matriks
+    kovarians dari tanggal yang sama-sama tersedia.
+  - Bobot inv-vol dibatasi dua lapis: per posisi & per sektor; bila batas itu
+    hanya memungkinkan sebagian modal teralokasi, sisanya dilaporkan sebagai
+    tunai, bukan bobot karangan.
   - Korelasi/beta memakai irisan tanggal yang tersedia di semua seri.
 """
 from __future__ import annotations
@@ -28,6 +36,9 @@ CORR_WARN = 0.80          # korelasi pasangan tertinggi
 BETA_WARN = 1.30
 DD_WARN_PCT = -15.0       # drawdown berjalan
 MIN_DAYS = 20
+UNKNOWN_SECTOR = "tidak diketahui"
+MAX_WF_ROUNDS = 50        # putaran maksimum water-filling (posisi & sektor)
+VAR_LEVEL = 0.05          # persentil 5% => VaR 95%
 
 
 def validate_limits(pos_pct: float, sec_pct: float) -> tuple[float, float]:
@@ -58,18 +69,82 @@ def get_risk_limits(
     return store.get_risk_limits(chat_id, default_pos=default_pos, default_sec=default_sec)
 
 
+def _sector_map(sectors: dict | None) -> dict[str, str]:
+    """Normalisasi peta ticker → sektor; entri kosong dianggap tidak diketahui."""
+    out: dict[str, str] = {}
+    for raw_t, raw_s in (sectors or {}).items():
+        t = str(raw_t or "").strip().upper()
+        s = str(raw_s or "").strip()
+        if t and s:
+            out[t] = s
+    return out
+
+
+def _water_fill(
+    base: dict[str, float],
+    caps: dict[str, float],
+    budget: float = 1.0,
+    max_rounds: int = MAX_WF_ROUNDS,
+) -> tuple[dict[str, float], bool]:
+    """Bagi `budget` proporsional `base` dengan batas atas per kunci.
+
+    Water-filling: kunci yang melewati batasnya dipatok di batas, sisa anggaran
+    dibagi ulang proporsional ke kunci yang masih bebas — diulang maksimum
+    `max_rounds` putaran, urutan abjad supaya deterministik. Bila jumlah semua
+    batas < `budget`, tidak ada angka karangan: selisihnya tinggal sebagai sisa
+    yang tidak teralokasi dan dilaporkan pemanggil sebagai tunai.
+
+    Return `(alokasi, ada_batas_mengikat)`.
+    """
+    alloc: dict[str, float] = {}
+    free = {str(k): float(v) for k, v in base.items() if float(v) > 0}
+    bound = False
+    for _ in range(max(1, int(max_rounds))):
+        if not free:
+            break
+        rem = float(budget) - sum(alloc.values())
+        if rem <= 1e-12:
+            break
+        free_sum = sum(free.values())
+        if free_sum <= 0:
+            break
+        scaled = {k: v / free_sum * rem for k, v in free.items()}
+        over = [k for k in sorted(scaled)
+                if scaled[k] > float(caps.get(k, 0.0)) + 1e-12]
+        if not over:
+            alloc.update(scaled)
+            break
+        bound = True
+        for k in over:
+            alloc[k] = float(caps.get(k, 0.0))
+            free.pop(k, None)
+    return alloc, bound
+
+
 def inverse_vol_weights(
     quotes: dict[str, dict],
     tickers: list[str],
     *,
     max_weight: float = MAX_POS_PCT,
+    max_sector_pct: float = MAX_SECTOR_PCT,
+    sectors: dict[str, str] | None = None,
 ) -> dict:
     """Target bobot penyeimbang risiko (1 / volatilitas) ala Riskfolio-Lib.
 
     Hanya menghitung emiten yang punya riwayat return harian >= MIN_DAYS dan
     volatilitas positif; bila < 2 emiten memenuhi syarat, kembalikan ok=False
-    tanpa mengarang volatilitas. Menerapkan batas maks per posisi lewat
-    water-filling jika jumlah posisi * max_weight >= 100%.
+    tanpa mengarang volatilitas.
+
+    Dua lapis batas: (1) bobot per posisi <= `max_weight`; (2) total bobot per
+    sektor <= `max_sector_pct` bila peta `sectors` (ticker → sektor) diberikan.
+    Kelebihan satu sektor dialirkan ke posisi/sektor lain yang masih di bawah
+    batas lewat water-filling iteratif (maks 50 putaran, deterministik).
+
+    Emiten tanpa sektor masuk kelompok "tidak diketahui" dan **tidak** dipaksa
+    ke batas sektor mana pun (sektornya memang tidak diketahui) — hanya batas
+    per posisi yang berlaku. Bila batas-batas itu hanya memungkinkan sebagian
+    modal teralokasi, sisa dilaporkan di `cash_pct`/`cap_note`, bukan dikarang
+    supaya tetap 100%.
     """
     vols: dict[str, float] = {}
     for raw_t in tickers:
@@ -89,48 +164,124 @@ def inverse_vol_weights(
             "weights": {},
             "vols_ann": {},
             "capped": False,
-            "cap_pct": round(float(max_weight) * 100.0, 1),
+            "cap_pct": round(float(max_weight or MAX_POS_PCT) * 100.0, 1),
             "cap_note": None,
+            "sector_capped": False,
+            "sector_note": None,
+            "sectors_pct": {},
+            "cash_pct": 0.0,
             "reason": "butuh minimal 2 posisi dengan riwayat volatilitas cukup",
         }
 
     inv = {t: 1.0 / v for t, v in vols.items()}
     total_inv = sum(inv.values())
-    w = {t: val / total_inv for t, val in inv.items()}
+    base = {t: val / total_inv for t, val in inv.items()}
 
     cap = float(max_weight or MAX_POS_PCT)
-    capped = False
+    if not math.isfinite(cap) or cap <= 0:
+        cap = MAX_POS_PCT
+    cap = min(cap, 1.0)
+
+    sec_cap: float | None = None
+    if sectors:
+        raw_sec = float(
+            max_sector_pct if max_sector_pct is not None else MAX_SECTOR_PCT)
+        if math.isfinite(raw_sec) and 0 < raw_sec < 1.0:
+            sec_cap = raw_sec
+    secmap = _sector_map(sectors)
+
+    # Kelompok tingkat-2: satu sektor = satu grup; emiten tanpa sektor menjadi
+    # grup sendiri (hanya batas per posisi, tidak dipaksa batas sektor).
+    groups: dict[str, list[str]] = {}
+    group_sector: dict[str, str | None] = {}
+    for t in base:
+        s = secmap.get(t) if sec_cap is not None else None
+        key = s if s else f"~{t}"
+        groups.setdefault(key, []).append(t)
+        group_sector[key] = s
+
+    g_base = {g: sum(base[t] for t in members) for g, members in groups.items()}
+    g_caps = {
+        g: min(cap * len(members), sec_cap) if group_sector[g] else cap
+        for g, members in groups.items()
+    }
+    g_alloc, _ = _water_fill(g_base, g_caps, 1.0)
+
+    weights: dict[str, float] = {}
+    for g, members in groups.items():
+        amount = g_alloc.get(g, 0.0)
+        if amount <= 0:
+            continue
+        alloc, _ = _water_fill(
+            {t: base[t] for t in members}, {t: cap for t in members}, amount)
+        weights.update(alloc)
+
+    # Posisi dianggap kena batas bila bobotnya berhenti tepat di batas padahal
+    # proporsi awalnya lebih besar (bisa dipatok di tingkat grup maupun posisi).
+    pos_capped = any(
+        weights[t] >= cap - 1e-9 and base[t] > weights[t] + 1e-9 for t in base)
+
+    invested = sum(weights.values())
+    cash = max(0.0, 1.0 - invested)
+
+    sectors_tot: dict[str, float] = {}
+    for t, val in weights.items():
+        s = (secmap.get(t) if sec_cap is not None else None) or UNKNOWN_SECTOR
+        sectors_tot[s] = sectors_tot.get(s, 0.0) + val
+
+    capped_sectors: list[tuple[str, float, float]] = []
+    for g in groups:
+        s = group_sector[g]
+        if not s or sec_cap is None:
+            continue
+        if abs(g_caps[g] - sec_cap) > 1e-9:
+            continue   # kapasitas grup dibatasi batas posisi, bukan sektor
+        alloc_g = g_alloc.get(g, 0.0)
+        if alloc_g >= g_caps[g] - 1e-9 and g_base[g] > alloc_g + 1e-9:
+            capped_sectors.append((s, g_base[g], alloc_g))
+    capped_sectors.sort(key=lambda row: (-row[1], row[0]))
+    sector_capped = bool(capped_sectors)
+
+    notes: list[str] = []
+    if capped_sectors:
+        detail = ", ".join(
+            f"{s} {a * 100:.1f}% (proporsi awal {b * 100:.1f}%)"
+            .replace(".", ",")
+            for s, b, a in capped_sectors)
+        notes.append(f"batas sektor {sec_cap * 100:.0f}% mengikat: {detail}")
+    known = [t for t in base if secmap.get(t)]
+    if sec_cap is not None and len(known) < len(base):
+        notes.append(
+            f"{len(base) - len(known)} emiten tanpa sektor — dihitung "
+            f"'{UNKNOWN_SECTOR}', tidak dipaksa ke batas sektor")
+    if sec_cap is None:
+        if sectors:
+            notes.append("batas sektor tidak diterapkan (batas 100%)")
+        else:
+            notes.append(
+                "peta sektor tidak diberikan — batas sektor tidak diterapkan")
+    sector_note = "; ".join(notes) if notes else None
+
     cap_note = None
-    if cap * len(vols) >= 1.0 - 1e-9:
-        fixed: dict[str, float] = {}
-        free = dict(w)
-        while free:
-            rem = 1.0 - sum(fixed.values())
-            free_sum = sum(free.values())
-            scaled = {t: (val / free_sum) * rem for t, val in free.items()}
-            over = {t for t, val in scaled.items() if val > cap + 1e-9}
-            if not over:
-                w = {**fixed, **scaled}
-                break
-            capped = True
-            for t in over:
-                fixed[t] = cap
-                free.pop(t, None)
-        else:  # pragma: no cover - pengaman numerik saat sum(fixed)==1
-            w = fixed
-    else:
+    if cash > 0.005:
+        batas = f"batas {cap * 100:.0f}%/posisi"
+        if sec_cap is not None:
+            batas += f" + {sec_cap * 100:.0f}%/sektor"
         cap_note = (
-            f"batas {cap * 100:.0f}%/posisi belum mengikat untuk "
-            f"{len(vols)} posisi (total maks {cap * len(vols) * 100:.0f}% < 100%)"
-        )
+            f"{batas} hanya memungkinkan {invested * 100:.1f}% modal "
+            f"teralokasi; sisa {cash * 100:.1f}% tunai").replace(".", ",")
 
     return {
         "ok": True,
-        "weights": {t: round(val * 100.0, 1) for t, val in w.items()},
+        "weights": {t: round(val * 100.0, 1) for t, val in weights.items()},
         "vols_ann": {t: round(v * math.sqrt(252) * 100.0, 1) for t, v in vols.items()},
-        "capped": capped,
+        "capped": pos_capped,
         "cap_pct": round(cap * 100.0, 1),
         "cap_note": cap_note,
+        "sector_capped": sector_capped,
+        "sector_note": sector_note,
+        "sectors_pct": {s: round(val * 100.0, 1) for s, val in sectors_tot.items()},
+        "cash_pct": round(cash * 100.0, 1),
     }
 
 
@@ -167,7 +318,12 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
 
     if not priced:
         return {"ok": False, "reason": "tidak ada posisi dengan harga terbaca",
-                "value": 0, "weights": {}, "sectors": [], "warnings": []}
+                "value": 0, "weights": {}, "sectors": [], "warnings": [],
+                "risk_contrib_pct": None, "risk_contrib_note": None,
+                "hist_var95_pct": None, "hist_var95_rp": None,
+                "hist_es95_pct": None, "hist_es95_rp": None,
+                "var_n_days": None, "var_breaches": None,
+                "var_expected_breaches": None, "var_note": None}
 
     total = sum(x["value"] for x in priced)
     weights = {x["ticker"]: x["value"] / total for x in priced}
@@ -184,12 +340,18 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
     mdd = vol_ann = var95_pct = var95_rp = None
     beta = corr_avg = corr_max = None
     corr_pair = None
+    risk_contrib: dict[str, float] | None = None
+    rc_note: str | None = None
+    hist_var_pct = hist_var_rp = hist_es_pct = hist_es_rp = None
+    var_n_days = var_breaches = var_expected = None
+    var_note: str | None = None
     days = 0
 
     if len(rets) < len(priced):
         warnings.append(
             f"{len(priced) - len(rets)} posisi tanpa riwayat cukup — "
-            "tidak dihitung di drawdown/korelasi")
+            "tidak dihitung di drawdown/korelasi/kontribusi risiko/"
+            "VaR historis")
 
     if rets:
         frame = pd.concat({x["ticker"]: x["rets"] for x in rets}, axis=1,
@@ -204,6 +366,32 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
             var95_rp = round(total * 1.645 * vol_daily)
             equity = (1 + port).cumprod()
             mdd = round(float((equity / equity.cummax() - 1).min()) * 100, 1)
+
+            # Kontribusi risiko: RC_i = w_i (Σw)_i / σ_p² x 100 (jumlah ~100).
+            try:
+                cov = frame.cov().to_numpy(dtype=float)
+                wv = w.reindex(frame.columns).to_numpy(dtype=float)
+                var_p = float(wv @ cov @ wv)
+            except (TypeError, ValueError):
+                var_p = float("nan")
+            if math.isfinite(var_p) and var_p > 0:
+                rc = wv * (cov @ wv) / var_p * 100.0
+                risk_contrib = {str(t): round(float(val), 1)
+                                for t, val in zip(frame.columns, rc, strict=False)}
+            else:
+                rc_note = "varians portofolio nol/tidak terhingga"
+
+            # VaR historis 95% = persentil 5% return harian; ES = rata-rata ekor.
+            q05 = float(port.quantile(VAR_LEVEL))
+            hist_var_pct = round(max(0.0, -q05) * 100.0, 2)
+            hist_var_rp = round(total * hist_var_pct / 100.0)
+            tail = port[port <= q05 + 1e-12]
+            var_n_days = int(len(port))
+            var_breaches = int(len(tail))
+            var_expected = round(var_n_days * VAR_LEVEL, 1)
+            if len(tail):
+                hist_es_pct = round(max(0.0, -float(tail.mean())) * 100.0, 2)
+                hist_es_rp = round(total * hist_es_pct / 100.0)
 
             if len(rets) >= 2:
                 corr = frame.corr()
@@ -222,6 +410,18 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
                     var_b = float(both.iloc[:, 1].var(ddof=1))
                     if var_b > 0:
                         beta = round(float(both.cov().iloc[0, 1] / var_b), 2)
+
+    if not rets:
+        short = any(x["rets"] is not None for x in priced)
+        var_note = (
+            f"riwayat return harian < {MIN_DAYS} hari — "
+            "VaR historis/ES tidak dihitung"
+            if short else "tidak ada posisi dengan riwayat return harian")
+    elif days < MIN_DAYS:
+        var_note = (f"irisan tanggal return {days} hari (< {MIN_DAYS}) — "
+                    "VaR historis/ES tidak dihitung")
+    if risk_contrib is None and rc_note is None:
+        rc_note = var_note or "kontribusi risiko tidak tersedia"
 
     eff_pos = float(max_pos_pct or MAX_POS_PCT)
     eff_sec = float(max_sector_pct or MAX_SECTOR_PCT)
@@ -245,7 +445,12 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
                         "posisi cenderung bergerak bersama")
 
     inv_vol = (
-        inverse_vol_weights(quotes, [x["ticker"] for x in priced], max_weight=eff_pos)
+        inverse_vol_weights(
+            quotes, [x["ticker"] for x in priced],
+            max_weight=eff_pos, max_sector_pct=eff_sec,
+            sectors={x["ticker"]: x["sector"] for x in priced
+                     if x["sector"] and x["sector"] != UNKNOWN_SECTOR},
+        )
         if len(priced) >= 2
         else None
     )
@@ -260,6 +465,16 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
         "max_drawdown_pct": mdd,
         "var95_pct": var95_pct,
         "var95_rp": var95_rp,
+        "hist_var95_pct": hist_var_pct,
+        "hist_var95_rp": hist_var_rp,
+        "hist_es95_pct": hist_es_pct,
+        "hist_es95_rp": hist_es_rp,
+        "var_n_days": var_n_days,
+        "var_breaches": var_breaches,
+        "var_expected_breaches": var_expected,
+        "var_note": var_note,
+        "risk_contrib_pct": risk_contrib,
+        "risk_contrib_note": rc_note,
         "beta": beta,
         "corr_avg": corr_avg,
         "corr_max": corr_max,

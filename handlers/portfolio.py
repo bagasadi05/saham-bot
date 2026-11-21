@@ -40,6 +40,11 @@ def _cb_ticker(raw: str | None) -> str | None:
     return t if re.fullmatch(r"[A-Z0-9]{2,10}", t) else None
 
 
+def _num(value: float, digits: int = 1) -> str:
+    """Format angka desimal gaya Indonesia (koma) tanpa menyentuh teks lain."""
+    return f"{value:.{digits}f}".replace(".", ",")
+
+
 def _empty_porto_markup() -> InlineKeyboardMarkup:
     """Tombol pembuka saat portofolio masih kosong agar pemula tidak buntu."""
     return InlineKeyboardMarkup([
@@ -243,11 +248,37 @@ def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> st
         out.append("   " + " · ".join(bits))
         if risk.get("var95_pct") is not None:
             out.append(f"   VaR 95% 1 hari: <b>{deps._money(risk['var95_rp'])}</b> "
-                       f"({risk['var95_pct']:.2f}% nilai)".replace(".", ","))
+                       f"({_num(risk['var95_pct'], 2)}% nilai)")
+        if risk.get("hist_var95_pct") is not None:
+            out.append(
+                "   VaR historis 95% 1 hari: "
+                f"<b>{deps._money(risk['hist_var95_rp'])}</b> "
+                f"({_num(risk['hist_var95_pct'], 2)}% nilai)")
+            if risk.get("hist_es95_pct") is not None:
+                out.append(
+                    "   ES 95% (rata-rata hari terburuk): "
+                    f"<b>{deps._money(risk['hist_es95_rp'])}</b> "
+                    f"({_num(risk['hist_es95_pct'], 2)}%)")
+            if risk.get("var_n_days"):
+                out.append(
+                    f"   Pelanggaran VaR: {risk['var_breaches']} dari "
+                    f"{risk['var_n_days']} hari "
+                    f"(ekspektasi {_num(risk['var_expected_breaches'], 1)})")
+        elif risk.get("var_note"):
+            out.append("   <i>VaR historis/ES tidak tersedia — "
+                       f"{esc(risk['var_note'])}</i>")
         if risk.get("corr_avg") is not None:
             out.append(f"   Korelasi rata-rata {risk['corr_avg']:.2f} · "
                        f"tertinggi {esc(risk.get('corr_pair') or '—')} "
                        f"{risk['corr_max']:.2f}".replace(".", ","))
+        rc = risk.get("risk_contrib_pct") or {}
+        if rc:
+            parts = [f"{esc(t)} {_num(v)}%" for t, v in
+                     sorted(rc.items(), key=lambda kv: (-kv[1], kv[0]))]
+            out.append("   Kontribusi risiko: " + " · ".join(parts))
+        elif risk.get("risk_contrib_note"):
+            out.append("   <i>Kontribusi risiko tidak tersedia — "
+                       f"{esc(risk['risk_contrib_note'])}</i>")
         inv_vol = risk.get("inv_vol") or {}
         if inv_vol.get("ok") and inv_vol.get("weights"):
             parts = []
@@ -259,6 +290,8 @@ def _porto_text(summary: dict, modal: int, deps, risk: dict | None = None) -> st
             out.append("   Bobot seimbang (inv-vol): " + " · ".join(parts))
             if inv_vol.get("cap_note"):
                 out.append(f"   <i>{esc(inv_vol['cap_note'])}</i>")
+            if inv_vol.get("sector_note"):
+                out.append(f"   <i>{esc(inv_vol['sector_note'])}</i>")
         for w in (risk.get("warnings") or [])[:3]:
             out.append("⚠️ " + esc(w.replace(".", ",")))
     out += [
