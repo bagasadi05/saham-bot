@@ -92,6 +92,66 @@ def test_weights_and_quintiles_synced_with_validation_json():
         assert abs(relatif.OOS_QUINTILES[q]["win_rate"] - val_q[q]["win_rate"]) <= 1e-6
 
 
+def test_sector_scores_rank_within_sector_not_globally():
+    # 8 GOOD di sektor S1 + 8 BAD di sektor S2: secara global S1 jauh di atas
+    # S2, tapi DI DALAM sektornya masing-masing semua seri (persentil 50).
+    items = ([{"ticker": f"A{i}", "ind": make_ind(**GOOD), "sector": "S1"}
+              for i in range(8)]
+             + [{"ticker": f"B{i}", "ind": make_ind(**BAD), "sector": "S2"}
+                for i in range(8)])
+    out = relatif.score_universe(items)
+    assert all(it["rel_sector_ok"] for it in out)
+    assert all(it["rel_pct_sector"] == 50.0 for it in out)
+    assert all(it["rel_sector_n"] == 8 for it in out)
+    good_global = [it["rel_pct"] for it in out if it["ticker"].startswith("A")]
+    bad_global = [it["rel_pct"] for it in out if it["ticker"].startswith("B")]
+    assert min(good_global) > max(bad_global)
+
+
+def test_small_sector_group_has_no_sector_score():
+    items = ([{"ticker": f"A{i}", "ind": make_ind(**GOOD), "sector": "S1"}
+              for i in range(8)]
+             + [{"ticker": f"B{i}", "ind": make_ind(**BAD), "sector": "S2"}
+                for i in range(4)])
+    out = relatif.score_universe(items)
+    s1 = [it for it in out if it["ticker"].startswith("A")]
+    s2 = [it for it in out if it["ticker"].startswith("B")]
+    assert all(it["rel_sector_ok"] for it in s1)
+    assert all(it["rel_sector_n"] == 8 for it in s1)
+    assert all(it["rel_sector_ok"] is False for it in s2)
+    assert all(it["rel_pct_sector"] is None for it in s2)
+    assert all(it["rel_sector_n"] == 4 for it in s2)
+    # global tetap dihitung untuk semua
+    assert all(it["rel_ok"] for it in out)
+
+
+def test_missing_sector_keeps_global_score_only():
+    items = ([{"ticker": f"T{i}", "ind": make_ind(**GOOD)} for i in range(8)]
+             + [{"ticker": f"U{i}", "ind": make_ind(**BAD)} for i in range(2)])
+    out = relatif.score_universe(items)
+    assert all(it["rel_ok"] for it in out)
+    assert all(it["rel_sector_ok"] is False for it in out)
+    assert all(it["rel_pct_sector"] is None for it in out)
+    assert all(it["rel_sector"] is None for it in out)
+
+
+def test_global_scores_unchanged_when_sector_added():
+    plain = ([{"ticker": f"G{i}", "ind": make_ind(**GOOD)} for i in range(5)]
+             + [{"ticker": f"B{i}", "ind": make_ind(**BAD)} for i in range(5)])
+    sectored = ([{"ticker": f"G{i}", "ind": make_ind(**GOOD), "sector": "S1"}
+                 for i in range(5)]
+                + [{"ticker": f"B{i}", "ind": make_ind(**BAD), "sector": "S1"}
+                   for i in range(5)])
+    out_plain = relatif.score_universe(plain)
+    out_sect = relatif.score_universe(sectored)
+    by_ticker = {it["ticker"]: it for it in out_sect}
+    for it in out_plain:
+        twin = by_ticker[it["ticker"]]
+        assert twin["rel_z"] == it["rel_z"]
+        assert twin["rel_pct"] == it["rel_pct"]
+        assert twin["rel_quintil"] == it["rel_quintil"]
+
+
 def test_quintile_dispersion_and_summary_line_with_iqr_or_safe_fallback(tmp_path):
     # Fallback aman jika JSON belum punya P25-P75
     no_iqr = tmp_path / "val_no_iqr.json"

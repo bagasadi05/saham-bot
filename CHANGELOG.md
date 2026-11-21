@@ -38,6 +38,75 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 - **Tes wiring `main()`**: 31 perintah, callback/teks, 7 job, error handler, dan
   polling dipastikan terdaftar tanpa memanggil Telegram atau jaringan.
 
+## [Unreleased] — 2026-11-17
+
+Peringkat relatif per sektor — z-score di dalam sektornya sendiri (Track C
+bagian sinyal, dipilih pertama 16 Nov 2026):
+
+- **Pemetaan ticker→sektor baru: `data/idx_sectors.json`** — 916 emiten, 11
+  sektor gaya yfinance, diambil 17 Nov 2026 dari daftar publik
+  tweenvest.com (API idx.co.id diblokir 403 dari VM ini dan Yahoo sedang
+  rate-limit 429, jadi rute yfinance/`fzn0x/idx` tidak bisa dipakai hari
+  itu). 29 kode universe tidak terpetakan (kemungkinan sudah tidak aktif)
+  dan 1 kode peta (XSPI, DIRE) tidak ada di universe. `core/universe.py`
+  kini punya `sector_of()` ("" bila tak terpetakan — tidak pernah ditebak)
+  dan `sectors_meta()`; `.gitignore` dikecualikan seperti dua snapshot data
+  lainnya.
+- **`core/relatif.py` `score_universe()` kini menghitung juga peringkat DI
+  DALAM sektor** (`rel_z_sector`/`rel_pct_sector`/`rel_quintil_sector` +
+  `rel_sector_ok`, `rel_sector`, `rel_sector_n`) — statistik (mean/std)
+  dihitung per kelompok sektor, hanya bila kelompok itu berisi ≥8 emiten
+  usable; kelompok yang terlalu kecil atau tanpa sektor mendapat
+  `rel_sector_ok=False` dan nilai sektor None. **Peringkat global tidak
+  berubah** (bobot, kuintil OOS, dan urutan kandidat tetap sama — ada tes
+  yang mengunci ini).
+- **`/saran` dan `/sinyal` (via `core/screener.py`)** menempelkan sektor ke
+  tiap item sebelum di-skor; baris hasil scan membawa `sector`,
+  `rel_pct_sector`, `rel_quintil_sector`. Alasan BELI/JUAL kini menampilkan
+  persentil sektor bila tersedia ("di sektornya 88/100") — **sinyal tetap
+  memakai ambang persentil global** yang tervalidasi OOS; skor sektor belum
+  punya validasi OOS sendiri, jadi ia konteks, bukan penentu sinyal.
+- Tes baru (offline, data sintetis): 4 di `tests/test_relatif.py`
+  (peringkat dalam sektor, grup kecil, tanpa sektor, global tak berubah),
+  1 di `tests/test_screener.py` (tampilan persentil sektor + sinyal tetap
+  global), 1 di `tests/test_universe.py` (peta sektor). Total 794 tes:
+  793 lulus, 1 gagal — `test_news_ml_cache_thread_safe` (sudah gagal di
+  tree bersih sebelum perubahan ini; torch tidak terpasang di venv).
+- Tindak lanjut (belum dikerjakan): builder regenerasi
+  `tools/build_sectors.py` (saat ini file hanya dilacak di git; sumber
+  tweenvest butuh render JS sehingga builder urllib tidak bisa — kandidat
+  sumber regenerasi adalah yfinance `.info` bila rate-limit reda).
+
+Keanggotaan LQ45 point-in-time — Track B langkah 1 (riset, belum ada angka
+bias):
+
+- **`research/lq45_membership_2016-2026.json`** — 128 interval, 98 emiten
+  unik, 45 masih anggota (`end: null`), dirangkai mundur dari daftar
+  Nov 2026 lalu maju lagi dengan asersi keras (tiap langkah tepat 45
+  anggota). Provenance per periode di
+  `research/lq45_membership_SOURCES.md` (pengumuman BEI bernomor, daftar
+  lengkap kontemporer, Siaran Pers BEI 28 Mar 2024).
+- **Caveat jujur (dicatat di SOURCES.md, bukan diisi tebak-tebakan)**:
+  Mei 2019 MISSING (3x pencarian tanpa hasil) → diperlakukan sebagai
+  no-change karena selisih Feb→Agu 2019 cocok delta Agu 2019 (inferensi,
+  bukan fakta); tanggal efektif Nov 2024 belum pasti (dipakai 1 Nov 2024,
+  hari bursa pertama — inferensi); pasangan BUKA masuk/SMRA keluar
+  29 Sep 2021 adalah deduksi eliminasi dari lampiran BEI (bukan berita
+  eksplisit); baseline Feb 2016 left-censored (42 ticker mungkin sudah
+  anggota jauh sebelumnya); daftar lampiran skripsi Undiksha mengandung
+  kesalahan transkripsi dan TIDAK dipakai mentah-mentah.
+- **`research/bias.py` diperbaiki satu baris**: loader kini menerima
+  `end: null` (= masih anggota) — sebelumnya menolak file ini
+  (`baris 0: field wajib hilang: end`). `ticker`/`start` yang hilang
+  tetap ditolak keras. Tes baru di `tests/test_bias_guard.py`. Total kini
+  795 tes: 794 lulus, 1 gagal lama (`test_news_ml_cache_thread_safe`).
+- **Belum ada angka bias**: pengukuran butuh (a) `build_dataset` di
+  `research/evaluate.py` difilter per tanggal keanggotaan, (b) evaluasi
+  10 tahun dijalankan dua kali (statis vs point-in-time), (c) data harga
+  10 tahun — saat ini TIDAK bisa jalan dari VM ini (Yahoo rate-limit 429;
+  `temp/cache` hanya berisi 1y/6mo, tidak ada dataset 10y tersimpan).
+  Langkah (a)–(c) menunggu rate-limit reda atau dijalankan dari host.
+
 ## [Unreleased] — 2026-11-16
 
 Perbaikan dari review independen (REVIEW-IMPROVE.md, 8 temuan):

@@ -9,6 +9,7 @@ heartbeat.txt
 data/*
 !data/validation.json
 !data/idx_universe.json
+!data/idx_sectors.json
 temp/
 backups/
 

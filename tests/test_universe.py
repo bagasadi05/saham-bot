@@ -24,6 +24,25 @@ def test_universe_snapshot_is_valid():
 def test_unknown_ticker_is_empty_not_invented():
     assert universe.name_of("ZZZZ") == ""
     assert universe.board_of("ZZZZ") == ""
+    assert universe.sector_of("ZZZZ") == ""
+
+
+def test_sector_map_covers_most_of_universe():
+    known = {
+        "Financial Services", "Basic Materials", "Consumer Defensive",
+        "Consumer Cyclical", "Healthcare", "Real Estate", "Energy",
+        "Communication Services", "Industrials", "Technology", "Utilities",
+    }
+    assert universe.sector_of("BBCA") == "Financial Services"
+    assert universe.sector_of("TLKM") == "Communication Services"
+    assert universe.sector_of("ASII") == "Industrials"
+    meta = universe.sectors_meta()
+    assert meta["count"] >= 900
+    assert meta["source"]
+    codes = set(universe.codes())
+    mapped = {c for c in codes if universe.sector_of(c)}
+    assert len(mapped) >= 900
+    assert {universe.sector_of(c) for c in mapped} <= known
 
 
 def test_parse_csv_and_clean_dedupes_and_rejects_bad_codes():
