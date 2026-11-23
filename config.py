@@ -89,3 +89,6 @@ BACKUP_AUTO = os.getenv("BACKUP_AUTO", "on").strip().lower() not in (
 IDX_BUY_FEE = 0.0015
 IDX_SELL_FEE = 0.0025
 IDX_ROUND_TRIP = IDX_BUY_FEE + IDX_SELL_FEE   # 0,40%
+
+# Nama tampilan bot di menu /start (opsional, default: SahamBuddy)
+BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "SahamBuddy").strip() or "SahamBuddy"

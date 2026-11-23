@@ -185,6 +185,7 @@ def _fetch_uncached(symbol: str) -> dict | None:
         "total_debt": _finite_float(g("totalDebt")),
         "current_ratio": _finite_float(g("currentRatio")),
         "payout_ratio": _finite_float(g("payoutRatio")),
+        "ev_ebitda": _finite_float(g("enterpriseToEbitda")),
     }
     if all(fields[k] is None for k in ("per", "pbv", "div_yield", "roe")):
         return None
@@ -377,6 +378,57 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
     }
 
 
+
+# Patokan median kasar PER & PBV per sektor BEI untuk konteks valuasi relatif.
+SECTOR_BENCHMARKS: dict[str, tuple[float, float]] = {
+    "financial services": (12.0, 1.8),
+    "energy": (9.0, 1.4),
+    "basic materials": (14.0, 1.6),
+    "consumer defensive": (18.0, 3.0),
+    "consumer cyclical": (16.0, 2.0),
+    "communication services": (16.0, 2.4),
+    "industrials": (12.0, 1.5),
+    "healthcare": (22.0, 3.5),
+    "real estate": (12.0, 0.9),
+    "utilities": (14.0, 1.5),
+    "technology": (25.0, 3.0),
+}
+
+
+def compute_fcf_yield(f: dict | None) -> float | None:
+    """FCF Yield (%) = Free Cash Flow / Market Cap × 100."""
+    raw = f or {}
+    fcf = _finite_float(raw.get("fcf"))
+    mcap = _finite_float(raw.get("market_cap"))
+    if fcf is None or mcap is None or mcap <= 0:
+        return None
+    return round(fcf / mcap * 100.0, 2)
+
+
+def sector_relative_valuation(f: dict | None) -> dict | None:
+    """Bandingkan PER & PBV emiten terhadap patokan sektor BEI."""
+    raw = f or {}
+    sec = str(raw.get("sector") or "").strip().lower()
+    if not sec:
+        return None
+    bench = None
+    for key, pair in SECTOR_BENCHMARKS.items():
+        if key in sec:
+            bench = (key, pair[0], pair[1])
+            break
+    if bench is None:
+        return None
+    sec_key, bench_per, bench_pbv = bench
+    per = _finite_float(raw.get("per"))
+    pbv = _finite_float(raw.get("pbv"))
+    out: dict = {"sector": sec_key, "bench_per": bench_per, "bench_pbv": bench_pbv}
+    if per is not None and per > 0:
+        out["per_diff_pct"] = round((per / bench_per - 1.0) * 100.0, 1)
+    if pbv is not None and pbv > 0:
+        out["pbv_diff_pct"] = round((pbv / bench_pbv - 1.0) * 100.0, 1)
+    return out if ("per_diff_pct" in out or "pbv_diff_pct" in out) else None
+
+
 def score_fundamentals(f: dict) -> dict:
     """Skor valuasi -100..+100 lewat poin per aspek (heuristik standar)."""
     points: list[float] = []
@@ -473,6 +525,27 @@ def score_fundamentals(f: dict) -> dict:
             f"📉 Penalti forensik kas/neraca: -{forensic_penalty} poin "
             f"(skor dasar {round(base_raw):+d}% → {round(raw):+d}%)"
         )
+    sector_rel = sector_relative_valuation(f)
+    if sector_rel:
+        parts = []
+        if "per_diff_pct" in sector_rel:
+            d = sector_rel["per_diff_pct"]
+            tag = "diskon" if d < -10 else ("premium" if d > 15 else "sejalan")
+            parts.append(f"PER {tag} {d:+.0f}% vs patokan ~{sector_rel['bench_per']:.0f}x")
+        if "pbv_diff_pct" in sector_rel:
+            d = sector_rel["pbv_diff_pct"]
+            tag = "diskon" if d < -10 else ("premium" if d > 15 else "sejalan")
+            parts.append(f"PBV {tag} {d:+.0f}% vs patokan ~{sector_rel['bench_pbv']:.1f}x")
+        if parts:
+            verdicts.append(f"🏷️ Relatif sektor ({sector_rel['sector'].title()}): " + ", ".join(parts))
+
+    fcf_yield = compute_fcf_yield(f)
+    if fcf_yield is not None and not fin_sector:
+        verdicts.append(f"💵 FCF Yield: {fcf_yield:+.1f}%")
+    ev_ebitda = _finite_float(f.get("ev_ebitda"))
+    if ev_ebitda is not None and ev_ebitda > 0 and not fin_sector:
+        verdicts.append(f"📐 EV/EBITDA: {ev_ebitda:.1f}x")
+
     filing_note = cf.get("filing_note") or build_filing_note(f)
     return {
         "pct": round(raw),
@@ -485,4 +558,7 @@ def score_fundamentals(f: dict) -> dict:
         "forensic_flags": list(cf.get("forensic_flags") or []),
         "currency": normalize_currency(f.get("currency")),
         "filing_note": filing_note,
+        "sector_rel": sector_rel,
+        "fcf_yield": fcf_yield,
+        "ev_ebitda": ev_ebitda,
     }

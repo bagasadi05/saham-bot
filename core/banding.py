@@ -73,7 +73,7 @@ def market_context() -> dict | None:
             except Exception:
                 return None
 
-        out = {"ret20d": _pct(20), "ret1y": year_return(close)}
+        out = {"ret20d": _pct(20), "ret60d": _pct(60) if len(close) >= 61 else None, "ret1y": year_return(close)}
     _mkt_cache["ts"] = _time.time()
     _mkt_cache["val"] = out  # gagal juga dicache sebentar agar tidak spam
     return out
@@ -200,3 +200,41 @@ def pbv_verdict(rows: list[dict]) -> str | None:
     return (f"Fakta dari angka PBV: paling murah {cheapest[0]} ({cheapest[1]:.2f}), "
             f"paling mahal {priciest[0]} ({priciest[1]:.2f}). "
             "PBV rendah ≠ pasti lebih baik — baca bersama ROE & tren laba.")
+
+
+def relative_strength(ind_df, mkt: dict | None = None) -> dict | None:
+    """Relative Strength (RS) 20 & 60 hari saham terhadap IHSG (`ret_stock - ret_ihsg`)."""
+    if ind_df is None or len(ind_df) < 21 or "close" not in ind_df.columns:
+        return None
+    ctx = mkt if mkt is not None else market_context()
+    if not ctx:
+        return None
+    c = ind_df["close"].dropna().reset_index(drop=True)
+    if len(c) < 21 or float(c.iloc[-21]) <= 0:
+        return None
+    s20 = float(c.iloc[-1] / c.iloc[-21] - 1) * 100
+    s60 = float(c.iloc[-1] / c.iloc[-61] - 1) * 100 if len(c) >= 61 and float(c.iloc[-61]) > 0 else None
+    m20 = ctx.get("ret20d")
+    m60 = ctx.get("ret60d")
+    rs20 = round(s20 - float(m20), 2) if m20 is not None else None
+    rs60 = round(s60 - float(m60), 2) if (s60 is not None and m60 is not None) else None
+    if rs20 is None and rs60 is None:
+        return None
+    ref = rs20 if rs20 is not None else rs60
+    if ref >= 5.0:
+        label = "Outperform kuat"
+    elif ref >= 1.0:
+        label = "Outperform"
+    elif ref <= -5.0:
+        label = "Underperform dalam"
+    elif ref <= -1.0:
+        label = "Underperform"
+    else:
+        label = "Sejalan IHSG"
+    return {
+        "rs20": rs20,
+        "rs60": rs60,
+        "stock20": round(s20, 2),
+        "stock60": round(s60, 2) if s60 is not None else None,
+        "label": label,
+    }

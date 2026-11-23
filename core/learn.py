@@ -39,6 +39,11 @@ SIGNAL_NOTES: list[tuple[str, str]] = [
 
 # Penjelasan untuk konfirmasi indikator pro (analysis.extra_confirmations)
 PRO_NOTES: list[tuple[str, str]] = [
+    ("Pola Candle", "pola harga harian di bar terakhir; paling kuat jika muncul dekat support/resistance"),
+    ("CMF 20 hari", "aliran uang masuk/keluar berbasis harga & volume; positif = akumulasi, negatif = distribusi"),
+    ("RSI Bullish Divergence", "harga mencetak lembah lebih rendah tapi RSI justru naik — sinyal awal tekanan jual melemah"),
+    ("RSI Bearish Divergence", "harga mencetak puncak lebih tinggi tapi RSI justru turun — sinyal awal momentum naik melemah"),
+    ("Pivot S/R", "batas lantai (support) & atap (resistance) dari titik balik swing 60 hari beserta jaraknya dari harga sekarang"),
     ("Bollinger SQUEEZE", "rentang Bollinger menyempit — biasanya diikuti pergerakan besar (arahnya belum diketahui, tunggu konfirmasi)"),
     ("di luar Bollinger atas", "harga ekstrem di atas pita atas — sering disusul jeda atau koreksi"),
     ("di bawah Bollinger bawah", "harga ekstrem di bawah pita bawah — bisa memantul atau lanjut melemah (walking the band)"),

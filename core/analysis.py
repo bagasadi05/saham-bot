@@ -49,13 +49,105 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
     return macd_line, signal_line, hist
 
 
-def support_resistance(df: pd.DataFrame, lookback: int = 20) -> dict:
-    """S/R sederhana: support = low terendah & resistance = high tertinggi 20 hari."""
+def _fractal_pivots(df: pd.DataFrame, window: int = 60, order: int = 2) -> tuple[list[float], list[float]]:
+    """Temukan level swing low & swing high (fractal pivot) pada jendela terakhir."""
+    sub = df.tail(max(window, order * 2 + 1))
+    lows = sub["low"].to_numpy(dtype=float)
+    highs = sub["high"].to_numpy(dtype=float)
+    n = len(sub)
+    piv_lows: list[float] = []
+    piv_highs: list[float] = []
+    for i in range(order, n - order):
+        lv = lows[i]
+        hv = highs[i]
+        if not math.isnan(lv) and all(lv <= lows[i - k] and lv <= lows[i + k] for k in range(1, order + 1)):
+            piv_lows.append(round(float(lv), 2))
+        if not math.isnan(hv) and all(hv >= highs[i - k] and hv >= highs[i + k] for k in range(1, order + 1)):
+            piv_highs.append(round(float(hv), 2))
+    return piv_lows, piv_highs
+
+
+def support_resistance(df: pd.DataFrame, lookback: int = 20, pivot_window: int = 60) -> dict:
+    """S/R 20 hari + swing pivot 60 hari beserta jarak % dari harga penutupan terakhir."""
     recent = df.tail(lookback)
     low = round(float(recent["low"].min()), 2)
     high = round(float(recent["high"].max()), 2)
-    return {"support": low, "resistance": high,
-            "high_recent": high, "low_recent": low}
+    close = float(df["close"].iloc[-1]) if len(df) else 0.0
+
+    piv_lows, piv_highs = _fractal_pivots(df, window=pivot_window, order=2)
+    below = [v for v in piv_lows if close > 0 and v <= close]
+    above = [v for v in piv_highs if close > 0 and v >= close]
+    swing_sup = max(below) if below else low
+    swing_res = min(above) if above else high
+
+    dist_sup = round((close - swing_sup) / close * 100, 2) if close > 0 else None
+    dist_res = round((swing_res - close) / close * 100, 2) if close > 0 else None
+    return {
+        "support": low,
+        "resistance": high,
+        "high_recent": high,
+        "low_recent": low,
+        "swing_support": swing_sup,
+        "swing_resistance": swing_res,
+        "dist_support_pct": dist_sup,
+        "dist_resistance_pct": dist_res,
+    }
+
+
+def cmf(df: pd.DataFrame, n: int = 20) -> pd.Series:
+    """Chaikin Money Flow (CMF) 20 hari (-1..+1): mengukur akumulasi vs distribusi volume."""
+    span = (df["high"] - df["low"]).replace(0, float("nan"))
+    mfm = ((df["close"] - df["low"]) - (df["high"] - df["close"])) / span
+    mfm = mfm.fillna(0.0)
+    mfv = mfm * df["volume"].fillna(0.0)
+    vol_sum = df["volume"].fillna(0.0).rolling(n).sum().replace(0, float("nan"))
+    return (mfv.rolling(n).sum() / vol_sum).clip(-1.0, 1.0)
+
+
+def detect_rsi_divergence(ind: pd.DataFrame, lookback: int = 35, order: int = 2) -> dict | None:
+    """Deteksi bullish/bearish divergence antara harga dan RSI14 berbasis swing pivot."""
+    if ind is None or len(ind) < max(15, order * 2 + 5) or "rsi14" not in ind.columns:
+        return None
+    sub = ind.tail(lookback)
+    lows = sub["low"].to_numpy(dtype=float)
+    highs = sub["high"].to_numpy(dtype=float)
+    rsis = sub["rsi14"].to_numpy(dtype=float)
+    n = len(sub)
+
+    low_idx = [
+        i for i in range(order, n - order)
+        if not (math.isnan(lows[i]) or math.isnan(rsis[i]))
+        and all(lows[i] <= lows[i - k] and lows[i] <= lows[i + k] for k in range(1, order + 1))
+        and (lows[i] < lows[i - 1] or lows[i] < lows[i + 1])
+    ]
+    if len(low_idx) >= 2:
+        i1, i2 = low_idx[-2], low_idx[-1]
+        if lows[i2] < lows[i1] * 0.995 and rsis[i2] > rsis[i1] + 2.0:
+            return {
+                "kind": "bullish",
+                "price_prev": round(float(lows[i1]), 2),
+                "price_curr": round(float(lows[i2]), 2),
+                "rsi_prev": round(float(rsis[i1]), 1),
+                "rsi_curr": round(float(rsis[i2]), 1),
+            }
+
+    high_idx = [
+        i for i in range(order, n - order)
+        if not (math.isnan(highs[i]) or math.isnan(rsis[i]))
+        and all(highs[i] >= highs[i - k] and highs[i] >= highs[i + k] for k in range(1, order + 1))
+        and (highs[i] > highs[i - 1] or highs[i] > highs[i + 1])
+    ]
+    if len(high_idx) >= 2:
+        i1, i2 = high_idx[-2], high_idx[-1]
+        if highs[i2] > highs[i1] * 1.005 and rsis[i2] < rsis[i1] - 2.0:
+            return {
+                "kind": "bearish",
+                "price_prev": round(float(highs[i1]), 2),
+                "price_curr": round(float(highs[i2]), 2),
+                "rsi_prev": round(float(rsis[i1]), 1),
+                "rsi_curr": round(float(rsis[i2]), 1),
+            }
+    return None
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -74,6 +166,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # volatilitas 20 hari (standar deviasi return harian, fraksi) — dipakai
     # faktor relatif; definisinya sama persis dengan harness riset
     df["volat20"] = df["ret1d"].rolling(20).std() / 100
+    df["cmf20"] = cmf(df, 20)
 
     # ---- indikator pro (pandas-ta-classic), untuk sinyal konfirmasi & SL/TP ----
     try:
@@ -175,6 +268,37 @@ def extra_confirmations(ind: pd.DataFrame) -> list[str]:
         else:
             direction = "datar ➖"
         out.append(f"OBV 20 hari: {direction} ({obv_slope:+,.0f})")
+    cmf_val = last.get("cmf20")
+    if cmf_val is not None and not pd.isna(cmf_val):
+        cf = float(cmf_val)
+        if cf >= 0.10:
+            out.append(f"CMF 20 hari: {cf:+.2f} — aliran volume akumulasi kuat 💪")
+        elif cf <= -0.10:
+            out.append(f"CMF 20 hari: {cf:+.2f} — tekanan distribusi volume ⚠️")
+    div = detect_rsi_divergence(ind)
+    if div:
+        if div["kind"] == "bullish":
+            out.append(
+                f"RSI Bullish Divergence: harga turun ({money_fmt(div['price_prev'])}→"
+                f"{money_fmt(div['price_curr'])}) tapi RSI naik ({div['rsi_prev']:.0f}→"
+                f"{div['rsi_curr']:.0f}) — potensi pembalikan naik"
+            )
+        else:
+            out.append(
+                f"RSI Bearish Divergence: harga naik ({money_fmt(div['price_prev'])}→"
+                f"{money_fmt(div['price_curr'])}) tapi RSI turun ({div['rsi_prev']:.0f}→"
+                f"{div['rsi_curr']:.0f}) — waspada pelemahan momentum"
+            )
+    sr = support_resistance(ind)
+    if sr.get("dist_support_pct") is not None and sr.get("dist_resistance_pct") is not None:
+        out.append(
+            f"Pivot S/R (60h): Support {money_fmt(sr['swing_support'])} "
+            f"({sr['dist_support_pct']:.1f}% di bawah) | "
+            f"Resistance {money_fmt(sr['swing_resistance'])} "
+            f"({sr['dist_resistance_pct']:.1f}% di atas)"
+        )
+    for pat in detect_candle_pattern(ind):
+        out.append(pat)
     return out
 
 
@@ -436,3 +560,217 @@ def analyze(ticker: str, df_raw) -> dict:
             if k in attrs
         }
     return out
+
+
+def expected_move_range(
+    ind: pd.DataFrame,
+    horizons: tuple[int, ...] = (5, 20),
+    vol_window: int = 60,
+) -> dict | None:
+    """Estimasi rentang gerak wajar ±1σ (≈68%) berbasis volatilitas log-return historis.
+
+    Bukan prediksi arah — hanya peta lebar fluktuasi normal saham berdasarkan
+    pergerakan historisnya sendiri.
+    """
+    if ind is None or len(ind) < 22 or "close" not in ind.columns:
+        return None
+    closes = pd.to_numeric(ind["close"], errors="coerce").dropna()
+    if len(closes) < 22:
+        return None
+    last_close = float(closes.iloc[-1])
+    if last_close <= 0:
+        return None
+    ratios = (closes / closes.shift(1)).dropna()
+    ratios = ratios[ratios > 0].tail(vol_window)
+    if len(ratios) < 15:
+        return None
+    log_rets = ratios.map(math.log)
+    sigma_d = float(log_rets.std(ddof=1))
+    if not math.isfinite(sigma_d) or sigma_d <= 0:
+        return None
+    from core import pricing as _pricing
+
+    bands: dict[int, dict] = {}
+    for h in horizons:
+        if h <= 0:
+            continue
+        move = sigma_d * math.sqrt(h)
+        low_px = float(_pricing.round_tick(last_close * math.exp(-move)))
+        high_px = float(_pricing.round_tick(last_close * math.exp(move)))
+        pct = round((math.exp(move) - 1.0) * 100.0, 1)
+        bands[int(h)] = {"low": low_px, "high": high_px, "pct": pct}
+    if not bands:
+        return None
+    return {
+        "vol_daily_pct": round(sigma_d * 100.0, 2),
+        "vol_annual_pct": round(sigma_d * math.sqrt(252) * 100.0, 1),
+        "bands": bands,
+    }
+
+
+def historical_tp_sl_odds(
+    ind: pd.DataFrame,
+    *,
+    sl_mult: float = 1.0,
+    tp_mult: float = 2.0,
+    max_days: int = 20,
+    step: int = 5,
+) -> dict | None:
+    """Frekuensi historis hit TP vs SL (basis ATR) pada bar masa lalu emiten ini.
+
+    Pengambilan sampel tiap `step` hari bursa untuk mengurangi tumpang-tindih.
+    Jika TP dan SL tersentuh di hari yang sama, dihitung konservatif sebagai SL.
+    """
+    if (
+        ind is None
+        or len(ind) < max_days + 30
+        or not all(c in ind.columns for c in ("close", "high", "low", "atr14"))
+    ):
+        return None
+    closes = ind["close"].to_numpy(dtype=float)
+    highs = ind["high"].to_numpy(dtype=float)
+    lows = ind["low"].to_numpy(dtype=float)
+    atrs = ind["atr14"].to_numpy(dtype=float)
+    n = len(ind)
+    tp_hits = sl_hits = timeouts = 0
+
+    for i in range(20, n - max_days, max(1, int(step))):
+        entry = closes[i]
+        atr = atrs[i]
+        if not (math.isfinite(entry) and math.isfinite(atr)) or entry <= 0 or atr <= 0:
+            continue
+        sl_lvl = entry - sl_mult * atr
+        tp_lvl = entry + tp_mult * atr
+        outcome = "timeout"
+        for j in range(i + 1, i + max_days + 1):
+            hit_sl = lows[j] <= sl_lvl
+            hit_tp = highs[j] >= tp_lvl
+            if hit_sl:
+                outcome = "sl"
+                break
+            if hit_tp:
+                outcome = "tp"
+                break
+        if outcome == "tp":
+            tp_hits += 1
+        elif outcome == "sl":
+            sl_hits += 1
+        else:
+            timeouts += 1
+
+    total = tp_hits + sl_hits + timeouts
+    if total < 8:
+        return None
+    return {
+        "n": total,
+        "tp_hits": tp_hits,
+        "sl_hits": sl_hits,
+        "timeouts": timeouts,
+        "tp_rate_pct": round(tp_hits / total * 100.0, 1),
+        "sl_rate_pct": round(sl_hits / total * 100.0, 1),
+        "timeout_rate_pct": round(timeouts / total * 100.0, 1),
+        "sl_mult": sl_mult,
+        "tp_mult": tp_mult,
+        "max_days": max_days,
+    }
+
+
+def volume_profile_poc(df: pd.DataFrame, window: int = 60, bins: int = 24) -> dict | None:
+    """Point of Control (POC): level harga dengan akumulasi volume transaksi terbesar."""
+    if df is None or len(df) < 15 or not all(c in df.columns for c in ("high", "low", "close", "volume")):
+        return None
+    sub = df.tail(window)
+    typical = ((sub["high"] + sub["low"] + sub["close"]) / 3.0).to_numpy(dtype=float)
+    vols = sub["volume"].fillna(0.0).to_numpy(dtype=float)
+    valid = [
+        (p, v) for p, v in zip(typical, vols, strict=True)
+        if math.isfinite(p) and math.isfinite(v) and p > 0 and v > 0
+    ]
+    if len(valid) < 10:
+        return None
+    prices = [p for p, _ in valid]
+    lo, hi = min(prices), max(prices)
+    if hi <= lo:
+        return None
+    step = (hi - lo) / max(4, int(bins))
+    buckets = [0.0] * max(4, int(bins))
+    for p, v in valid:
+        idx = min(len(buckets) - 1, int((p - lo) / step))
+        buckets[idx] += v
+    best_i = max(range(len(buckets)), key=lambda i: buckets[i])
+    poc_raw = lo + (best_i + 0.5) * step
+    from core import pricing as _pricing
+    poc = float(_pricing.round_tick(poc_raw))
+    last_close = float(sub["close"].iloc[-1])
+    dist_pct = round((last_close - poc) / poc * 100.0, 2) if poc > 0 else 0.0
+    return {
+        "poc": poc,
+        "dist_pct": dist_pct,
+        "position": "di atas POC" if last_close >= poc else "di bawah POC",
+        "window": min(len(sub), window),
+    }
+
+
+def detect_candle_pattern(df: pd.DataFrame) -> list[str]:
+    """Deteksi pola candlestick kunci & unfilled gap pada bar terakhir."""
+    if df is None or len(df) < 3 or not all(c in df.columns for c in ("open", "high", "low", "close")):
+        return []
+    cur = df.iloc[-1]
+    prev = df.iloc[-2]
+    o1, h1, l1, c1 = float(cur["open"]), float(cur["high"]), float(cur["low"]), float(cur["close"])
+    o0, h0, l0, c0 = float(prev["open"]), float(prev["high"]), float(prev["low"]), float(prev["close"])
+    if any(not math.isfinite(x) for x in (o1, h1, l1, c1, o0, h0, l0, c0)):
+        return []
+    rng = h1 - l1
+    if rng <= 0:
+        return []
+    body = abs(c1 - o1)
+    upper_wick = h1 - max(o1, c1)
+    lower_wick = min(o1, c1) - l1
+    patterns: list[str] = []
+
+    # Engulfing
+    if c0 < o0 and c1 > o1 and o1 <= c0 and c1 >= o0 and body > abs(c0 - o0):
+        patterns.append("Pola Candle: Bullish Engulfing — tekanan beli membalikkan candle turun sebelumnya")
+    elif c0 > o0 and c1 < o1 and o1 >= c0 and c1 <= o0 and body > abs(c0 - o0):
+        patterns.append("Pola Candle: Bearish Engulfing — tekanan jual membalikkan candle naik sebelumnya")
+
+    # Hammer / Shooting Star
+    if body > 0:
+        if lower_wick >= 2.0 * body and upper_wick <= 0.4 * body and lower_wick / rng >= 0.55:
+            patterns.append("Pola Candle: Hammer (Pin Bar Bawah) — penolakan kuat di harga bawah")
+        elif upper_wick >= 2.0 * body and lower_wick <= 0.4 * body and upper_wick / rng >= 0.55:
+            patterns.append("Pola Candle: Shooting Star (Pin Bar Atas) — penolakan kuat di harga atas")
+
+    # Unfilled Gap (>1.5%)
+    if h0 > 0 and l1 > h0 * 1.015:
+        gap_pct = (l1 / h0 - 1.0) * 100.0
+        patterns.append(f"Pola Candle: Gap Up terbuka (+{gap_pct:.1f}%) — waspada potensi tutup gap")
+    elif l0 > 0 and h1 < l0 * 0.985:
+        gap_pct = (1.0 - h1 / l0) * 100.0
+        patterns.append(f"Pola Candle: Gap Down terbuka (-{gap_pct:.1f}%) — tekanan jual pembukaan kuat")
+
+    return patterns
+
+
+def risk_profile(ind: pd.DataFrame, window: int = 252) -> dict | None:
+    """Profil risiko historis 1 tahun: Max Drawdown, jarak dari puncak 52w, dan volatilitas tahunan."""
+    if ind is None or len(ind) < 25 or "close" not in ind.columns:
+        return None
+    closes = pd.to_numeric(ind["close"], errors="coerce").dropna().tail(window)
+    if len(closes) < 25:
+        return None
+    running_max = closes.cummax()
+    dd = (closes / running_max - 1.0) * 100.0
+    mdd_pct = round(float(dd.min()), 1)
+    peak_52w = float(closes.max())
+    last_c = float(closes.iloc[-1])
+    from_peak = round((last_c / peak_52w - 1.0) * 100.0, 1) if peak_52w > 0 else 0.0
+    rets = closes.pct_change().dropna()
+    vol_ann = round(float(rets.std(ddof=1)) * math.sqrt(252) * 100.0, 1) if len(rets) >= 15 else None
+    return {
+        "mdd_1y_pct": mdd_pct,
+        "peak_52w": round(peak_52w, 2),
+        "from_peak_pct": from_peak,
+        "vol_annual_pct": vol_ann,
+    }

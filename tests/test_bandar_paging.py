@@ -44,3 +44,44 @@ def test_fetch_without_until_reads_all_pages(monkeypatch):
 
     bandar._fetch_stock_summary(None, max_stocks=1000, page_len=2, cooldown=0)
     assert calls == [0, 2]                 # berhenti karena halaman terakhir pendek
+
+
+def test_bandar_disk_cache_fallback_saat_cloudflare_403(tmp_path, monkeypatch):
+    monkeypatch.setattr(bandar, "CACHE_DIR", str(tmp_path / "bandar_cache"))
+    monkeypatch.setattr(bandar, "_scraper", lambda: object())
+    payload = {"data": [{"IndexCode": "COMPOSITE", "Close": 7250.0}]}
+    monkeypatch.setattr(bandar, "_get", lambda url, s, params=None: payload)
+
+    first = bandar.get_index_summary(ttl=0)
+    assert first == payload["data"]
+    assert bandar.last_stale_age() is None
+
+    def _blocked(*_a, **_kw):
+        raise bandar.IDXTidakTersedia("HTTP 403")
+
+    monkeypatch.setattr(bandar, "_get", _blocked)
+    fallback = bandar.get_index_summary(ttl=0)
+    assert fallback == payload["data"]
+    assert bandar.last_stale_age() is not None
+    assert bandar.last_stale_age() >= 0
+
+
+def test_bandar_disk_cache_basi_melewati_batas_tetap_error(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(bandar, "CACHE_DIR", str(tmp_path / "bandar_cache"))
+    monkeypatch.setattr(bandar, "_STALE_MAX_AGE", 1.0)
+    monkeypatch.setattr(bandar, "_scraper", lambda: object())
+    payload = {"data": [{"IndexCode": "COMPOSITE", "Close": 7250.0}]}
+    monkeypatch.setattr(bandar, "_get", lambda url, s, params=None: payload)
+    bandar.get_index_summary(ttl=0)
+
+    # Geser waktu maju melewati batas stale
+    orig_time = bandar.time.time
+    monkeypatch.setattr(bandar.time, "time", lambda: orig_time() + 10.0)
+    monkeypatch.setattr(
+        bandar, "_get",
+        lambda *_a, **_kw: (_ for _ in ()).throw(bandar.IDXTidakTersedia("HTTP 403")),
+    )
+    with pytest.raises(bandar.IDXTidakTersedia):
+        bandar.get_index_summary(ttl=0)

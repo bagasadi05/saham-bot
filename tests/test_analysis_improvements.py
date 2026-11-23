@@ -174,6 +174,8 @@ def test_news_lexicon_frasa_dan_negasi_konteks():
 
 
 def test_news_ml_cache_thread_safe(monkeypatch):
+    pytest.importorskip("torch")
+
     class _FakeLogits:
         def __init__(self, n):
             self.logits = __import__("torch").tensor([[3.0, 0.0, 0.0]] * n)

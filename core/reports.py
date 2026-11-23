@@ -211,11 +211,12 @@ def provenance_line(res: dict) -> str:
 
 
 def build_report(res: dict, fund: dict | None, news_sent: dict | None,
-                 mkt: dict | None = None) -> str:
+                 mkt: dict | None = None, *, compact: bool = False) -> str:
     snap, sc, sr = res["snap"], res["score"], res["sr"]
-    # [P1] tiap sinyal diberi penjelasan 1 baris biar pembelajar paham artinya
+    # [P1] tiap sinyal diberi penjelasan 1 baris di mode pemula; di mode expert
+    # (compact=True) tetap ringkas agar muat dalam 1 bubble Telegram.
     def _sig_line(s: str, mark: str) -> str:
-        note = learn.signal_note(s)
+        note = None if compact else learn.signal_note(s)
         return (f"  {mark} {esc(s)}" +
                 (f" — <i>{esc(note)}</i>" if note else ""))
 
@@ -228,7 +229,7 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
     conf = analysis.extra_confirmations(res["ind"])
     conf_txt = ""
     for c in conf:
-        note = learn.pro_note(c)
+        note = None if compact else learn.pro_note(c)
         conf_txt += f"  • {esc(c)}" + (f" — <i>{esc(note)}</i>" if note else "") + "\n"
     conf_txt = conf_txt.rstrip()
 
@@ -268,7 +269,7 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
                     (f" <i>({('%+d' % d['sent'])})</i>" if d["sent"] else ""))
 
         heads = "\n".join(_headline(d) for d in top)
-        headline_txt = (f"\nBerita terkini (sentimen {news_sent['emoji']} "
+        headline_txt = (f"\n📰 <b>Berita Terkini</b> (sentimen {news_sent['emoji']} "
                         f"{news_sent['pct']:+.0f}%):\n{heads}")
 
     trend_lbl = sc.get("trend_label") or analysis.describe_rating(sc.get("rating"))
@@ -277,37 +278,91 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
     if isinstance(fund, dict) and fund.get("filing_note"):
         filing_line = f"\n📄 <i>{esc(fund['filing_note'])}</i>"
 
+    vol_ratio = snap["volume"] / snap["vol_avg20"] if snap.get("vol_avg20") else 0.0
+    pivot_row = ""
+    if sr.get("swing_support") is not None and sr.get("dist_support_pct") is not None:
+        pivot_row = (
+            f"\nPivot 60d : S {fmt_rp(sr['swing_support'])} (-{sr['dist_support_pct']:.1f}%) | "
+            f"R {fmt_rp(sr['swing_resistance'])} (+{sr['dist_resistance_pct']:.1f}%)"
+        )
+    poc_info = analysis.volume_profile_poc(res["ind"])
+    poc_row = (
+        f"\nPOC 60d   : {fmt_rp(poc_info['poc'])} ({poc_info['dist_pct']:+.1f}% · {poc_info['position']})"
+        if poc_info
+        else ""
+    )
+    rp_info = analysis.risk_profile(res["ind"])
+    risk_row = (
+        f"\nRisiko 1y : MDD {rp_info['mdd_1y_pct']:.1f}% | Dari puncak 52w {rp_info['from_peak_pct']:+.1f}%"
+        + (f" | Vol {rp_info['vol_annual_pct']:.0f}%/thn" if rp_info.get("vol_annual_pct") is not None else "")
+        if rp_info
+        else ""
+    )
+    metrics_box = (
+        f"RSI 14    : {rsi_txt}\n"
+        f"MACD Hist : {snap['macd_hist']}\n"
+        f"Volume    : {snap['volume']:,.0f} ({vol_ratio:.1f}x avg 20d)\n"
+        f"MA        : {ma_row}\n"
+        f"Range 20d : {fmt_rp(sr['low_recent'])} — {fmt_rp(sr['high_recent'])}"
+        f"{pivot_row}"
+        f"{poc_row}"
+        f"{risk_row}"
+    )
+
+    scenario_lines: list[str] = []
+    em = analysis.expected_move_range(res["ind"])
+    if em:
+        b5 = em["bands"].get(5)
+        b20 = em["bands"].get(20)
+        if b5:
+            scenario_lines.append(
+                f"Gerak 5h  (±1σ) : {fmt_rp(b5['low'])} — {fmt_rp(b5['high'])} (±{b5['pct']:.1f}%)"
+            )
+        if b20:
+            scenario_lines.append(
+                f"Gerak 20h (±1σ) : {fmt_rp(b20['low'])} — {fmt_rp(b20['high'])} (±{b20['pct']:.1f}%)"
+            )
+    odds = analysis.historical_tp_sl_odds(res["ind"])
+    if odds:
+        scenario_lines.append(
+            f"Odds TP2x/SL1x  : TP {odds['tp_rate_pct']:.0f}% · SL {odds['sl_rate_pct']:.0f}% "
+            f"(n={odds['n']}, {odds['max_days']}h)"
+        )
+    scenario_block = (
+        "\n\n🎲 <b>Rentang Gerak Wajar &amp; Odds Historis</b>\n"
+        f"<pre>{esc(chr(10).join(scenario_lines))}</pre>"
+        if scenario_lines
+        else ""
+    )
+
     return (
         f"{res.get('stale_note', '')}"
         f"{res.get('quality_note', '')}"
         f"{provenance_line(res)}"
         f"{res.get('fallback_note', '')}"
         f"{res.get('history_note', '')}"
-        f"📊 <b>{esc(res['ticker'])}</b>\n"
-        f"Harga: <b>{fmt_rp(snap['close'])}</b> "
-        f"({snap['ret1d']:+.2f}% 1d, {snap['ret20d']:+.2f}% 20d)"
-        f"{data_age_line(res)}\n\n"
+        f"📊 <b>{esc(res['ticker'])}</b>  ·  <code>{fmt_rp(snap['close'])}</code>\n"
+        f"<code>1d {snap['ret1d']:+.2f}%  ·  20d {snap['ret20d']:+.2f}%</code>"
+        f"{data_age_line(res)}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"{power}{filing_line}\n\n"
-        f"Skor teknikal: <b>{sc['pct']:+.0f}%</b> → {sc['emoji']} <b>{esc(trend_lbl)}</b>\n"
-        f"  <i>{rating_note}</i>\n"
-        f"  ℹ️ <i>{esc(disclaimer)}</i>\n"
-        f"  ✅ Sinyal positif:\n{bull_txt}\n"
-        f"  ❌ Sinyal negatif:\n{bear_txt}\n"
+        f"📈 <b>Skor Teknikal</b>  ·  <b>{sc['pct']:+.0f}%</b> {sc['emoji']} <b>{esc(trend_lbl)}</b>\n"
+        f"<i>{rating_note}</i>\n"
+        f"ℹ️ <i>{esc(disclaimer)}</i>\n"
+        f"<blockquote expandable>"
+        f"✅ <b>Sinyal Positif</b>\n{bull_txt}\n\n"
+        f"❌ <b>Sinyal Negatif</b>\n{bear_txt}"
+        f"</blockquote>\n"
         f"{last_macd_cross_note(sc)}\n\n"
-        f"Indikator:\n"
-        f"  RSI 14: {rsi_txt}\n"
-        f"  MACD hist: {snap['macd_hist']}\n"
-        f"  Volume hari ini: {snap['volume']:,.0f} "
-        f"({snap['volume'] / snap['vol_avg20']:.1f}x rata\u00b2 20d)\n"
-        f"  {ma_row}\n\n"
-        f"Level:\n"
-        f"  Rentang 20d: {fmt_rp(sr['low_recent'])} — {fmt_rp(sr['high_recent'])}\n"
-        f"{('\nKonfirmasi indikator pro:\n' + conf_txt) if conf_txt else ''}\n"
+        f"📐 <b>Indikator Utama &amp; Level Kunci</b>\n"
+        f"<pre>{esc(metrics_box)}</pre>"
+        f"{scenario_block}"
+        f"{('\n\n🔬 <b>Konfirmasi Indikator Pro</b>\n<blockquote expandable>' + conf_txt + '</blockquote>') if conf_txt else ''}"
         f"{headline_txt}{weekly_txt}\n\n"
-        f"{market_context_line(res, mkt)}\n"
-        f"ℹ️ <i>Skor teknikal = bacaan tren, bukan sinyal beli "
-        f"(uji 2017–2026: IC +0,01 ≈ nol). Peringkat antar-emiten ada di /saran.</i>\n"
-        f"🔒 <i>Bukan saran investasi. DYOR!</i>"
+        f"{market_context_line(res, mkt)}\n\n"
+        f"<blockquote>ℹ️ Skor teknikal = bacaan tren, bukan sinyal beli "
+        f"(uji 2017–2026: IC +0,01 ≈ nol). Peringkat antar-emiten ada di /saran.\n"
+        f"🔒 Bukan saran investasi. DYOR!</blockquote>"
     )
 
 

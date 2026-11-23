@@ -154,7 +154,7 @@ def _collect_data_and_arb_warnings(
     """Tambahkan peringatan eksplisit kualitas data, suspensi, dan risiko gap ARB."""
 
     def _add_warn(msg: str, weight: int = 0) -> None:
-        clean = _strip_html(msg)
+        clean = _strip_html(msg).lstrip("⚠️").strip()
         if clean and clean not in warnings:
             warnings.append(clean)
             if weight < 0:

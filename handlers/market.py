@@ -977,14 +977,17 @@ async def do_bandar(update: Update, deps,
 
     def _job():
         idx = bandar.get_index_summary()
+        stale_ages = [a for a in (bandar.last_stale_age(),) if a is not None]
         limit = 1000 if ticker else 200
         rows = bandar.get_stock_summary(
             bandar.last_trading_date(), max_stocks=limit,
             until=ticker.upper() if ticker else None)
-        return idx, rows
+        if bandar.last_stale_age() is not None:
+            stale_ages.append(bandar.last_stale_age())
+        return idx, rows, (max(stale_ages) if stale_ages else None)
 
     try:
-        idx, rows = await asyncio.to_thread(_job)
+        idx, rows, stale_age = await asyncio.to_thread(_job)
     except bandar.IDXTidakTersedia as e:
         await msg.reply_text(
             "🔒 <b>Data BEI (idx.co.id) kini diblokir Cloudflare</b> "
@@ -1007,6 +1010,11 @@ async def do_bandar(update: Update, deps,
 
     comp = next((x for x in idx if x["IndexCode"] == "COMPOSITE"), None)
     lines = []
+    if stale_age is not None:
+        jam = max(1, int(round(stale_age / 3600)))
+        lines.append(
+            f"⚠️ <i>idx.co.id sedang diblokir Cloudflare — menampilkan cache terakhir (±{jam} jam lalu).</i>"
+        )
     if comp:
         def _num(k):
             v = comp.get(k)

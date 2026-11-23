@@ -11,6 +11,13 @@ cd "$(dirname "$0")"
 export NO_PROXY="localhost,127.0.0.1,::1"
 export no_proxy="$NO_PROXY"
 
+# Pakai bundel sertifikat CA sistem bila tersedia (mencegah SSL error di VPS/proxy)
+if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+    export SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+    export REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
+    export CURL_CA_BUNDLE="${CURL_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
+fi
+
 # venv opsional: kalau ada .venv dipakai, kalau tidak pakai python sistem
 PY="python3"
 [ -x .venv/bin/python ] && PY=".venv/bin/python"

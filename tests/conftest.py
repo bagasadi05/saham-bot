@@ -50,9 +50,16 @@ def _isolated_caches(monkeypatch):
     # Jaga suite test tetap 100% offline meski `.env` lokal menyimpan API key live.
     monkeypatch.delenv("EODHD_API_KEY", raising=False)
     monkeypatch.delenv("ALPHAVANTAGE_API_KEY", raising=False)
+    import config as _cfg
+    monkeypatch.setattr(_cfg, "BOT_DISPLAY_NAME", "SahamBuddy")
+    monkeypatch.delenv("ADMIN_IDS", raising=False)
+    monkeypatch.delenv("ALLOWED_USER_IDS", raising=False)
+    if "bot" in sys.modules:
+        monkeypatch.setattr(sys.modules["bot"], "ADMIN_IDS", set(), raising=False)
     data.clear_cache()
     fundamental.clear_cache()
     news.clear_cache()
+    monkeypatch.setattr(bandar, "CACHE_DIR", "")
     bandar.clear_cache()
     banding._mkt_cache.update({"ts": 0.0, "val": None})
     regime.clear_cache()

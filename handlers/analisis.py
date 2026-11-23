@@ -306,16 +306,47 @@ async def do_analisis(update: Update, tickers: list[str], deps):
             if cb_sym
             else _home_kb(deps)
         )
+        user_mode = "pemula"
+        try:
+            user_mode = await asyncio.to_thread(store.get_user_mode, update.effective_chat.id)
+        except Exception:
+            pass
+        try:
+            report_txt = deps.build_report(
+                res, fsc, nsent, mkt_ctx, compact=(user_mode == "expert"),
+            )
+        except TypeError:
+            report_txt = deps.build_report(res, fsc, nsent, mkt_ctx)
         await deps.reply_long(
             msg,
-            deps.build_report(res, fsc, nsent, mkt_ctx),
+            report_txt,
             reply_markup=kb,
         )
         os.makedirs(deps.TMP_DIR, exist_ok=True)
         path = os.path.join(deps.TMP_DIR, f"chart_{sym}_{time.time_ns()}.png")
         try:
-            await asyncio.to_thread(
-                deps.build_chart, sym.upper(), res["ind"], res["score"]["pct"], path)
+            chart_levels = None
+            try:
+                _ind = res["ind"]
+                _close = float(res["snap"]["close"])
+                _atr_raw = _ind["atr14"].iloc[-1] if "atr14" in _ind.columns and len(_ind) else None
+                _atr = float(_atr_raw) if _atr_raw is not None and float(_atr_raw) > 0 else None
+                if _close > 0 and _atr:
+                    chart_levels = {
+                        "sl": float(deps.saranmod.stop_price(_close, _atr)),
+                        "tp": float(deps.saranmod.target_price(_close, _atr)),
+                    }
+            except Exception:
+                chart_levels = None
+            try:
+                await asyncio.to_thread(
+                    deps.build_chart, sym.upper(), res["ind"], res["score"]["pct"], path,
+                    levels=chart_levels,
+                )
+            except TypeError:
+                await asyncio.to_thread(
+                    deps.build_chart, sym.upper(), res["ind"], res["score"]["pct"], path,
+                )
 
             def _send_chart(_path=path, _sym=sym, _kb=kb):
                 # buka ulang tiap percobaan: handle yang sudah terpakai tidak

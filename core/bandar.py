@@ -5,6 +5,8 @@ dengan jujur agar pesan bot tidak berbohong."""
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import os
 import threading
 import time
@@ -16,35 +18,104 @@ BASE = "https://www.idx.co.id/primary"
 # dulu bisa memicu blokir; cache memori 10 menit menghemat kuota.
 # Set BANDAR_TTL=0 untuk mematikan.
 _TTL_SECONDS = float(os.getenv("BANDAR_TTL", "600") or 0)
+_DEFAULT_CACHE_BASE = os.getenv("SAHAMBOT_CACHE", "temp/cache")
+CACHE_DIR = os.getenv(
+    "BANDAR_CACHE_DIR",
+    os.path.join(_DEFAULT_CACHE_BASE, "bandar") if _DEFAULT_CACHE_BASE else "",
+)
+_STALE_MAX_AGE = float(os.getenv("BANDAR_STALE_MAX_AGE", str(48 * 3600)) or 0)
 _cache: dict[tuple, tuple[float, object]] = {}
 _cache_lock = threading.Lock()
+_stale_local = threading.local()
 
 
 def clear_cache():
     with _cache_lock:
         _cache.clear()
+    _stale_local.age = None
 
 
 def cache_stats() -> dict:
     with _cache_lock:
-        return {"entries": len(_cache), "ttl_seconds": _TTL_SECONDS}
+        return {
+            "entries": len(_cache),
+            "ttl_seconds": _TTL_SECONDS,
+            "cache_dir": CACHE_DIR,
+        }
+
+
+def last_stale_age() -> float | None:
+    """Umur cache disk (detik) bila panggilan terakhir memakai fallback basi, else None."""
+    return getattr(_stale_local, "age", None)
+
+
+def _disk_path(key: tuple) -> str | None:
+    if not CACHE_DIR:
+        return None
+    digest = hashlib.sha256(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    return os.path.join(CACHE_DIR, f"{digest}.json")
+
+
+def _disk_save(key: tuple, value) -> None:
+    path = _disk_path(key)
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time(), "value": value}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _disk_load(key: tuple, max_age: float | None = None):
+    path = _disk_path(key)
+    if not path or not os.path.exists(path):
+        return None
+    limit = _STALE_MAX_AGE if max_age is None else max_age
+    if limit <= 0:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        ts = float(payload.get("ts", 0))
+        age = time.time() - ts
+        if age < 0 or age > limit:
+            return None
+        return payload.get("value"), age
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def _cached(key: tuple, producer, ttl: float | None = None):
     """Nilai dari cache memori bila masih segar, kalau tidak panggil producer().
 
-    Salinan (deepcopy) dikembalikan agar pemanggil tidak bisa merusak isi cache.
+    Bila producer gagal dengan `IDXTidakTersedia` (mis. Cloudflare 403) dan cache
+    disk masih dalam batas `_STALE_MAX_AGE`, kembalikan data terakhir yang valid
+    dan catat umurnya di `last_stale_age()`.
     """
+    _stale_local.age = None
     ttl = _TTL_SECONDS if ttl is None else ttl
     if ttl > 0:
         with _cache_lock:
             hit = _cache.get(key)
             if hit is not None and time.time() - hit[0] <= ttl:
                 return copy.deepcopy(hit[1])
-    value = producer()
+    try:
+        value = producer()
+    except IDXTidakTersedia:
+        disk_hit = _disk_load(key)
+        if disk_hit is not None:
+            val, age = disk_hit
+            _stale_local.age = age
+            return copy.deepcopy(val)
+        raise
     if ttl > 0:
         with _cache_lock:
             _cache[key] = (time.time(), copy.deepcopy(value))
+    _disk_save(key, value)
     return value
 HDR = {
     "Accept": "application/json, text/javascript, */*; q=0.01",

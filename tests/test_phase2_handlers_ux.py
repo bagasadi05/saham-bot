@@ -141,7 +141,7 @@ def test_cek_populates_sl_prev_close_and_hides_buy_button_on_hindari(
     monkeypatch, downtrend_df
 ):
     df = downtrend_df.copy()
-    df.attrs["as_of"] = "2026-11-13"
+    df.attrs["as_of"] = bot.marketcal.last_trading_day().isoformat()
     df.attrs["provenance"] = "live"
     df.attrs["provider"] = "yahoo_v8_chart"
     monkeypatch.setattr(bot.data, "fetch_history", lambda *a, **k: df)

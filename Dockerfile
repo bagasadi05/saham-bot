@@ -20,7 +20,8 @@ RUN pip install -r requirements.txt \
     && if [ "$SKIP_MODEL" = "1" ]; then \
          echo "SKIP_MODEL=1 → tanpa torch/transformers (lexicon fallback)"; \
        else \
-         pip install -r requirements-ml.txt; \
+         pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.5,<3" \
+         && pip install -r requirements-ml.txt; \
        fi
 
 # unduh model sentimen (~500 MB) saat build, kecuali SKIP_MODEL=1

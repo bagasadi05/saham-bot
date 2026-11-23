@@ -758,6 +758,10 @@ async def full_market_scan_job(app: Application, deps):
         return
     if res.get("cached"):
         return
+    try:
+        await asyncio.to_thread(_record_daily_snapshots, res)
+    except Exception:
+        log.warning("simpan daily_snapshots dari screener harian gagal", exc_info=True)
     if int(res.get("meta", {}).get("failed") or 0) > 100:
         await deps.notify_admin(
             app,
@@ -813,3 +817,30 @@ async def weekly_journal_report(app: Application, deps, *, force: bool = False):
                     what="kirim laporan berkala jurnal")
         except Exception:
             log.exception("laporan berkala jurnal gagal utk %s", cid)
+
+
+def _record_daily_snapshots(res: dict) -> int:
+    """Simpan snapshot harian (harga & volume) dari hasil screener ke SQLite untuk riset."""
+    rows = res.get("rows") if isinstance(res, dict) else None
+    if not rows:
+        return 0
+    trade_date = (
+        str((res.get("meta") or {}).get("trade_date") or "").strip()
+        or marketcal.last_trading_day().isoformat()
+    )
+    payload = [
+        {
+            "ticker": r.get("ticker"),
+            "close": r.get("price") if r.get("price") is not None else r.get("close"),
+            "volume": r.get("volume"),
+            "foreign_net": r.get("foreign_net"),
+            "pe": r.get("per") if r.get("per") is not None else r.get("pe"),
+            "pbv": r.get("pbv"),
+            "roe": r.get("roe"),
+            "der": r.get("debt_eq") if r.get("debt_eq") is not None else r.get("der"),
+            "div_yield": r.get("div_yield"),
+        }
+        for r in rows
+        if isinstance(r, dict) and r.get("ticker")
+    ]
+    return store.save_daily_snapshots(payload, trade_date=trade_date)

@@ -1,4 +1,6 @@
-# Opsional & berat (±1–2 GB, menarik paket pendukung CUDA dari PyPI).
-# Tanpa file ini bot tetap jalan memakai mesin lexicon sentimen.
+# Opsional & berat. Tanpa file ini bot tetap jalan memakai mesin lexicon sentimen.
+# Disarankan untuk server CPU/VPS (hemat ~2 GB paket CUDA):
+#   pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.5,<3"
+#   pip install -r requirements-ml.txt
 torch>=2.5,<3
 transformers>=4.40,<5
