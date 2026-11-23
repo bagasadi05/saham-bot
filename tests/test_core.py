@@ -585,5 +585,5 @@ def test_backtest_real_commission_matches_saran_per_side():
     pytest.importorskip("backtesting")
     from backtest_real import commission
 
-    assert commission(100, 1000.0) == saran.BUY_FEE     # beli
-    assert commission(-100, 1000.0) == saran.SELL_FEE   # jual (ada pajak)
+    assert commission(100, 1000.0) == 100 * 1000.0 * saran.BUY_FEE     # beli (Rp)
+    assert commission(-100, 1000.0) == 100 * 1000.0 * saran.SELL_FEE   # jual + pajak (Rp)

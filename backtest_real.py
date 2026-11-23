@@ -56,11 +56,13 @@ def ara_locked_series(ind) -> np.ndarray:
 
 
 def commission(order_size: int, price: float) -> float:
-    """Biaya per transaksi identik dengan /saran (beli 0,15%, jual 0,25%)
+    """Biaya transaksi nominal (Rp) identik dengan /saran (beli 0,15%, jual 0,25%).
 
-    backtesting.py memanggil ini per order; order_size < 0 berarti jual.
+    backtesting.py mengharapkan callable `commission(order_size, price)`
+    mengembalikan nominal biaya (bukan fraksi); order_size < 0 berarti jual.
     """
-    return BUY_FEE if order_size > 0 else SELL_FEE
+    rate = BUY_FEE if order_size > 0 else SELL_FEE
+    return abs(order_size) * float(price) * rate
 
 
 def build_statistics(ticker: str, period: str = "5y"):
@@ -121,12 +123,14 @@ class PowerStrategy(Strategy):
             if sl <= 0:
                 return
             # sizing identik dengan /saran: risiko RISK_PCT ekuitas per trade,
-            # bukan all-in — supaya simulasi memvalidasi skema yang dipakai bot.
+            # dibulatkan ke kelipatan 1 lot (100 lembar) sesuai aturan papan reguler BEI.
             risk_per_share = price - sl
-            size = min(0.99, (RISK_PCT * price) / risk_per_share)
-            if size <= 0:
+            raw_shares = int((self.equity * RISK_PCT) / risk_per_share)
+            max_shares = int((self.equity * 0.99) / (price * (1.0 + BUY_FEE)))
+            shares = (min(raw_shares, max_shares) // 100) * 100
+            if shares < 100:
                 return
-            self.buy(size=size, sl=sl, tp=tp)
+            self.buy(size=shares, sl=sl, tp=tp)
             self._entry_bar = i
 
 
