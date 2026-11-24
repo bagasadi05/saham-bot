@@ -143,37 +143,31 @@ def menu_text(mode: str = "pemula") -> str:
 
 
 def main_menu_markup(mode: str = "pemula", syariah_only: bool = False) -> InlineKeyboardMarkup:
+    sy_btn = InlineKeyboardButton(
+        "☪️ Saham: Syariah" if syariah_only else "🌐 Saham: Semua",
+        callback_data="syariah:menu",
+    )
     if _safe_mode(mode) == "expert":
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("🛡️ Cek 6 Poin", callback_data="pick:cek"),
              InlineKeyboardButton("📊 Analisis", callback_data="pick:analisis")],
-            [InlineKeyboardButton("🎯 Hitung Lot", callback_data="sub:rencana"),
-             InlineKeyboardButton("📦 Paket Beli", callback_data="run:paket")],
             [InlineKeyboardButton("📡 Sinyal IDX", callback_data="run:sinyal"),
-             InlineKeyboardButton("✨ BELI Bagus", callback_data="run:sinyal_bagus")],
-            [InlineKeyboardButton("💡 Ide Harian", callback_data="run:saran"),
-             InlineKeyboardButton("🌐 Kondisi Pasar", callback_data="run:pasar")],
-            [InlineKeyboardButton("🏭 Sektor BEI", callback_data="run:sektor"),
+             InlineKeyboardButton("💡 Ide Harian", callback_data="run:saran")],
+            [InlineKeyboardButton("🎯 Hitung Lot", callback_data="sub:rencana"),
              InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio")],
-            [InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal"),
-             InlineKeyboardButton("👀 Pantau", callback_data="sub:pantau")],
-            [InlineKeyboardButton("🧪 Riset & Pro", callback_data="sub:pro"),
-             InlineKeyboardButton("📋 Semua Perintah", callback_data="sub:allcmd")],
-            [InlineKeyboardButton("🎚️ Level: Expert", callback_data="mode:menu"),
-             InlineKeyboardButton("☪️ Saham: Syariah" if syariah_only else "🌐 Saham: Semua",
-                                  callback_data="syariah:menu")],
+            [InlineKeyboardButton("🌐 Pasar", callback_data="run:pasar"),
+             InlineKeyboardButton("📒 Jurnal", callback_data="run:jurnal")],
+            [sy_btn,
+             InlineKeyboardButton("⚙️ Lainnya", callback_data="sub:more")],
         ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧭 Pandu Aku Langkah demi Langkah", callback_data="guide:start")],
-        [InlineKeyboardButton("🟢 Saham Cocok Dibeli", callback_data="guide:beli"),
-         InlineKeyboardButton("🔴 Cek Saham Jual", callback_data="guide:jual")],
-        [InlineKeyboardButton("🔍 Cek Nilai Saham", callback_data="guide:cek"),
-         InlineKeyboardButton("💼 Portofolio Saya", callback_data="run:portofolio")],
-        [InlineKeyboardButton("🎓 Belajar Pemula", callback_data="run:belajar"),
-         InlineKeyboardButton("⚙️ Menu Lengkap", callback_data="sub:more")],
-        [InlineKeyboardButton("🎚️ Level: Pemula (Ganti)", callback_data="mode:menu")],
+        [InlineKeyboardButton("🟢 Cari Saham Beli", callback_data="guide:beli"),
+         InlineKeyboardButton("🔍 Cek Saham", callback_data="guide:cek")],
+        [InlineKeyboardButton("🔴 Cek Jual", callback_data="guide:jual"),
+         InlineKeyboardButton("💼 Portofolio", callback_data="run:portofolio")],
+        [sy_btn,
+         InlineKeyboardButton("⚙️ Lainnya", callback_data="sub:more")],
     ])
-
 
 def mode_text(cur_mode: str = "pemula") -> str:
     cur = _safe_mode(cur_mode)
@@ -632,6 +626,7 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
             "<b>Untuk Pemula &amp; Cek Cepat:</b>\n"
             "• <code>/start</code>, <code>/menu</code> — buka menu tombol\n"
             "• <code>/mode pemula</code> / <code>/mode expert</code> — ganti tampilan menu (simpel / pro)\n"
+            "• <code>/syariah</code> (<code>on</code>/<code>off</code>/<code>cek TLKM</code>) — filter saham syariah ISSI vs semua\n"
             "• <code>/help</code> — panduan 3 langkah mulai\n"
             "• <code>/cek BBCA</code> — ceklist 6 bagian + kesimpulan\n"
             "• <code>/analisis BBCA</code> — grafik &amp; analisis lengkap\n"
@@ -673,8 +668,11 @@ def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup]
                  InlineKeyboardButton("🌐 Kondisi Pasar", callback_data="run:pasar")],
                 [InlineKeyboardButton("👀 Watchlist & Alarm", callback_data="sub:pantau"),
                  InlineKeyboardButton("📖 Panduan & Contoh", callback_data="run:help")],
+                [InlineKeyboardButton("🧭 Panduan Pemula", callback_data="guide:start"),
+                 InlineKeyboardButton("🎓 Belajar Istilah", callback_data="run:belajar")],
                 [InlineKeyboardButton("🧪 Fitur Lanjutan & Riset", callback_data="sub:pro"),
-                 InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+                 InlineKeyboardButton("🎚️ Ganti Level Menu", callback_data="mode:menu")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
             ]),
         )
     return None

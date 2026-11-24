@@ -647,7 +647,7 @@ def test_mode_persistence_onboard_tick_dan_manual_rencana_rp(monkeypatch):
     asyncio.run(info_handler.do_start(u_start, _ctx(), bot))
     start_txt, start_kw = u_start.effective_message.replies[-1]
     assert "Mode Expert" in start_txt
-    assert {"sub:rencana", "run:jurnal", "mode:menu"} <= set(_all_callbacks(start_kw["reply_markup"]))
+    assert {"sub:rencana", "run:jurnal", "syariah:menu", "sub:more"} <= set(_all_callbacks(start_kw["reply_markup"]))
 
     # Selama Stage 4 onboarding, ketuk tick:cek:BBCA tetap menyediakan tombol lanjut Tahap 5
     store.set_onboard_state(202, stage="s4", goal="beli", ticker="BBCA")

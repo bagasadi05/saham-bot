@@ -89,8 +89,8 @@ def test_start_ramah_pemula_dan_tidak_membanjiri_perintah(monkeypatch, tmp_store
     assert len(txt) < 900  # ringkas untuk layar ponsel pemula
     cbs = _callbacks(kw["reply_markup"])
     assert len(cbs) <= 8  # layar utama disederhanakan untuk pemula
-    for expected in ("guide:start", "guide:beli", "guide:jual", "guide:cek",
-                     "run:portofolio", "run:belajar", "sub:more"):
+    for expected in ("guide:beli", "guide:jual", "guide:cek",
+                     "run:portofolio", "syariah:menu", "sub:more"):
         assert expected in cbs
 
     # Menu Lengkap (sub:more) tetap menyediakan semua alat analisis & submenu lama
@@ -303,7 +303,7 @@ def test_safe_edit_fallback_ke_reply_pada_pesan_foto_dan_uneditable(monkeypatch,
     asyncio.run(bot.menu_callback(_Update(query=q_photo), _ctx()))
     assert q_photo.message.replies
     assert "SahamBuddy" in q_photo.message.replies[-1][0]
-    assert "guide:start" in _callbacks(q_photo.message.replies[-1][1]["reply_markup"])
+    assert "guide:beli" in _callbacks(q_photo.message.replies[-1][1]["reply_markup"])
 
     # Pesan lama (>48 jam) -> BadRequest("Message can't be edited") jatuh aman ke reply_text
     q_old = _Query("menu")
@@ -626,7 +626,7 @@ def test_guide_interaktif_pemula_kosong_dan_terisi(monkeypatch, tmp_store):
     # Step tidak dikenal jatuh ke menu utama dengan rapi
     q_bad = _Query("guide:tidak_ada")
     asyncio.run(bot.menu_callback(_Update(query=q_bad), _ctx()))
-    assert "guide:start" in _callbacks(q_bad.message.edits[-1][1]["reply_markup"])
+    assert "guide:beli" in _callbacks(q_bad.message.edits[-1][1]["reply_markup"])
 
 
 def test_result_markup_langkah_lanjutan_jujur():
@@ -672,17 +672,16 @@ def test_mode_pemula_vs_expert_dan_perintah_mode_start(monkeypatch, tmp_store):
     pemula_kb = bot.main_menu_markup("pemula")
     pemula_cbs = _callbacks(pemula_kb)
     assert len(pemula_cbs) <= 8
-    assert pemula_cbs[-1] == "mode:menu"
+    assert pemula_cbs[-1] == "sub:more"
     assert len(bot._menu_text("pemula")) < 900
 
     # Expert mode: grid akses cepat alat pro + mode:menu
     expert_kb = bot.main_menu_markup("expert")
     expert_cbs = _callbacks(expert_kb)
     assert {
-        "pick:cek", "pick:analisis", "sub:rencana", "run:paket",
-        "run:sinyal", "run:sinyal_bagus", "run:saran", "run:sektor",
-        "run:portofolio", "run:jurnal", "sub:pantau", "sub:pro",
-        "sub:allcmd", "mode:menu",
+        "pick:cek", "pick:analisis", "sub:rencana",
+        "run:sinyal", "run:saran", "run:pasar",
+        "run:portofolio", "run:jurnal", "syariah:menu", "sub:more",
     } <= set(expert_cbs)
     assert "Mode Expert" in bot._menu_text("expert")
 
