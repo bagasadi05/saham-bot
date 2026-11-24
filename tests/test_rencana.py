@@ -225,3 +225,111 @@ def test_finalize_defensif_pangkas_eksposur_dan_risiko():
     assert na_out["exposure_scale"] == 1.0
     assert na_out["max_total_pct"] == 90.0
     assert all(p["lots"] == 20 for p in na_out["picks"])
+
+
+# ------------------------------------------- filter tren (anti falling knife)
+def _analyzed_trend(*, close=1000.0, sma50=800.0, sma200=700.0,
+                    rsi=60.0, ret20=2.0, ret5=1.0, atr=30.0):
+    """Helper: snap dengan sma50/sma200/ret5d untuk tes filter tren."""
+    ind = make_prices(np.linspace(close * 0.9, close, 80))
+    ind["atr14"] = atr
+    return {
+        "res": {"ticker": "AAAA",
+                "snap": {"close": close, "rsi": rsi, "ret20d": ret20,
+                         "ret5d": ret5, "sma20": close * 0.99,
+                         "sma50": sma50, "sma200": sma200},
+                "ind": ind},
+        "fund": {"pct": 15.0, "label": "BAIK", "notes": []},
+        "fund_raw": {"sector": "Financials", "per": 10.0, "pbv": 1.2,
+                     "roe": 15.0, "debt_eq": 50.0, "div_yield": 2.0},
+        "nsent": {"pct": 10.0, "label": "NETRAL", "n": 1, "details": []},
+    }
+
+
+def test_enrich_death_cross_jadi_veto_di_paket():
+    # require_rel=True (paket): close < sma50 dan sma50 < sma200 → veto
+    e = rencana.enrich(_row(), _analyzed_trend(close=1000, sma50=1200, sma200=1500),
+                       require_rel=True)
+    assert e is not None
+    assert any("downtrend kuat" in v for v in e["vetoes"])
+    assert e["grade"] == "—"
+
+
+def test_enrich_death_cross_jadi_warning_keras_di_rencana_single():
+    # require_rel=False (/rencana <KODE>): bukan veto, tapi warning + penalti grade
+    e = rencana.enrich(_row(), _analyzed_trend(close=1000, sma50=1200, sma200=1500),
+                       require_rel=False)
+    assert e is not None
+    assert not any("downtrend kuat" in v for v in e["vetoes"])
+    assert any("downtrend kuat" in w for w in e["warnings"])
+    assert e["grade"] in ("B", "C")  # grade turun karena penalti
+
+
+def test_enrich_below_sma50_tanpa_death_cross_warning_ringan():
+    e = rencana.enrich(_row(), _analyzed_trend(close=1000, sma50=1100, sma200=900),
+                       require_rel=False)
+    assert any("di bawah MA50" in w for w in e["warnings"])
+    assert not any("downtrend kuat" in w for w in e["warnings"])
+
+
+def test_enrich_dead_cat_bounce_warning():
+    # ret20d -15%, ret5d +14% → pantulan dalam downtrend
+    e = rencana.enrich(_row(), _analyzed_trend(close=1000, sma50=900, sma200=800,
+                                               ret20=-15.0, ret5=14.0),
+                       require_rel=False)
+    assert any("dead-cat bounce" in w for w in e["warnings"])
+
+
+def test_enrich_rsi_lemah_warning():
+    e = rencana.enrich(_row(), _analyzed_trend(rsi=35.0), require_rel=False)
+    assert any("RSI lemah" in w for w in e["warnings"])
+
+
+def test_enrich_uptrend_sehat_tanpa_warning_tren():
+    e = rencana.enrich(_row(), _analyzed_trend(close=1000, sma50=900, sma200=800,
+                                               rsi=55.0, ret20=5.0, ret5=2.0),
+                       require_rel=False)
+    assert not any("downtrend" in w for w in e["warnings"])
+    assert not any("dead-cat" in w for w in e["warnings"])
+    assert not any("RSI lemah" in w for w in e["warnings"])
+
+
+def test_prefilter_tolak_death_cross():
+    cands, rejected = rencana.prefilter([
+        _row(ticker="SEHAT", price=1000.0, sma50=900.0, sma200=800.0),
+        _row(ticker="DEATH", price=1000.0, sma50=1200.0, sma200=1500.0),
+    ])
+    assert [c["ticker"] for c in cands] == ["SEHAT"]
+    assert rejected["downtrend kuat (death cross, harga < MA50 < MA200)"] == 1
+
+
+def test_price_levels_entry_pullback_saat_extend_di_atas_sma20():
+    c = {"ticker": "AAAA", "price": 1100.0, "atr": 30.0, "sma20": 1000.0,
+         "warnings": [], "vetoes": []}
+    lv = rencana.price_levels(c)
+    assert lv["entry"] == 1100
+    # harga 10% di atas SMA20 → saran pullback ke MA20 (1000, tick 5)
+    assert lv["entry_pullback"] == 1000
+
+
+def test_price_levels_tanpa_pullback_jika_dekat_sma20():
+    c = {"ticker": "AAAA", "price": 1010.0, "atr": 30.0, "sma20": 1000.0,
+         "warnings": [], "vetoes": []}
+    lv = rencana.price_levels(c)
+    # hanya 1% di atas SMA20 → tidak perlu pullback
+    assert lv["entry_pullback"] is None
+
+
+def test_price_levels_tanpa_sma20_tidak_ada_pullback():
+    c = {"ticker": "AAAA", "price": 1100.0, "atr": 30.0,
+         "warnings": [], "vetoes": []}
+    lv = rencana.price_levels(c)
+    assert lv["entry_pullback"] is None
+
+
+def test_make_plan_memuat_entry_pullback():
+    e = rencana.enrich(_row(), _analyzed_trend(close=1100, sma50=900, sma200=800))
+    e["sma20"] = 1000.0
+    p = rencana.make_plan(e, 10_000_000)
+    assert p["entry"] == 1100
+    assert p["entry_pullback"] == 1000

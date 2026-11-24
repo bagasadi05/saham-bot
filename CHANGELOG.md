@@ -8,6 +8,36 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ---
 
+## [Unreleased] — 2026-11-24
+
+- **Filter anti "falling knife" di `/rencana` & `/paket`** (dari kasus BRIS: death cross + dead-cat bounce lolos entry):
+  - `core/rencana.py:enrich()` kini mengekstrak `sma20/sma50/sma200/ret5d` dari snapshot dan menambah:
+    - **Death cross**: `close < SMA50` AND `SMA50 < SMA200` → **veto** untuk `/paket` (`require_rel=True`), **warning keras + penalti grade −2** untuk `/rencana <KODE>` (user memang sengaja minta saham itu).
+    - **Dead-cat bounce**: `ret20d < −10%` AND `ret5d > +8%` → warning "pantulan tajam dalam downtrend — tunggu pullback" + penalti grade −1.
+    - **RSI lemah**: `RSI < 40` → warning baru (sebelumnya hanya RSI > 70 yang diingatkan).
+    - `harga masih di bawah MA50` (tanpa death cross) → warning ringan + penalti grade −1.
+  - `core/rencana.py:prefilter()` kini **menolak** kandidat dengan death cross (`harga < MA50` & `MA50 < MA200`) — tidak masuk pool `/paket` sama sekali.
+  - `core/rencana.py:grade()` menurunkan grade bila ada warning downtrend/bounce (grade A butuh tanpa `trend_gap`).
+  - `core/rencana.py:price_levels()` menambah field **`entry_pullback`**: bila harga >2% di atas SMA20 (pantulan), saran entry di level MA20 (round-tick), bukan mengejar harga saat ini. Tersedia di `make_plan()` & `budget_plan()`.
+  - `core/analysis.py`: `compute_indicators()` kini menghitung **`ret5d`** dan `last_snapshot()` menyertakannya.
+  - 10 tes baru di `tests/test_rencana.py` (death cross veto/warning, dead-cat bounce, RSI lemah, prefilter, entry_pullback) — total **921 tes**.
+
+- **Redesain UI SahamBot Desktop (`desktop.py`)** menjadi tema dark "trading terminal":
+  - Custom title bar frameless (drag judul, minimize, maximize ke work area layar via `SystemParametersInfo`, close → minimize ke tray) + ikon jendela dari logo SahamBot, dengan edge-resize tipis di keempat sisi.
+  - Kartu KPI: IHSG (chip `▲/▼` hijau/merah), rezim IHSG, kondisi pasar, dan update terakhir — masing-masing dengan strip aksen warna dan teks status berwarna.
+  - Tab segmented custom (menggantikan `ttk.Notebook`): pill aktif biru, hover, dan hint di kanan.
+  - Tabel (watchlist, sinyal, paket, portofolio) dengan zebra striping + pewarnaan status (BELI/SIAP BELI/JUAL/TAHAN, tesis GUGUR/MELEMAH/MENGUAT).
+  - Panel teks (laporan pasar, jurnal, cek emiten) dirender dengan pewarnaan: header biru, section muted, verdict/kata kunci status berwarna; log alert menjadi panel teks berwarna per jenis alert.
+  - Kontrol header: toggle switch pill untuk Auto-Pantau & Toast, tombol Terapkan/Refresh (accent)/Keluar (danger), status bar bawah dengan dot indikator + chip `AUTO-PANTAU ON/OFF · interval`.
+  - Perilaku & isi data tidak berubah (tetap jujur "tidak tersedia" saat data kurang). Diverifikasi offline: screenshot semua 8 tab + uji maximize/drag/resize/minimize-to-tray; `pytest` **910 passed**, `ruff check .` bersih.
+- **Penyempurnaan tata letak setelah review screenshot (2026-11-24)**:
+  - Tab Kondisi Pasar kini dua kolom: laporan teks di kiri + panel kanan visual (bar breadth berwarna naik/turun/datar, kartu penggerak naik/turun, kartu sentimen berita dengan chip & daftar judul); teks lama kini menunjuk ke panel kanan agar tidak duplikat.
+  - Footer ringkasan di bawah tabel: Radar Watchlist (chip `BELI/SIAP BELI/TAHAN/JUAL n`) dan Sinyal & Scan (chip `BELI/JUAL/TAHAN n` + info snapshot & filter aktif); Portofolio menampilkan jumlah posisi terbuka.
+  - Empty state terarah di semua tab kosong (watchlist, sinyal, paket, portofolio, log alert) dengan petunjuk langkah berikutnya, bukan area kosong polos.
+  - Tombol lebih semantik & menyambung: "Hapus Terpilih" dan "Catat Jual" bergaya danger (merah), garis pemisah antara pengaturan (profil/modal/interval/switch) dan tombol aksi (Terapkan/Refresh/Keluar) di header, hint "catat manual sesuai eksekusi Stockbit PC" di tab Portofolio.
+  - Pewarnaan teks laporan meluas: `DEFENSIVE`/`BULL`/`BEAR`, `POSITIF`/`NEGATIF`/`CAMPURAN` ikut diwarnai seperti kata kunci status lain.
+  - Diverifikasi lagi via screenshot offline semua tab; `pytest` **921 passed**, `ruff check .` bersih.
+
 ## [Unreleased] — 2026-11-21
 
 - **Housekeeping skill & tooling (W0)**: `.agents/skills/alphaear-*` diabaikan di `.gitignore`, `pyproject.toml` (`extend-exclude` & `norecursedirs`), serta didokumentasikan di `AGENTS.md` tanpa menambah dependensi ke `requirements*.txt`.

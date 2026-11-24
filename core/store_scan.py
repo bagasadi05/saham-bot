@@ -1,4 +1,10 @@
-"""Domain penyimpanan: market_scan screener, histori sinyal, plan cache, dan backup SQLite."""
+"""Domain penyimpanan: market_scan screener, histori sinyal, plan cache, dan backup SQLite.
+
+Catatan keamanan SQL: f-string di modul ini hanya dipakai untuk nama kolom
+(`_SCAN_COLS`, `_HISTORY_COLS`, `_SNAPSHOT_COLS`) yang konstanta hardcoded —
+bukan input user. Semua nilai data SELALU lewat parameter `?` (parameterized),
+sehingga tidak ada risiko SQL injection.
+"""
 from __future__ import annotations
 
 import datetime as dt

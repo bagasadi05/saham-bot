@@ -82,6 +82,14 @@ def prefilter(rows: list[dict], pool_limit: int = POOL_LIMIT):
         if ret20 is not None and ret20 > TRAP_RET20D:
             rejected["sudah naik >15% dalam 20 hari"] += 1
             continue
+        # Falling knife: harga di bawah MA50 + death cross (MA50 < MA200)
+        close_v = _f(r.get("price"))
+        sma50_v = _f(r.get("sma50"))
+        sma200_v = _f(r.get("sma200"))
+        if (close_v is not None and sma50_v is not None and sma200_v is not None
+                and close_v < sma50_v and sma50_v < sma200_v):
+            rejected["downtrend kuat (death cross, harga < MA50 < MA200)"] += 1
+            continue
         rel = _f(r.get("rel_pct"))
         if rel is not None and rel < MIN_REL:
             rejected["peringkat relatif < 60"] += 1
@@ -174,7 +182,17 @@ def enrich(cand: dict, analyzed: dict | None,
     news_pct = _f(nsent.get("pct"))
     rel_pct = _f(cand.get("rel_pct"))
     ret20d = _f(snap.get("ret20d"), _f(cand.get("ret20d")))
+    ret5d = _f(snap.get("ret5d"))
+    if ret5d is None and ind is not None and "close" in ind and len(ind) >= 6:
+        try:
+            ret5d = round((float(ind["close"].iloc[-1])
+                           / float(ind["close"].iloc[-6]) - 1.0) * 100.0, 2)
+        except Exception:
+            ret5d = None
     rsi = _f(snap.get("rsi"), _f(cand.get("rsi")))
+    sma20 = _f(snap.get("sma20"))
+    sma50 = _f(snap.get("sma50"))
+    sma200 = _f(snap.get("sma200"))
     board = cand.get("board") or universe.board_of(ticker)
 
     vetoes, warnings = _fund_flags(per, pbv, roe, der, sector)
@@ -215,11 +233,37 @@ def enrich(cand: dict, analyzed: dict | None,
         warnings.append(f"sudah naik {ret20d:.1f}% dalam 20 hari")
     if rsi is not None and rsi > 70:
         warnings.append(f"RSI jenuh beli ({rsi:.0f})")
+    if rsi is not None and rsi < 40:
+        warnings.append(f"RSI lemah ({rsi:.0f}) — momentum masih di bawah 40")
     if price < 100:
         warnings.append(
             "harga < Rp100 (mendekati zona Rp50 tidak likuid / FCA; "
             "lantai reguler BEI Rp1) — spread/tick relatif besar"
         )
+
+    # --- filter tren: jangan catching falling knife ---
+    # Death cross + harga di bawah MA50 = downtrend kuat. Untuk /paket
+    # (require_rel=True) ini veto; untuk /rencana <KODE> eksplisit hanya
+    # warning keras + penalti grade (user memang sengaja minta saham itu).
+    death_cross = (sma50 is not None and sma200 is not None
+                   and sma50 < sma200)
+    below_sma50 = sma50 is not None and price < sma50
+    if below_sma50 and death_cross:
+        msg = ("downtrend kuat: harga di bawah MA50 dan MA50 < MA200 "
+               "(death cross) — entry berisiko tinggi, ini pola falling knife")
+        if require_rel:
+            vetoes.append(msg)
+        else:
+            warnings.append(msg)
+    elif below_sma50:
+        warnings.append("harga masih di bawah MA50 — tren menengah belum berbalik")
+    # Dead-cat bounce: ret20d negatif tajam tapi ret5d positif tajam =
+    # pantulan dalam downtrend, jangan dikejar.
+    if (ret20d is not None and ret5d is not None
+            and ret20d < -10.0 and ret5d > 8.0):
+        warnings.append(
+            f"pantulan tajam dalam downtrend (20d {ret20d:.1f}%, 5d +{ret5d:.1f}%) "
+            "— pola dead-cat bounce, tunggu pullback")
 
     news_top = []
     for d in (nsent.get("details") or [])[:2]:
@@ -237,6 +281,10 @@ def enrich(cand: dict, analyzed: dict | None,
         "price": round(price, 2),
         "rsi": round(rsi, 1) if rsi is not None else None,
         "ret20d": round(ret20d, 2) if ret20d is not None else None,
+        "ret5d": round(ret5d, 2) if ret5d is not None else None,
+        "sma20": round(sma20, 2) if sma20 is not None else None,
+        "sma50": round(sma50, 2) if sma50 is not None else None,
+        "sma200": round(sma200, 2) if sma200 is not None else None,
         "atr": round(atr, 2),
         "rel_pct": round(rel_pct, 1) if rel_pct is not None else None,
         "tech_score": _f(cand.get("tech_score")),
@@ -289,8 +337,17 @@ def grade(c: dict) -> str:
         pts -= 1
     if any(w.startswith("RSI jenuh") for w in warns):
         pts -= 1
+    if any(w.startswith("downtrend kuat") for w in warns):
+        pts -= 2
+    if any(w.startswith("pantulan tajam") for w in warns):
+        pts -= 1
+    if any(w.startswith("RSI lemah") for w in warns):
+        pts -= 1
+    if any(w.startswith("harga masih di bawah MA50") for w in warns):
+        pts -= 1
     quality_gap = any(w.startswith(("ROE tipis", "PBV premium")) for w in warns)
-    if pts >= 5 and not quality_gap:
+    trend_gap = any(w.startswith(("downtrend kuat", "pantulan tajam")) for w in warns)
+    if pts >= 5 and not quality_gap and not trend_gap:
         return "A"
     return "B" if pts >= 3 else "C"
 
@@ -317,6 +374,15 @@ def price_levels(c: dict) -> dict:
     atr = _f(c.get("atr")) or entry * 0.03
     if atr <= 0:
         atr = entry * 0.03
+    # Saran entry pullback: bila harga sudah melesat >2% di atas MA20
+    # (pantulan), entry lebih baik menunggu pullback ke MA20 daripada
+    # mengejar harga saat ini.
+    sma20 = _f(c.get("sma20"))
+    entry_pullback = None
+    if sma20 is not None and sma20 > 0 and raw_entry > sma20 * 1.02:
+        pb = _round_tick(sma20, tick)
+        if 0 < pb < entry:
+            entry_pullback = pb
     sl = _round_tick(max(entry - atr, tick), tick)
     if sl >= entry:
         sl = max(entry - tick, tick)
@@ -330,6 +396,7 @@ def price_levels(c: dict) -> dict:
     gap = saran.arb_gap_risk(entry, sl)
     return {
         "raw_entry": raw_entry, "tick": tick, "entry": entry, "atr": atr,
+        "entry_pullback": entry_pullback,
         "sl": sl, "tp": tp, "chase_above": chase_above,
         "risk_per_share": risk_per_share,
         "rr": ((tp - entry) / risk_per_share) if risk_per_share > 0 else 0.0,
@@ -382,6 +449,7 @@ def make_plan(
         "price": entry,
         "last_price": round(float(c.get("price") or entry), 2),
         "entry": entry,
+        "entry_pullback": lv.get("entry_pullback"),
         "sl": sl,
         "tp": tp,
         "atr": round(atr, 2),
@@ -512,6 +580,7 @@ def budget_plan(
         "board": c.get("board"),
         "price": entry,
         "entry": entry, "sl": sl, "tp": tp, "atr": round(lv["atr"], 2),
+        "entry_pullback": lv.get("entry_pullback"),
         "chase_above": lv["chase_above"],
         "rr": round(lv["rr"], 2),
         "sl_dist_pct": lv["sl_dist_pct"],

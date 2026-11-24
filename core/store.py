@@ -344,7 +344,10 @@ def _run_migrations(conn, current: int) -> int:
 
 
 def _migrate_scan_columns(conn):
-    """Tambah kolom snapshot baru pada DB lama tanpa menghapus data."""
+    """Tambah kolom snapshot baru pada DB lama tanpa menghapus data.
+
+    Aman: `name`/`typ` dari tuple konstanta hardcoded, bukan input user.
+    """
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(market_scan)")}
     for name, typ in (("vol_avg20", "REAL"), ("value_avg20", "REAL")):
         if name not in cols:

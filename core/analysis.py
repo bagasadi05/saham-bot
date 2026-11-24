@@ -162,6 +162,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["high20"] = df["high"].rolling(20).max()
     df["low20"] = df["low"].rolling(20).min()
     df["ret1d"] = df["close"].pct_change() * 100
+    df["ret5d"] = df["close"].pct_change(5) * 100
     df["ret20d"] = df["close"].pct_change(20) * 100
     # volatilitas 20 hari (standar deviasi return harian, fraksi) — dipakai
     # faktor relatif; definisinya sama persis dengan harness riset
@@ -482,6 +483,7 @@ def last_snapshot(ind: pd.DataFrame) -> dict:
         "close": close,
         "as_of": _as_of(ind),
         "ret1d": _num_or(last.get("ret1d"), 2, 0.0),
+        "ret5d": _num_or(last.get("ret5d"), 2, None),
         "ret20d": _num_or(last.get("ret20d"), 2, 0.0),
         "rsi": _num_or(last.get("rsi14"), 1, None),
         "macd_hist": _num_or(last.get("macd_hist"), 3, 0.0),
