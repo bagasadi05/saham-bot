@@ -34,3 +34,5 @@ htmlcov/
 
 # skill pihak ketiga lokal (skill repo resmi: .agents/skills/idx-*)
 .agents/skills/alphaear-*/
+
+!data/idx_syariah.json
