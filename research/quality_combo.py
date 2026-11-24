@@ -58,23 +58,23 @@ def summarize_combo(rows: list[dict]) -> dict:
 
 def _fetch_one(ticker: str) -> dict | None:
     try:
-        df = datamod.fetch_price(ticker, period="1y")
+        df = datamod.fetch_history(ticker, period="1y")
         if df is None or len(df) < 60:
             return None
         from core import analysis
 
         ind = analysis.compute_indicators(df)
         f_map = relatif.factors_from_ind(ind)
-        fund = fundamental.fetch_fundamental(ticker)
-        q = kualitas.evaluate(fund) if hasattr(kualitas, "evaluate") else kualitas.nilai(fund)
+        fund = fundamental.fetch_fundamentals(ticker)
+        q = kualitas.judge(fund)
         ret20d = float(ind["ret20d"].iloc[-1]) if "ret20d" in ind.columns else None
         return {
             "ticker": syariah.normalize_code(ticker),
             "is_syariah": syariah.is_syariah(ticker),
             "factors": f_map,
             "ret20d": ret20d,
-            "quality_ok": bool(q and q.get("status") == "sehat"),
-            "quality_status": (q or {}).get("status", "unknown"),
+            "quality_ok": bool(q and q.get("ok")),
+            "quality_status": "sehat" if (q and q.get("ok")) else "waspada",
         }
     except Exception:
         return None

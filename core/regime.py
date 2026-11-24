@@ -148,11 +148,27 @@ def evaluate_ihsg(df: pd.DataFrame | None) -> dict:
     scale = exposure_from_indicators(
         raw_close, raw_sma50, raw_sma200, mode="sma50_200_half"
     )
+    raw_vol20 = float(last["vol20"]) if ("vol20" in last and pd.notna(last["vol20"])) else None
+    vol_note = None
+    if raw_vol20 is not None:
+        if raw_vol20 > 0.30 and scale > 0.25:
+            scale = 0.25
+            vol_note = f"volatilitas IHSG tinggi ({raw_vol20 * 100:.1f}% > 30%)"
+        elif raw_vol20 > 0.22 and scale > DEFENSIVE_SCALE:
+            scale = DEFENSIVE_SCALE
+            vol_note = f"volatilitas IHSG meningkat ({raw_vol20 * 100:.1f}% > 22%)"
     gap_pct = round((raw_sma50 / raw_sma200 - 1.0) * 100.0, 2)
     if scale < BULL_SCALE:
+        pct_lbl = int(round(scale * 100))
+        lbl = f"defensif ({vol_note})" if vol_note else "defensif (SMA50 < SMA200)"
+        rsn = (
+            f"IHSG {vol_note} — porsi & risiko dipangkas ke {pct_lbl}%"
+            if vol_note
+            else f"IHSG defensif (SMA50 < SMA200) — porsi & risiko dipangkas ke {pct_lbl}%"
+        )
         return {
             "status": "DEFENSIVE",
-            "label": "defensif (SMA50 < SMA200)",
+            "label": lbl,
             "exposure_scale": scale,
             "close": close,
             "sma50": sma50,
@@ -161,7 +177,7 @@ def evaluate_ihsg(df: pd.DataFrame | None) -> dict:
             "as_of": as_of,
             "bars": n_bars,
             "stale": stale,
-            "reason": "IHSG defensif (SMA50 < SMA200) — porsi & risiko dipangkas ke 50%",
+            "reason": rsn,
         }
     return {
         "status": "BULL",

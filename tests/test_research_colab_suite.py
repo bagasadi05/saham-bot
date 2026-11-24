@@ -65,3 +65,21 @@ def test_finetune_sentiment_corpus_and_stratified_split():
     assert len(train) + len(val) == len(corpus)
     assert {lbl for _, lbl in val} == {0, 1, 2}
     assert {lbl for _, lbl in train} == {0, 1, 2}
+
+
+def test_regime_vol20_3tier_guard():
+    from core import regime
+
+    # Bullish SMA50 > SMA200, tapi volatilitas 20h tinggi (>30% ann) -> rem ke 25%
+    dates = pd.date_range("2025-01-01", periods=230, freq="B")
+    closes = np.linspace(6500.0, 7500.0, len(dates))
+    # 25 hari terakhir bergejolak tajam (~2.5% harian => vol20 > 35% ann)
+    shocks = np.array([1.0 + (0.028 if i % 2 == 0 else -0.026) for i in range(25)])
+    closes[-25:] = closes[-26] * np.cumprod(shocks)
+    df = pd.DataFrame(
+        {"open": closes, "high": closes * 1.01, "low": closes * 0.99, "close": closes, "volume": 1e9},
+        index=dates,
+    )
+    reg = regime.evaluate_ihsg(df)
+    assert reg["status"] == "DEFENSIVE"
+    assert reg["exposure_scale"] == 0.25
