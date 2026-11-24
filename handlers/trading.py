@@ -16,6 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 import backtest as btmod
+from core import syariah
 from core import (analysis, btcache, data, fundamental, marketcal, news,
                   pricing, regime, reports, saran as saranmod, store)
 
@@ -183,6 +184,7 @@ async def saran_scan_text(chat_id: int, deps,
     _LAST_SARAN_META.pop(int(chat_id), None)
     real_pos = await asyncio.to_thread(store.real_positions, chat_id)
     open_execs = await asyncio.to_thread(store.open_executions_by_ticker, chat_id)
+    syariah_only = bool(await asyncio.to_thread(store.get_syariah_mode, chat_id))
     if universe is None:
         wl = await asyncio.to_thread(store.get_watchlist, chat_id)
         held_syms = [
@@ -190,8 +192,17 @@ async def saran_scan_text(chat_id: int, deps,
             for p in real_pos
             if int(p.get("lots") or 0) > 0 and p.get("ticker")
         ]
-        seed = list(dict.fromkeys(held_syms + list(wl) + list(saranmod.DEFAULT_UNIVERSE)))
+        base_seed = (
+            syariah.syariah_universe(saranmod.MAX_SCAN)
+            if syariah_only
+            else list(saranmod.DEFAULT_UNIVERSE)
+        )
+        seed = list(dict.fromkeys(held_syms + list(wl) + base_seed))
+        if syariah_only:
+            seed = syariah.filter_tickers(seed)
         universe = seed[:saranmod.MAX_SCAN]
+    elif syariah_only:
+        universe = syariah.filter_tickers(universe)
     modal = await asyncio.to_thread(store.get_modal, chat_id)
     total = len(universe)
     done = 0
@@ -268,7 +279,8 @@ async def saran_scan_text(chat_id: int, deps,
     )
     stale_lbl = f" · ⚠️ {stale_count} dari cache" if stale_count else ""
 
-    lines = [f"🧭 <b>RINGKASAN SARAN HARIAN — {pd.Timestamp.now(tz=deps.WIB):%d %b %Y}</b>",
+    sy_banner = "☪️ <i>Mode Syariah aktif (ISSI/DES OJK)</i>" if syariah_only else ""
+    lines = ([sy_banner] if sy_banner else []) + [f"🧭 <b>RINGKASAN SARAN HARIAN — {pd.Timestamp.now(tz=deps.WIB):%d %b %Y}</b>",
              f"🔎 <i>Data bar terakhir: {deps.esc(bar_lbl)} WIB{deps.esc(stale_lbl)}</i>",
              "Skema: entry di open sesi berikutnya | SL 1×ATR | TP 2×ATR | "
              f"biaya beli {saranmod.BUY_FEE * 100:.2f}% & jual "

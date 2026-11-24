@@ -80,7 +80,7 @@ def test_main_wiring_lengkap(monkeypatch):
         cmds.update(getattr(handler, "commands", None) or ())
 
     expected = {
-        "start", "menu", "mode", "help", "analisis", "skor", "berita",
+        "start", "menu", "mode", "syariah", "help", "analisis", "skor", "berita",
         "fundamental", "backtest", "watch", "saran", "sinyal", "rencana",
         "paket", "cek", "portofolio", "jurnal", "pasar", "market", "sektor",
         "scan", "beli", "jual", "bandar", "banding", "alert", "agenda",
@@ -88,7 +88,7 @@ def test_main_wiring_lengkap(monkeypatch):
     }
     assert expected <= cmds
     # 32 CommandHandler + CallbackQueryHandler + MessageHandler
-    assert len(app.handlers) == 34
+    assert len(app.handlers) == 35
 
     names = {name for _, name, _ in app.job_queue.registered}
     assert {"morning-scan", "fill-open", "full-market-scan",

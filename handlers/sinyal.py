@@ -6,6 +6,8 @@ tidak ada impor melingkar.
 """
 from __future__ import annotations
 
+from core import syariah
+
 import asyncio
 import logging
 import math
@@ -114,7 +116,8 @@ def _sinyal_row_ringkas(i: int, r: dict, kval: dict | None = None) -> str:
 
 
 def _sinyal_overview(rows: list[dict], meta: dict, deps,
-                     kval: dict | None = None) -> str:
+                     kval: dict | None = None,
+                     syariah_only: bool = False) -> str:
     """Ringkasan satu layar: hanya intinya, kata biasa, tanpa jargon.
 
     Angka detail (rel, RSI, entry/SL/TP, fundamental) pindah ke tampilan
@@ -122,7 +125,8 @@ def _sinyal_overview(rows: list[dict], meta: dict, deps,
     """
     buys = _sort_buys(rows)
     sells = _sort_sells(rows)
-    out = ["📡 <b>SINYAL PASAR IDX</b>",
+    head = "📡 <b>SINYAL PASAR IDX · ☪️ SYARIAH (ISSI)</b>" if syariah_only else "📡 <b>SINYAL PASAR IDX</b>"
+    out = [head,
            f"<i>{esc(deps._scan_when(meta))}</i>", "",
            f"Dari <b>{len(rows)}</b> saham: <b>{len(buys)}</b> layak dilirik · "
            f"<b>{len(sells)}</b> sebaiknya dihindari"]
@@ -141,15 +145,17 @@ def _sinyal_overview(rows: list[dict], meta: dict, deps,
 
 
 def _sinyal_section(rows: list[dict], sig: str, meta: dict, deps,
-                    kval: dict | None = None) -> str:
+                    kval: dict | None = None,
+                    syariah_only: bool = False) -> str:
     if sig == "BELI":
         picked = _sort_buys(rows)
     elif sig == "JUAL":
         picked = _sort_sells(rows)
     else:
         picked = [r for r in rows if r.get("signal") == sig]
-    head = ("🟢 <b>PERINGKAT ATAS</b> (kandidat beli)" if sig == "BELI"
-            else "🔴 <b>PERINGKAT BAWAH</b> (hindari / kurangi bila punya)")
+    sy_tag = " · ☪️ Syariah" if syariah_only else ""
+    head = (f"🟢 <b>PERINGKAT ATAS{sy_tag}</b> (kandidat beli)" if sig == "BELI"
+            else f"🔴 <b>PERINGKAT BAWAH{sy_tag}</b> (hindari / kurangi bila punya)")
     out = [head, f"<i>{esc(deps._scan_when(meta))}</i>", ""]
     if not picked:
         out += ["Tidak ada emiten yang lolos filter ini hari ini.",
@@ -218,6 +224,13 @@ def _sinyal_detail(r: dict, meta: dict, deps,
               f"Laporan lengkap: <code>/analisis {esc(r['ticker'])}</code>",
               "", deps._SINYAL_DISCLAIMER]
     return "\n".join(lines)
+
+
+def _csv_safe(val) -> str:
+    s = "" if val is None else str(val)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
 
 
 def _sinyal_csv(rows: list[dict]) -> bytes:
@@ -511,10 +524,19 @@ _EMPTY_TEXT = (
     "Untuk cepat di watchlist, pakai <code>/saran</code>.")
 
 
-async def _overview_text(rows: list[dict], meta: dict, deps) -> str:
+async def _load_syariah_mode(update: Update) -> bool:
+    chat = getattr(update, "effective_chat", None)
+    if not chat:
+        return False
+    return bool(await asyncio.to_thread(store.get_syariah_mode, chat.id))
+
+
+async def _overview_text(
+    rows: list[dict], meta: dict, deps, *, syariah_only: bool = False
+) -> str:
     buys = _sort_buys(rows)
     kval = await deps._kualitas_map([r["ticker"] for r in buys[:3]])
-    return _sinyal_overview(rows, meta, deps, kval)
+    return _sinyal_overview(rows, meta, deps, kval, syariah_only=syariah_only)
 
 
 async def _load_modal(update: Update) -> float | None:
@@ -532,7 +554,8 @@ def _csv_markup() -> InlineKeyboardMarkup:
 
 
 async def _build_section_reply(
-    rows: list[dict], sig: str, meta: dict, deps
+    rows: list[dict], sig: str, meta: dict, deps,
+    *, syariah_only: bool = False,
 ) -> tuple[str, InlineKeyboardMarkup]:
     if sig == "BELI":
         picked = _sort_buys(rows)
@@ -540,7 +563,7 @@ async def _build_section_reply(
     else:
         picked = _sort_sells(rows)
         kval = None
-    text = _sinyal_section(rows, sig, meta, deps, kval)
+    text = _sinyal_section(rows, sig, meta, deps, kval, syariah_only=syariah_only)
     kb = section_markup(sig, [r.get("ticker") for r in picked])
     return text, kb
 
@@ -579,9 +602,12 @@ async def nav(update: Update, cb_data: str, deps, job_queue=None):
         await deps._safe_edit(msg, _EMPTY_TEXT, parse_mode=ParseMode.HTML,
                               reply_markup=_with_home(empty_markup(), True))
         return
+    syariah_only = await _load_syariah_mode(update)
+    if syariah_only:
+        rows = syariah.filter_rows(rows)
     if cb_data == "sg:ov":
         await deps._safe_edit(
-            msg, await _overview_text(rows, meta, deps),
+            msg, await _overview_text(rows, meta, deps, syariah_only=syariah_only),
             parse_mode=ParseMode.HTML,
             reply_markup=_with_home(overview_markup(), True))
         return
@@ -609,9 +635,9 @@ async def nav(update: Update, cb_data: str, deps, job_queue=None):
         await deps._safe_edit(msg, "⏳ Memuat...",
                               reply_markup=deps.home_markup())
         if cb_data == "sg:buy":
-            text, kb = await _build_section_reply(rows, "BELI", meta, deps)
+            text, kb = await _build_section_reply(rows, "BELI", meta, deps, syariah_only=syariah_only)
         elif cb_data == "sg:sell":
-            text, kb = await _build_section_reply(rows, "JUAL", meta, deps)
+            text, kb = await _build_section_reply(rows, "JUAL", meta, deps, syariah_only=syariah_only)
         else:
             buys = _sort_buys(rows)
             if not buys:
@@ -658,6 +684,10 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
     arg = (" ".join(a.strip().lower() for a in args).strip()
            if args else "")
     msg = update.effective_message
+    syariah_only = await _load_syariah_mode(update)
+    all_rows = rows
+    if syariah_only:
+        rows = syariah.filter_rows(rows)
     if arg in ("csv", "unduh", "download"):
         data = _sinyal_csv(rows)
         await msg.reply_document(
@@ -668,7 +698,7 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
         )
         return
     if arg in ("beli", "buy"):
-        text, kb = await _build_section_reply(rows, "BELI", meta, deps)
+        text, kb = await _build_section_reply(rows, "BELI", meta, deps, syariah_only=syariah_only)
         await deps.reply_long(msg, text, reply_markup=_with_home(kb, from_menu))
         return
     if arg in ("beli bagus", "bagus", "bagus beli", "beli berkualitas"):
@@ -683,13 +713,13 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
         await deps.reply_long(msg, text, reply_markup=_with_home(kb, from_menu))
         return
     if arg in ("jual", "sell", "hindari"):
-        text, kb = await _build_section_reply(rows, "JUAL", meta, deps)
+        text, kb = await _build_section_reply(rows, "JUAL", meta, deps, syariah_only=syariah_only)
         await deps.reply_long(msg, text, reply_markup=_with_home(kb, from_menu))
         return
     if re.fullmatch(r"[A-Za-z]{4}(?:\.jk)?", arg):
         clean_t = _clean_ticker(arg)
         found = next(
-            (r for r in rows if _clean_ticker(r.get("ticker")) == clean_t),
+            (r for r in all_rows if _clean_ticker(r.get("ticker")) == clean_t),
             None,
         )
         if not found:
@@ -721,7 +751,7 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
             ),
         )
         return
-    await deps.reply_long(msg, await _overview_text(rows, meta, deps),
+    await deps.reply_long(msg, await _overview_text(rows, meta, deps, syariah_only=syariah_only),
                           reply_markup=_with_home(overview_markup(), from_menu))
 
 

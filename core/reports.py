@@ -7,6 +7,8 @@ atau state global, sehingga bisa diuji tanpa mock jaringan.
 """
 from __future__ import annotations
 
+from core import syariah
+
 import html
 
 from core import analysis, data_quality, learn, powerscore, textutil
@@ -266,7 +268,7 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
             url = html.escape(str(d.get("link") or "https://finance.yahoo.com"),
                               quote=True)
             return (f"  📰 <a href=\"{url}\">{esc(d['title'][:80])}</a>" +
-                    (f" <i>({('%+d' % d['sent'])})</i>" if d["sent"] else ""))
+                    (f" <i>({d['sent']:+.1f})</i>" if d["sent"] else ""))
 
         heads = "\n".join(_headline(d) for d in top)
         headline_txt = (f"\n📰 <b>Berita Terkini</b> (sentimen {news_sent['emoji']} "
@@ -341,7 +343,9 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
         f"{provenance_line(res)}"
         f"{res.get('fallback_note', '')}"
         f"{res.get('history_note', '')}"
-        f"📊 <b>{esc(res['ticker'])}</b>  ·  <code>{fmt_rp(snap['close'])}</code>\n"
+        f"📊 <b>{esc(res['ticker'])}</b>"
+        f"{('  ·  ' + syariah.syariah_badge(res['ticker'])) if syariah.is_syariah(res['ticker']) else ''}"
+        f"  ·  <code>{fmt_rp(snap['close'])}</code>\n"
         f"<code>1d {snap['ret1d']:+.2f}%  ·  20d {snap['ret20d']:+.2f}%</code>"
         f"{data_age_line(res)}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"

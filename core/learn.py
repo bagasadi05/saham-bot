@@ -92,7 +92,7 @@ TOPICS: dict[str, tuple[str, str]] = {
         "Apa itu: pengukur kecepatan & kekuatan pergerakan harga (0–100), dihitung dari 14 hari perubahan harga.\n\n"
         "Cara baca:\n"
         "• 50–70: momentum naik yang sehat\n"
-        "• <30: <b>oversold</b> — jenuh jual, berpotensi memantul naik\n"
+        "• &lt;30: <b>oversold</b> — jenuh jual, berpotensi memantul naik\n"
         "• >70: <b>overbought</b> — jenuh beli, berpotensi berbalik turun\n\n"
         "Panduan penggunaan: RSI bagus untuk menandai kondisi ekstrem, bukan meramal arah pasti.\n\n"
         "Jebakan umum: saham uptrend kuat bisa bertahan di atas 70 berminggu-minggu — "
@@ -152,14 +152,14 @@ TOPICS: dict[str, tuple[str, str]] = {
     "stochrsi": (
         "StochRSI",
         "Apa itu: rumus Stochastic yang diterapkan ke nilai RSI (skala 0–100), jadi jauh lebih cepat dan sensitif daripada RSI biasa.\n\n"
-        "Cara baca: <20 = oversold pendek, >80 = overbought pendek. Cocok membantu timing, bukan menentukan tren utama.\n\n"
+        "Cara baca: &lt;20 = oversold pendek, >80 = overbought pendek. Cocok membantu timing, bukan menentukan tren utama.\n\n"
         "Jebakan umum: terlalu sensitif — sering memicu sinyal palsu di pasar sideways; jadikan konfirmasi tambahan saja.",
     ),
     "per": (
         "PER (Price-to-Earnings Ratio)",
         "Apa itu: harga saham ÷ laba bersih per saham. PER 10 berarti harga sama dengan 10× laba tahunan perusahaan.\n\n"
         "Cara baca (bandingkan dengan industrinya):\n"
-        "• PER < 10: murah (cek apakah labanya sedang turun/siklikal)\n"
+        "• PER &lt; 10: murah (cek apakah labanya sedang turun/siklikal)\n"
         "• PER 10–20: wajar untuk kebanyakan emiten mapan BEI\n"
         "• PER > 35: mahal (pasar mengharapkan pertumbuhan laba tinggi)\n"
         "• PER negatif: perusahaan sedang merugi\n\n"
@@ -169,7 +169,7 @@ TOPICS: dict[str, tuple[str, str]] = {
         "PBV (Price-to-Book Value)",
         "Apa itu: harga saham ÷ nilai buku per saham (aset − kewajiban). PBV 1 = harga setara nilai bersih bukunya.\n\n"
         "Cara baca:\n"
-        "• PBV < 1: harga di bawah nilai buku (potensi murah, atau prospek laba tertekan)\n"
+        "• PBV &lt; 1: harga di bawah nilai buku (potensi murah, atau prospek laba tertekan)\n"
         "• PBV 1–3: wajar untuk bisnis dengan profitabilitas normal\n"
         "• PBV > 3: pasar memberi premi tinggi — biasanya untuk emiten ber-ROE tinggi\n\n"
         "Aturan praktis: baca PBV bersama ROE. ROE 20% dengan PBV 3 bisa wajar; ROE 3% dengan PBV 3 tergolong mahal.\n\n"
@@ -181,20 +181,20 @@ TOPICS: dict[str, tuple[str, str]] = {
         "Cara baca:\n"
         "• ROE > 15% konsisten: efisiensi bisnis kuat\n"
         "• ROE 8–15%: cukup baik\n"
-        "• ROE < 8% atau negatif: profitabilitas lemah\n\n"
+        "• ROE &lt; 8% atau negatif: profitabilitas lemah\n\n"
         "Jebakan umum: ROE bisa tampak tinggi karena utang besar (DER tinggi). Cek tren ROE beberapa tahun dan bandingkan dengan DER.",
     ),
     "dividend": (
         "Dividend Yield",
         "Apa itu: total dividen 1 tahun ÷ harga saham. Yield 6% berarti saham seharga Rp1.000 membagikan Rp60 dividen setahun.\n\n"
-        "Cara baca: >5% menarik untuk pendapatan pasif; 3–5% wajar; <3% kecil (emiten mungkin menahan laba untuk ekspansi).\n\n"
+        "Cara baca: >5% menarik untuk pendapatan pasif; 3–5% wajar; &lt;3% kecil (emiten mungkin menahan laba untuk ekspansi).\n\n"
         "Jebakan umum: 'dividend trap' — yield terlihat besar hanya karena harga saham anjlok atau ada dividen insidentil yang tak terulang; harga biasa terkoreksi sekitar ex-date.",
     ),
     "der": (
         "DER (Debt to Equity Ratio)",
         "Apa itu: total utang ÷ ekuitas. DER 100% berarti jumlah utang sebanding dengan modal sendiri.\n\n"
         "Cara baca:\n"
-        "• DER < 50%: sehat — beban bunga relatif ringan\n"
+        "• DER &lt; 50%: sehat — beban bunga relatif ringan\n"
         "• DER 50–100%: moderat / umum pada emiten padat modal\n"
         "• DER > 100%: tinggi — risiko bunga dan pelunasan lebih besar\n\n"
         "Catatan khusus BANK: DER tinggi wajar bagi perbankan karena dana pihak ketiga tercatat sebagai liabilitas — cek CAR/NPL, bukan DER.\n\n"
@@ -227,7 +227,7 @@ TOPICS: dict[str, tuple[str, str]] = {
         "• 50% teknikal (harga/MA/MACD/RSI)\n"
         "• 30% fundamental (PER/PBV/ROE/dividen/DER)\n"
         "• 20% sentimen berita (ML lokal + lexicon)\n\n"
-        "Cara baca: >+20 BUY, <−20 SELL — ini ringkasan kondisi saat ini, BUKAN perintah beli/jual.\n\n"
+        "Cara baca: >+20 BUY, &lt;−20 SELL — ini ringkasan kondisi saat ini, BUKAN perintah beli/jual.\n\n"
         "Jebakan umum: skor tinggi dapat muncul saat harga sudah naik tinggi (jebakan momentum ret20d > 15%). Gunakan peringkat relatif `/saran` dan manajemen risiko.",
     ),
 }

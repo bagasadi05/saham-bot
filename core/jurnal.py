@@ -77,6 +77,7 @@ def parse_exec_input(
     s = (raw_text or "").strip()
     if not s:
         return None
+    is_lembar = bool(re.search(r"\b(lbr|lembar)\b", s, flags=re.IGNORECASE))
     cleaned = re.sub(r"\b(lot|lbr|lembar|rp|di)\b", " ", s, flags=re.IGNORECASE)
     cleaned = cleaned.replace("@", " ").replace("x", " ").replace("×", " ")
     tokens = [tok for tok in cleaned.split() if tok]
@@ -91,7 +92,8 @@ def parse_exec_input(
         lot_raw = tokens[0].replace(".", "").replace(",", "")
         if not lot_raw.isdigit():
             return None
-        lots = int(lot_raw)
+        qty = int(lot_raw)
+        lots = (qty // 100) if is_lembar else qty
         px = parse_rupiah(tokens[1])
         if lots <= 0 or px is None or px <= 0:
             return None

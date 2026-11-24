@@ -109,7 +109,7 @@ def normalize_ticker(ticker: str) -> str:
             )
     else:
         symbol = t
-    if not symbol.isalnum():
+    if not (symbol.isascii() and symbol.isalnum() and 1 <= len(symbol) <= 10):
         raise ValueError(f"Kode saham '{ticker}' tidak valid")
     return symbol + TICKER_SUFFIX
 
@@ -226,7 +226,7 @@ def _write_meta(symbol: str, df, interval: str = "1d", period: str | None = None
         "last_bar": last_bar,
     }
     path = _meta_path(symbol, interval, period)
-    tmp = path + ".tmp"
+    tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
     os.replace(tmp, path)
@@ -260,7 +260,7 @@ def _save_cache(symbol: str, df, interval: str = "1d", period: str | None = None
         os.makedirs(_CACHE_DIR, exist_ok=True)
         clean, _ = _drop_repaired_column(df)
         path = _cache_path(symbol, interval, period)
-        tmp = path + ".tmp"
+        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
         clean.to_csv(tmp)
         os.replace(tmp, path)  # atomik: pembaca tak pernah lihat file setengah jadi
         try:

@@ -107,14 +107,14 @@ def test_summarize_pnl_bobot_dan_risiko():
          "TLKM": {"close": 2800, "atr": 100}})
     bbca = next(r for r in s["rows"] if r["ticker"] == "BBCA")
     assert bbca["pnl"] == 250_000
-    assert bbca["sl"] == 9250.0            # 9500 - 1x250 (tick 25)
+    assert bbca["sl"] == 8750.0            # 9500 - 1x250 (tick 25)
     assert bbca["sl_source"] == "atr"
-    assert bbca["risk"] == 125_000         # 500 lembar x 250
+    assert bbca["risk"] == 375_000         # 500 lembar x 250
     assert s["value"] == 5_310_000
     assert s["cost"] == 5_100_000
     assert s["pnl"] == 210_000
-    assert s["risk"] == 145_000
-    assert s["risk_pct"] == pytest.approx(2.7, abs=0.1)
+    assert s["risk"] == 375_000
+    assert s["risk_pct"] == pytest.approx(7.1, abs=0.1)
     assert bbca["weight_pct"] > 89
 
 

@@ -73,8 +73,8 @@ def test_batas_posisi_ditolak_dengan_lot_maks():
     plan = _plan(lots=30)          # 3 jt dari modal 10 jt = 30% > 25%
     out = risk.check_limits(plan, [], 10_000_000)
     assert out["ok"] is False
-    assert any("melebihi batas 25%" in r for r in out["reasons"])
-    assert out["max_lots"] == 25   # 2,5 jt / (1000 x 100)
+    assert any("melebihi batas 20%" in r for r in out["reasons"])
+    assert out["max_lots"] == 20   # 2,5 jt / (1000 x 100)
 
 
 def test_batas_sektor_dihitung_dari_posisi_lama():
@@ -98,7 +98,7 @@ def test_position_fit_mengingatkan_posisi_di_atas_batas():
     pos = [_pos("BBCA", lots=30, sector="Financials")]   # 3 jt / 10 jt = 30%
     out = risk.position_fit("BBCA", pos, 10_000_000)
     assert any("sudah 30% modal" in w for w in out)
-    assert any("batas 25%" in w for w in out)
+    assert any("batas 20%" in w for w in out)
 
 
 def test_position_fit_tidak_berisik_kalau_kecil():

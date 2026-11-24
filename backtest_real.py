@@ -32,15 +32,18 @@ RISK_PCT = 0.01       # 1% ekuitas per trade (sama dengan /saran)
 
 
 def atr_levels(price: float, atr: float) -> tuple[float, float]:
-    """SL 1xATR dan TP 2xATR yang sudah dibulatkan ke fraksi harga BEI."""
-    tick = pricing.tick_size(price)
-    sl = pricing.round_tick(price - atr, tick)
-    tp = pricing.round_tick(price + 2.0 * atr, tick)
+    """SL 1xATR dan TP 2xATR yang dibulatkan ke fraksi harga BEI sesuai pita masing-masing."""
+    raw_sl = max(1.0, price - atr)
+    raw_tp = price + 2.0 * atr
+    sl = pricing.round_tick(raw_sl)
+    tp = pricing.round_tick(raw_tp)
+    t_sl = pricing.tick_size(max(1.0, sl))
+    t_tp = pricing.tick_size(max(1.0, tp))
     if sl >= price:
-        sl = price - tick
+        sl = pricing.round_tick(max(1.0, price - pricing.tick_size(price)))
     if tp <= price:
-        tp = price + 2 * tick
-    return max(sl, tick), tp
+        tp = pricing.round_tick(price + 2 * t_tp)
+    return max(sl, t_sl), tp
 
 
 def ara_locked_series(ind) -> np.ndarray:
@@ -134,13 +137,39 @@ class PowerStrategy(Strategy):
             self._entry_bar = i
 
 
-def run_backtest(ticker: str) -> dict:
+DEFAULT_SPREAD_PCT = 0.001  # asumsi konservatif spread/slippage 0,10% per transaksi (F-15)
+
+
+def run_backtest(ticker: str, *, spread: float = DEFAULT_SPREAD_PCT) -> dict:
     df = build_statistics(ticker)
     bt = Backtest(df, PowerStrategy, cash=100_000_000,
+                  spread=max(0.0, float(spread)),
                   commission=commission, exclusive_orders=True,
                   finalize_trades=True)
     stats = bt.run()
     return stats
+
+
+def slippage_sensitivity(
+    df: pd.DataFrame,
+    spreads: tuple[float, ...] = (0.0, 0.001, 0.003),
+) -> list[dict]:
+    """Tabel sensitivitas backtest pada berbagai skenario spread/slippage (0% / 0,1% / 0,3%)."""
+    rows: list[dict] = []
+    for sp in spreads:
+        bt = Backtest(df, PowerStrategy, cash=100_000_000,
+                      spread=max(0.0, float(sp)),
+                      commission=commission, exclusive_orders=True,
+                      finalize_trades=True)
+        st = bt.run()
+        rows.append({
+            "spread_pct": round(float(sp) * 100.0, 2),
+            "return_pct": _clean_stat(st.get("Return [%]")),
+            "max_dd_pct": _clean_stat(st.get("Max. Drawdown [%]")),
+            "trades": int(st.get("# Trades") or 0),
+            "win_rate_pct": _clean_stat(st.get("Win Rate [%]")),
+        })
+    return rows
 
 
 def _clean_stat(val) -> float | None:

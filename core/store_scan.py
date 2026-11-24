@@ -195,6 +195,10 @@ def backup_to(dest_dir: str, keep: int = 7) -> str:
     finally:
         check.close()
     if status != "ok":
+        try:
+            os.remove(path)
+        except OSError:
+            pass
         raise RuntimeError(f"backup rusak: {path} (integrity_check={status})")
     _rotate_backups(dest_dir, keep)
     return path

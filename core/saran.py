@@ -8,6 +8,7 @@ backtest yang memakai fill bar berikutnya + komisi.
 from __future__ import annotations
 
 import logging
+import config
 from collections import Counter
 from datetime import date
 
@@ -44,6 +45,8 @@ MIN_HOLD_CYCLES = 2     # ~40 hari bursa: masa tahan referensi riset
 TRAP_RET20D = 15.0      # skip jebakan momentum (temuan backtest)
 CLOSED_SHOWN = 10       # posisi selesai yang ditampilkan di /saran list
 BASE_RISK_PCT = 0.01    # risiko awal 1% modal per posisi (0,5x saat IHSG defensif)
+MAX_POS_PCT = config.DEFAULT_MAX_POS_PCT            # batas per posisi (selaras /rencana & /paket)
+MAX_TOTAL_EXPOSURE = config.DEFAULT_MAX_TOTAL_EXPOSURE  # batas total eksposur paper (90% / 45% defensif)
 CHANDELIER_LENGTH = 22  # jendela puncak high-22 untuk Chandelier Trailing Exit
 CHANDELIER_MULT = 3.0   # kelipatan ATR untuk Chandelier Trailing Exit
 ARB_LIMIT_PCT = 7.0     # batas ARB 7% papan reguler (BEI 2026)
@@ -57,8 +60,9 @@ SELL_FEE = IDX_SELL_FEE
 
 def stop_price(entry: float, atr: float) -> float:
     """SL 1xATR, dibulatkan ke fraksi harga BEI dan dijamin di bawah entry."""
-    tick = pricing.tick_size(entry)
-    sl = pricing.round_tick(entry - atr, tick)
+    raw_sl = max(1.0, entry - atr)
+    tick = pricing.tick_size(raw_sl)
+    sl = pricing.round_tick(raw_sl)
     if sl >= entry:
         sl = entry - tick
     return max(sl, tick)
@@ -66,8 +70,9 @@ def stop_price(entry: float, atr: float) -> float:
 
 def target_price(entry: float, atr: float) -> float:
     """TP 2xATR, dibulatkan ke fraksi harga BEI dan dijamin di atas entry."""
-    tick = pricing.tick_size(entry)
-    tp = pricing.round_tick(entry + 2.0 * atr, tick)
+    raw_tp = entry + 2.0 * atr
+    tick = pricing.tick_size(raw_tp)
+    tp = pricing.round_tick(raw_tp)
     return tp if tp > entry else entry + 2 * tick
 
 
@@ -108,7 +113,9 @@ def build_candidate(res: dict, fund: dict | None, news_sent: dict | None,
     # [P5] ukuran posisi: risiko 1% modal per trade (0,5x saat IHSG defensif)
     if modal:
         c.update(position_size(
-            modal, entry, c["sl"], risk_pct=BASE_RISK_PCT * c["risk_scale"]
+            modal, entry, c["sl"],
+            risk_pct=BASE_RISK_PCT * c["risk_scale"],
+            max_pos_pct=MAX_POS_PCT * c["risk_scale"],
         ))
     return c
 
@@ -218,7 +225,9 @@ def pick(analyzed: list[dict], modal: int | None = None,
             c["risk_scale"] = scale
             if modal and scale != 1.0 and "entry" in c and "sl" in c:
                 c.update(position_size(
-                    modal, c["entry"], c["sl"], risk_pct=BASE_RISK_PCT * scale
+                    modal, c["entry"], c["sl"],
+                    risk_pct=BASE_RISK_PCT * scale,
+                    max_pos_pct=MAX_POS_PCT * scale,
                 ))
             cands.append(c)
         except Exception:
@@ -349,7 +358,8 @@ def fill_pending(chat_id: int | str, bars: dict[str, pd.DataFrame],
         try:
             entry = float(df["open"].loc[bar])
         except Exception:
-            entry = float(df["open"].iloc[-1])
+            log.warning("%s: gagal membaca harga open bar %s — posisi tetap pending", symbol, bar, exc_info=True)
+            continue
         if pd.isna(entry) or entry <= 0:
             continue
         raw_atr = rec.get("atr")
@@ -364,7 +374,22 @@ def fill_pending(chat_id: int | str, bars: dict[str, pd.DataFrame],
         rec.update(status="open", entry=entry, sl=sl, tp=tp, risk_scale=scale,
                    filled_at=bar.date().isoformat(), date=f"{bar.date():%d %b}",
                    hit="(belum)")
-        rec.update(position_size(modal, entry, sl, risk_pct=BASE_RISK_PCT * scale))
+        open_val = sum(
+            float(r.get("value") or 0.0)
+            for sym_k, r in store.get_paper(chat_id).items()
+            if sym_k != symbol and r.get("status") == "open"
+        )
+        max_total_val = float(modal) * MAX_TOTAL_EXPOSURE * scale
+        rem_pct = max(0.0, (max_total_val - open_val) / float(modal)) if modal else 0.0
+        eff_pos_pct = min(MAX_POS_PCT * scale, rem_pct)
+        ps = position_size(modal, entry, sl, risk_pct=BASE_RISK_PCT * scale, max_pos_pct=eff_pos_pct)
+        if modal and ps.get("lots", 0) <= 0 and eff_pos_pct < MAX_POS_PCT * scale:
+            rec.update(status="cancelled", hit="batas_eksposur")
+            store.set_paper_record(chat_id, symbol, rec)
+            msgs.append(f"⏭️ <b>{symbol}</b> dilewati: batas total eksposur "
+                        f"({MAX_TOTAL_EXPOSURE * scale * 100:.0f}% modal) sudah penuh.")
+            continue
+        rec.update(ps)
         store.set_paper_record(chat_id, symbol, rec)
         scale_note = f" | risiko defensif {scale:.1f}x" if scale < 1.0 else ""
         msgs.append(f"🟢 <b>{symbol}</b> entry terisi di open {fmt(entry)} "
@@ -385,9 +410,9 @@ def _trading_days_held(rec: dict, today: date) -> int | None:
 
 
 def _expired(rec: dict, today: date) -> bool:
-    """True bila posisi melewati masa tahan minimum (MIN_HOLD_CYCLES x MAX_HOLD_DAYS)."""
+    """True bila posisi melewati batas waktu tahan paper trading (MAX_HOLD_DAYS = 20 hari bursa)."""
     days = _trading_days_held(rec, today)
-    return days is not None and days >= MAX_HOLD_DAYS * MIN_HOLD_CYCLES
+    return days is not None and days >= MAX_HOLD_DAYS
 
 
 def _close(rec: dict, exit_price: float, hit: str):
@@ -417,8 +442,8 @@ def _bar_date(q) -> date | None:
         return None
 
 
-def _ohlc(q) -> tuple[float, float, float] | None:
-    """(close, high, low) dari angka, Series bar, atau DataFrame bar."""
+def _ohlc_with_open(q) -> tuple[float, float, float, float] | None:
+    """(open, close, high, low) dari angka, Series bar, atau DataFrame bar."""
     if q is None:
         return None
     if isinstance(q, pd.DataFrame):
@@ -430,82 +455,142 @@ def _ohlc(q) -> tuple[float, float, float] | None:
             p = float(q)
         except (TypeError, ValueError):
             return None
-        return None if pd.isna(p) else (p, p, p)
+        return None if pd.isna(p) else (p, p, p, p)
     close = q.get("close", q.get("Close"))
+    open_p = q.get("open", q.get("Open", close))
     high = q.get("high", q.get("High", close))
     low = q.get("low", q.get("Low", close))
     if close is None or high is None or low is None:
         return None
     try:
+        open_p = float(close) if open_p is None or pd.isna(open_p) else float(open_p)
         close, high, low = float(close), float(high), float(low)
     except (TypeError, ValueError):
         return None
-    if any(pd.isna(v) for v in (close, high, low)):
+    if any(pd.isna(v) for v in (open_p, close, high, low)):
         return None
-    return close, high, low
+    return open_p, close, high, low
+
+
+def _ohlc(q) -> tuple[float, float, float] | None:
+    """(close, high, low) kompatibel mundur dari angka, Series, atau DataFrame."""
+    res = _ohlc_with_open(q)
+    return None if res is None else (res[1], res[2], res[3])
+
+
+def _iter_quote_bars(q, filled_at: str | None, last_checked: str | None) -> list[tuple[date | None, tuple[float, float, float, float]]]:
+    """Kembalikan daftar bar kronologis sejak filled_at/last_checked untuk simulasi multi-hari."""
+    if isinstance(q, pd.DataFrame) and not q.empty:
+        min_dt = None
+        for raw_d in (filled_at, last_checked):
+            if raw_d:
+                try:
+                    d_val = date.fromisoformat(str(raw_d)[:10])
+                    if min_dt is None or d_val > min_dt:
+                        min_dt = d_val
+                except ValueError:
+                    pass
+        out = []
+        for ts, row in q.sort_index().iterrows():
+            try:
+                bdt = pd.Timestamp(ts).date()
+            except Exception:
+                bdt = None
+            if bdt is not None and min_dt is not None and bdt < min_dt:
+                continue
+            ohlc = _ohlc_with_open(row)
+            if ohlc is not None:
+                out.append((bdt, ohlc))
+        return out
+    bdt = _bar_date(q)
+    if bdt is not None and filled_at:
+        try:
+            if bdt < date.fromisoformat(str(filled_at)[:10]):
+                return []
+        except ValueError:
+            pass
+    ohlc = _ohlc_with_open(q)
+    return [(bdt, ohlc)] if ohlc is not None else []
 
 
 def update_paper(chat_id: int | str, quotes: dict,
                  today: date | None = None) -> list[str]:
-    """Cek posisi terbuka: TP/SL/batas waktu. Return pesan per perubahan.
-
-    quotes[symbol] boleh harga penutup (float) atau bar (Series/DataFrame/dict).
-    Kalau high/low tersedia, TP/SL yang kena di intraday ikut terdeteksi —
-    dulu hanya close yang dicek, jadi level yang tersentuh lalu berbalik lolos.
-    """
+    """Cek posisi terbuka: TP/SL/gap-SL/batas waktu (multi-bar kronologis)."""
     today = today or marketcal.now_wib().date()
     msgs: list[str] = []
     for symbol, rec in store.get_paper(chat_id).items():
         if rec.get("status") != "open" or symbol not in quotes:
             continue
         q = quotes[symbol]
-        bar_dt = _bar_date(q)
-        if bar_dt is not None and rec.get("filled_at"):
-            try:
-                if bar_dt < date.fromisoformat(str(rec["filled_at"])):
-                    continue  # bar cache lebih lama daripada tanggal entry terisi
-            except ValueError:
-                pass
-        bar = _ohlc(q)
-        if bar is None:
+        bars = _iter_quote_bars(q, rec.get("filled_at"), rec.get("last_checked"))
+        if not bars:
             continue
-        close, high, low = bar
         entry = float(rec["entry"])
         tp, sl = float(rec["tp"]), float(rec["sl"])
-        days_held = _trading_days_held(rec, today)
-        min_hold_days = MAX_HOLD_DAYS * MIN_HOLD_CYCLES
-        # satu bar menyentuh SL & TP sekaligus → urutan intraday tak diketahui,
-        # jadi ambil yang konservatif (SL) daripada mencatat untung semu.
-        if low <= sl:
-            _close(rec, sl, "sl")
-            early_note = ""
-            if days_held is not None and days_held < min_hold_days:
-                rec["exit_reason"] = (
-                    f"stop_loss_sebelum_min_hold ({days_held}/{min_hold_days} hari bursa)"
+        closed = False
+        last_seen_dt: date | None = None
+        for bar_dt, (open_px, close, high, low) in bars:
+            eval_day = bar_dt or today
+            if bar_dt is not None:
+                last_seen_dt = bar_dt
+            # 1) Gap-down di bawah SL -> realistis keluar di harga open (hit="sl_gap")
+            if open_px <= sl and open_px < sl:
+                exit_px = open_px
+                _close(rec, exit_px, "sl_gap")
+                rec["exit_reason"] = "stop_loss_gap"
+                if bar_dt is not None:
+                    rec["closed_at"] = bar_dt.isoformat()
+                store.set_paper_record(chat_id, symbol, rec)
+                msgs.append(
+                    f"🛑 <b>{symbol}</b> STOP LOSS (GAP) kena di open {fmt(exit_px)} "
+                    f"(rencana SL {fmt(sl)}, entry {fmt(entry)}, net {pnl_pct(entry, exit_px):+.1f}%)"
                 )
-                early_note = (
-                    f" | keluar sebelum masa tahan {MIN_HOLD_CYCLES} siklus "
-                    f"(hari ke-{days_held}, disiplin SL tetap didahulukan)"
-                )
-            else:
+                closed = True
+                break
+            # 2) Intraday SL (prioritas konservatif bila SL & TP tersentuh di bar yang sama)
+            if low <= sl:
+                _close(rec, sl, "sl")
                 rec["exit_reason"] = "stop_loss"
+                if bar_dt is not None:
+                    rec["closed_at"] = bar_dt.isoformat()
+                store.set_paper_record(chat_id, symbol, rec)
+                msgs.append(
+                    f"🛑 <b>{symbol}</b> STOP LOSS kena di {fmt(sl)} "
+                    f"(entry {fmt(entry)}, net {pnl_pct(entry, sl):+.1f}%) "
+                    "— cut loss itu disiplin, bukan kekalahan"
+                )
+                closed = True
+                break
+            # 3) Intraday TP
+            if high >= tp:
+                _close(rec, tp, "tp")
+                rec["exit_reason"] = "take_profit"
+                if bar_dt is not None:
+                    rec["closed_at"] = bar_dt.isoformat()
+                store.set_paper_record(chat_id, symbol, rec)
+                msgs.append(
+                    f"🎯 <b>{symbol}</b> TARGET TERCAPAI di {fmt(tp)} "
+                    f"(entry {fmt(entry)}, net {pnl_pct(entry, tp):+.1f}% setelah biaya)"
+                )
+                closed = True
+                break
+            # 4) Batas waktu tahan (MAX_HOLD_DAYS = 20 hari bursa)
+            if _expired(rec, eval_day):
+                _close(rec, close, "timeout")
+                rec["exit_reason"] = f"timeout_{MAX_HOLD_DAYS}d"
+                if bar_dt is not None:
+                    rec["closed_at"] = bar_dt.isoformat()
+                store.set_paper_record(chat_id, symbol, rec)
+                msgs.append(
+                    f"⏱️ <b>{symbol}</b> ditutup karena batas waktu "
+                    f"({MAX_HOLD_DAYS} hari bursa) di {fmt(close)} — "
+                    f"net {pnl_pct(entry, close):+.1f}%"
+                )
+                closed = True
+                break
+        if not closed and last_seen_dt is not None:
+            rec["last_checked"] = last_seen_dt.isoformat()
             store.set_paper_record(chat_id, symbol, rec)
-            msgs.append(f"🛑 <b>{symbol}</b> STOP LOSS kena di {fmt(sl)} "
-                        f"(entry {fmt(entry)}, net {pnl_pct(entry, sl):+.1f}%) "
-                        f"— cut loss itu disiplin, bukan kekalahan{early_note}")
-        elif high >= tp:
-            _close(rec, tp, "tp")
-            rec["exit_reason"] = "take_profit"
-            store.set_paper_record(chat_id, symbol, rec)
-            msgs.append(f"🎯 <b>{symbol}</b> TARGET TERCAPAI di {fmt(tp)} "
-                        f"(entry {fmt(entry)}, net {pnl_pct(entry, tp):+.1f}% setelah biaya)")
-        elif _expired(rec, today):
-            _close(rec, close, "timeout")
-            rec["exit_reason"] = f"timeout_{MIN_HOLD_CYCLES}_siklus"
-            store.set_paper_record(chat_id, symbol, rec)
-            msgs.append(f"⏱️ <b>{symbol}</b> ditutup karena batas waktu "
-                        f"({MIN_HOLD_CYCLES} siklus / {min_hold_days} hari bursa) di {fmt(close)} — "
-                        f"net {pnl_pct(entry, close):+.1f}%")
     if msgs:  # ada posisi selesai → jaga riwayat tetap ringkas
         store.prune_paper(chat_id)
     return msgs

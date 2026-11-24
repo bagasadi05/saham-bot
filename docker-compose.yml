@@ -14,6 +14,7 @@ services:
       BACKUP_DIR: /app/data/backups
       HEARTBEAT_FILE: /app/data/heartbeat.txt
       SAHAMBOT_LOCAL_MODEL: /app/models/indo-fin-roberta
+      REQUIRE_ALLOWLIST: "${REQUIRE_ALLOWLIST:-1}"
     volumes:
       - ./data:/app/data         # watchlist/alert/paper-trading (SQLite) bertahan lintas rebuild
     restart: unless-stopped

@@ -9,6 +9,7 @@ from core import store as _store
 DEFAULT_USER_MODE = "pemula"
 USER_MODES = ("pemula", "expert")
 _USER_MODE_KEY = "user_mode"
+_SYARIAH_MODE_KEY = "syariah_only"
 _ONBOARD_STATE_KEY = "onboard_state"
 _USER_MODE_ALIASES = {
     "pemula": "pemula",
@@ -76,6 +77,21 @@ def set_user_mode(chat_id: int | str, mode: str) -> str:
     with _store._db() as conn:
         _upsert_chat_setting(conn, str(chat_id), _USER_MODE_KEY, norm)
     return norm
+
+
+def get_syariah_mode(chat_id: int | str) -> bool:
+    """True bila chat memilih filter Saham Syariah (ISSI/DES OJK) saja."""
+    with _store._db() as conn:
+        raw = _read_chat_setting(conn, str(chat_id), _SYARIAH_MODE_KEY)
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on", "syariah")
+
+
+def set_syariah_mode(chat_id: int | str, enabled: bool) -> bool:
+    """Simpan preferensi filter saham syariah per chat (True=Syariah, False=Semua)."""
+    val = bool(enabled)
+    with _store._db() as conn:
+        _upsert_chat_setting(conn, str(chat_id), _SYARIAH_MODE_KEY, "1" if val else "0")
+    return val
 
 
 def _decode_onboard_state(raw: str | None) -> dict:

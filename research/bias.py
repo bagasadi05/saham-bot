@@ -105,8 +105,8 @@ def compare_static_vs_pit(
         if oos_q and len(oos_q) >= 2:
             q1_row = oos_q[0]
             q5_row = oos_q[-1]
-            q1 = q1_row.get("excess_ret_pct") if q1_row.get("excess_ret_pct") is not None else q1_row.get("mean_pct")
-            q5 = q5_row.get("excess_ret_pct") if q5_row.get("excess_ret_pct") is not None else q5_row.get("mean_pct")
+            q1 = next((q1_row[k] for k in ("excess_pct", "excess_ret_pct", "mean_pct") if q1_row.get(k) is not None), None)
+            q5 = next((q5_row[k] for k in ("excess_pct", "excess_ret_pct", "mean_pct") if q5_row.get(k) is not None), None)
             if q1 is not None and q5 is not None:
                 spread = round(float(q5) - float(q1), 4)
         return {
@@ -175,8 +175,8 @@ def main(argv: list[str] | None = None) -> int:
     static_tickers = list(dict.fromkeys(saran.LQ45))
     cache_dir = os.path.dirname(args.out) or os.path.join("temp", "research")
     os.makedirs(cache_dir, exist_ok=True)
-    st_cache = os.path.join(cache_dir, f"dataset_{args.period}_{len(static_tickers)}.pkl")
-    all_cache = os.path.join(cache_dir, f"dataset_{args.period}_{len(tickers)}_pit.pkl")
+    st_cache = os.path.join(cache_dir, f"dataset_{args.period}_h{args.horizon}_{len(static_tickers)}.pkl")
+    all_cache = os.path.join(cache_dir, f"dataset_{args.period}_h{args.horizon}_{len(tickers)}_pit.pkl")
     if os.path.exists(st_cache):
         df_static = pd.read_pickle(st_cache)
     else:

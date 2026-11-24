@@ -9,7 +9,12 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
+try:
+    from defusedxml import ElementTree as ET  # type: ignore
+except ImportError:
+    import xml.etree.ElementTree as ET
+
+MAX_RSS_BYTES = 2 * 1024 * 1024  # batas baca RSS 2 MB (F-20)
 from datetime import datetime, timezone
 
 from core import data as datamod
@@ -441,7 +446,18 @@ def score_title(title: str, source: str | None = None) -> tuple[float, list[str]
 def _http_get(url: str, timeout: int = 15) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+        raw = resp.read(MAX_RSS_BYTES + 1)
+    if len(raw) > MAX_RSS_BYTES:
+        raise ValueError(f"respons RSS melebihi batas {MAX_RSS_BYTES} byte")
+    return raw
+
+
+def _safe_parse_xml(raw: bytes):
+    """Parse XML RSS secara aman (tolak DOCTYPE/ENTITY untuk mencegah XXE/XML bomb)."""
+    head = raw[:4096].upper()
+    if b"<!DOCTYPE" in head or b"<!ENTITY" in head:
+        raise ValueError("XML RSS mengandung deklarasi DOCTYPE/ENTITY yang ditolak")
+    return ET.fromstring(raw)
 
 
 def build_query(symbol: str, name: str | None = None) -> str:
@@ -468,7 +484,7 @@ def last_query(ticker: str) -> str | None:
 
 def _parse_rss_items(xml_bytes: bytes, query: str, limit: int) -> list[dict]:
     """Urai RSS Google News menjadi list dict berita terdeduplikasi."""
-    root = ET.fromstring(xml_bytes)
+    root = _safe_parse_xml(xml_bytes)
     items: list[dict] = []
     seen_titles: set[str] = set()
     for item in root.iter("item"):

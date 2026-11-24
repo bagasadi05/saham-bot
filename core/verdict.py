@@ -106,10 +106,11 @@ def _verdict_jual(
                 f">= {saranmod.HOLD_BAND_PCT:.0f}%."
             )
 
-    if forensic_penalty < 0 or forensic_flags:
+    pen_mag = abs(float(forensic_penalty or 0.0))
+    if pen_mag > 0 or forensic_flags:
         fl = "; ".join(str(x) for x in (forensic_flags or [])[:2])
         extra_notes.append(
-            f"Waspada kualitas kas/forensik ({forensic_penalty:+.0f} poin"
+            f"Waspada kualitas kas/forensik (-{pen_mag:.0f} poin"
             + (f": {fl}" if fl else "")
             + ")."
         )
@@ -143,7 +144,7 @@ def _verdict_jual(
         return ("🟡 AMBIL UNTUNG SEBAGIAN (Scale-out TP1)",
                 "Harga sudah mencapai area TP1 — amankan 50% posisi dan naikkan "
                 "stop loss ke titik impas bersih." + tail)
-    if ts_pct >= 50 and forensic_penalty > -15:
+    if ts_pct >= 50 and pen_mag < 15:
         return ("🟢 TAHAN",
                 "Tren naik — biarkan profit jalan, pasang stop loss di bawah "
                 "support." + tail)
@@ -210,7 +211,7 @@ def build_verdict(
         str((exec_info or {}).get("trade_date") or (held_pos or {}).get("updated_at") or "")[:10]
         or None
     )
-    as_of_raw = str(res.get("as_of") or "")[:10]
+    as_of_raw = str(res.get("as_of") or snap.get("as_of") or "")[:10]
     try:
         ref_today = date.fromisoformat(as_of_raw) if as_of_raw else marketcal.now_wib().date()
     except ValueError:
@@ -281,10 +282,11 @@ def build_verdict(
         reasons.append(f"Fundamental {fund['pct']:+.0f}% ({esc(fund['label'])}): "
                        f"{notes}" if notes else
                        f"Fundamental {fund['pct']:+.0f}% ({esc(fund['label'])})")
-        if forensic_pen < 0 or forensic_flags:
+        pen_abs = abs(float(forensic_pen or 0.0))
+        if pen_abs > 0 or forensic_flags:
             fl_txt = "; ".join(esc(str(x)) for x in forensic_flags[:2])
             reasons.append(
-                f"Forensik kas/dividen ({forensic_pen:+.0f} poin)"
+                f"Forensik kas/dividen (-{pen_abs:.0f} poin)"
                 + (f": {fl_txt}" if fl_txt else "")
             )
     if news_sent:

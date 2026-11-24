@@ -20,7 +20,8 @@ def _symbol_key(ticker: str) -> str:
     try:
         return datamod.normalize_ticker(ticker).replace(".JK", "")
     except ValueError:
-        return str(ticker).strip().upper().replace(".JK", "")
+        safe = "".join(ch for ch in str(ticker).upper().replace(".JK", "") if ch.isascii() and ch.isalnum())
+        return safe[:16] or "UNKNOWN"
 
 
 def _cache_path(cache_dir: str, ticker: str) -> str:

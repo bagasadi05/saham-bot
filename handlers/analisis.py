@@ -348,11 +348,11 @@ async def do_analisis(update: Update, tickers: list[str], deps):
                     deps.build_chart, sym.upper(), res["ind"], res["score"]["pct"], path,
                 )
 
-            def _send_chart(_path=path, _sym=sym, _kb=kb):
-                # buka ulang tiap percobaan: handle yang sudah terpakai tidak
-                # bisa dikirim ulang oleh retry
+            async def _send_chart(_path=path, _sym=sym, _kb=kb):
+                # buka ulang tiap percobaan & await DI DALAM blok `with` agar
+                # file handle tidak tertutup sebelum httpx selesai membaca stream.
                 with open(_path, "rb") as f:
-                    return msg.reply_photo(
+                    return await msg.reply_photo(
                         photo=f,
                         caption=f"📈 Chart {_sym} (6 bulan terakhir)",
                         reply_markup=_kb,

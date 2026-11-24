@@ -16,6 +16,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction, ParseMode
 
+from core import syariah
 from core import (bandar, marketcal, regime, rencana, reports,
                   risk as riskmod, saran as saranmod, screener, store, universe)
 from core.reports import esc
@@ -431,7 +432,16 @@ async def do_paket(update: Update, args: list[str], deps,
         elif al.isdigit():
             top = max(1, min(5, int(al)))
 
-    key = "plan:v1:" + str(meta.get("scanned_at") or meta.get("trade_date") or "")
+    syariah_only = bool(
+        await asyncio.to_thread(store.get_syariah_mode, update.effective_chat.id)
+    )
+    if syariah_only:
+        rows = syariah.filter_rows(rows)
+    key = (
+        "plan:v1:"
+        + str(meta.get("scanned_at") or meta.get("trade_date") or "")
+        + (":syariah" if syariah_only else "")
+    )
     payload = None
     if not force:
         payload = await asyncio.to_thread(store.load_plan_cache, key)

@@ -54,11 +54,25 @@ _FOREIGN_SELL_KEYS = ("ForeignSell", "ForeignSellValue", "ForeignOffer")
 
 
 def _num(v) -> float | None:
-    try:
-        x = float(str(v).replace(".", "").replace(",", ".")) if isinstance(v, str) \
-            else float(v)
-    except (TypeError, ValueError):
+    if v is None or isinstance(v, bool):
         return None
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return None
+        try:
+            # Format float standar ("12.34") atau integer ("1234")
+            if "," not in s and not re.fullmatch(r"-?\d{1,3}(?:\.\d{3})+", s):
+                x = float(s)
+            else:
+                x = float(s.replace(".", "").replace(",", "."))
+        except ValueError:
+            return None
+    else:
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return None
     return x if math.isfinite(x) else None
 
 

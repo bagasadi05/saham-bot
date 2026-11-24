@@ -130,7 +130,7 @@ Bot otomatis menjalankan backup SQLite harian (WAL-safe via `sqlite3.Connection.
    # Di host / virtualenv:
    python tools/backup_db.py
    # Atau di dalam container Docker:
-   docker compose exec bot python tools/backup_db.py /app/data/backups
+   docker compose exec saham-bot python tools/backup_db.py /app/data/backups
    ```
 2. **Uji otomatis round-trip backup -> restore (tanpa menyentuh DB produksi):**
    ```bash

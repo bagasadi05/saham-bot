@@ -126,4 +126,4 @@ def test_cek_mengingatkan_posisi_yang_melewati_batas(jalankan, tmp_store):
                             "Financials")
     teks = _teks(jalankan("/cek BBCA"))
     assert "jangan tambah" in teks
-    assert "batas 25%" in teks
+    assert "batas 20%" in teks

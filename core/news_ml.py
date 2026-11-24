@@ -24,6 +24,7 @@ import threading
 log = logging.getLogger("sahambuddy.news_ml")
 
 MODEL_ID = "will702/indo-roBERTa-financial-sentiment-v2"
+MODEL_REVISION = os.environ.get("SAHAMBOT_MODEL_REVISION", "").strip() or None
 LABEL_MAP = {0: "positive", 1: "neutral", 2: "negative"}
 
 # Folder model lokal (hasil unduhan manual / build Docker) — dipakai bila ada,
@@ -124,7 +125,7 @@ def get_model():
                          and os.path.exists(os.path.join(LOCAL_MODEL_DIR, "config.json"))
                          and os.path.exists(os.path.join(LOCAL_MODEL_DIR, "model.safetensors")))
             src = LOCAL_MODEL_DIR if use_local else MODEL_ID
-            kw = {"local_files_only": True} if use_local else {}
+            kw = {"local_files_only": True} if use_local else ({"revision": MODEL_REVISION} if MODEL_REVISION else {})
             tok = AutoTokenizer.from_pretrained(src, **kw)
             model = AutoModelForSequenceClassification.from_pretrained(src, **kw)
             model.eval()

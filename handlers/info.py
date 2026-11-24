@@ -16,6 +16,7 @@ from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
 
+from core import syariah
 from core import (data, fundamental, learn, marketcal, news,
                   scorecard, store)
 from core.reports import _trend_line, esc, fmt_compact_amount
@@ -43,10 +44,13 @@ async def do_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         mode = await asyncio.to_thread(store.set_user_mode, chat_id, target)
     else:
         mode = await asyncio.to_thread(store.get_user_mode, chat_id)
+    syariah_only = await asyncio.to_thread(store.get_syariah_mode, chat_id)
     await update.effective_message.reply_text(
         menu_handler._render_menu_text(deps, mode),
         parse_mode=ParseMode.HTML,
-        reply_markup=menu_handler._render_main_menu_markup(deps, mode),
+        reply_markup=menu_handler._render_main_menu_markup(
+            deps, mode, syariah_only=syariah_only
+        ),
     )
 
 
@@ -77,6 +81,69 @@ async def do_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     txt, rm = menu_handler._mode_switched_view(saved, deps)
     await update.effective_message.reply_text(
         txt, parse_mode=ParseMode.HTML, reply_markup=rm,
+    )
+
+
+async def do_syariah(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
+    """Atur filter saham syariah vs biasa, atau cek status syariah emiten."""
+    chat_id = update.effective_chat.id
+    args = getattr(ctx, "args", None) or []
+    if not args:
+        cur = await asyncio.to_thread(store.get_syariah_mode, chat_id)
+        await update.effective_message.reply_text(
+            menu_handler.syariah_text(cur),
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_handler.syariah_menu_markup(cur),
+        )
+        return
+    head = str(args[0]).strip().lower()
+    if head in ("on", "ya", "aktif", "syariah", "issi", "halal"):
+        saved = await asyncio.to_thread(store.set_syariah_mode, chat_id, True)
+        await update.effective_message.reply_text(
+            "☪️ <b>Filter Saham Syariah diaktifkan!</b>\n\n"
+            + menu_handler.syariah_text(saved),
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_handler.syariah_menu_markup(saved),
+        )
+        return
+    if head in ("off", "tidak", "nonaktif", "semua", "biasa", "reguler", "konvensional", "all"):
+        saved = await asyncio.to_thread(store.set_syariah_mode, chat_id, False)
+        await update.effective_message.reply_text(
+            "🌐 <b>Mode Semua Saham (Biasa) diaktifkan!</b>\n\n"
+            + menu_handler.syariah_text(saved),
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_handler.syariah_menu_markup(saved),
+        )
+        return
+    if head in ("cek", "check", "status"):
+        if len(args) < 2:
+            await update.effective_message.reply_text(
+                "Ketik kode saham yang mau dicek, contoh: <code>/syariah cek TLKM</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await update.effective_message.reply_text(
+            syariah.format_check_text(args[1]),
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_handler.home_markup(),
+        )
+        return
+    # Shortcut: `/syariah TLKM` langsung cek status emiten
+    clean = syariah.normalize_code(args[0])
+    if len(args) == 1 and clean.isalpha() and len(clean) == 4:
+        await update.effective_message.reply_text(
+            syariah.format_check_text(clean),
+            parse_mode=ParseMode.HTML,
+            reply_markup=menu_handler.home_markup(),
+        )
+        return
+    cur = await asyncio.to_thread(store.get_syariah_mode, chat_id)
+    await update.effective_message.reply_text(
+        "❌ Argumen tidak dikenal.\n"
+        "Pakai <code>/syariah on</code>, <code>/syariah off</code>, "
+        "atau <code>/syariah cek TLKM</code>.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=menu_handler.syariah_menu_markup(cur),
     )
 
 

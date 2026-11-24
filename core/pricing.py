@@ -33,6 +33,8 @@ DEFAULT_ARA_END = _dt.date(2026, 12, 31)
 DEFAULT_ARB_ASYM_START = _dt.date(2026, 10, 20)
 DEFAULT_ARB_ASYM_END = _dt.date(2026, 12, 31)
 REGULER_FLOOR_RP1_START = _dt.date(2026, 9, 28)
+RULES_LAST_VERIFIED = "2026-11-24"
+RULES_SOURCE_URL = "https://www.idx.co.id/id/peraturan/peraturan-bei/"
 
 # Dipertahankan sebagai konstanta default kompatibilitas balik; fungsi di bawah
 # membaca jendela dinamis via env IDX_ARA_WINDOW_END / IDX_ARB_WINDOW_END dan
@@ -145,15 +147,30 @@ def tick_size(price: float) -> float:
 
 
 def round_tick(price: float, tick: float | None = None) -> float:
-    """Bulatkan ke tick terdekat (half-up, bukan banker's rounding)."""
-    t = tick if tick else tick_size(price)
-    return math.floor(float(price) / t + 0.5) * t
+    """Bulatkan ke tick terdekat sesuai pita harga level tersebut (half-up)."""
+    p = float(price)
+    if not math.isfinite(p) or p <= 0:
+        return 0.0
+    t = float(tick) if tick else tick_size(p)
+    return math.floor(p / t + 0.5) * t
+
+
+def floor_tick(price: float, tick: float | None = None) -> float:
+    """Bulatkan ke bawah ke tick valid (untuk plafon ARA resmi BEI)."""
+    p = float(price)
+    if not math.isfinite(p) or p <= 0:
+        return 0.0
+    t = float(tick) if tick else tick_size(p)
+    return math.floor(p / t + 1e-9) * t
 
 
 def ceil_tick(price: float, tick: float | None = None) -> float:
     """Bulatkan ke atas ke tick berikutnya (untuk batas 'jangan kejar' & floor ARB)."""
-    t = tick if tick else tick_size(price)
-    return math.ceil(float(price) / t - 1e-9) * t
+    p = float(price)
+    if not math.isfinite(p) or p <= 0:
+        return 0.0
+    t = float(tick) if tick else tick_size(p)
+    return math.ceil(p / t - 1e-9) * t
 
 
 def auto_reject_pct(
@@ -185,17 +202,31 @@ def auto_reject_pct(
     return 20.0
 
 
-def is_ara_locked(price: float, prev_close: float, day: _dt.date | None) -> bool:
-    """True bila harga sudah mentok ARA (tidak realistis dibeli di harga itu)."""
-    pct = auto_reject_pct(price, day)
-    if pct is None or not prev_close or prev_close <= 0:
+def is_ara_locked(price: float, prev_close: float, day: _dt.date | None,
+                  *, board: str = "regular") -> bool:
+    """True bila harga sudah mentok plafon ARA resmi BEI (basis prev_close + floor_tick)."""
+    if not prev_close or not math.isfinite(float(prev_close)) or float(prev_close) <= 0:
         return False
-    return float(price) >= float(prev_close) * (1.0 + pct / 100.0) * 0.999
+    p = float(price)
+    prev = float(prev_close)
+    if not math.isfinite(p) or p <= prev:
+        return False
+    if _is_special_board(board):
+        pct = 10.0
+    else:
+        pct = auto_reject_pct(prev, day)
+    if pct is None:
+        return False
+    raw_ceil = prev * (1.0 + pct / 100.0)
+    ara_price = floor_tick(raw_ceil)
+    if ara_price <= prev:
+        return False
+    return p >= ara_price - 1e-9
 
 
 def _is_special_board(board: str | None) -> bool:
     b = (board or "").strip().lower()
-    return any(tok in b for tok in ("pemantauan", "khusus", "fca"))
+    return any(tok in b for tok in ("pemantauan", "khusus", "fca", "akselerasi"))
 
 
 def min_board_floor(day: _dt.date | None = None, *, board: str = "regular") -> float:
@@ -346,3 +377,21 @@ def check_arb_gap_risk(
         "window_note": window_note,
         "warning": warning,
     }
+
+
+def expiry_warning(today: _dt.date | None = None, warn_days: int = 21) -> str | None:
+    """Peringatan eksplisit bila jendela aturan ARA/ARB mendekati atau melewati tenggat."""
+    ref = today or _dt.datetime.now(_WIB).date()
+    end = DEFAULT_ARA_END
+    days_left = (end - ref).days
+    if days_left < 0:
+        return (
+            f"Jendela aturan ARA/ARB BEI berakhir pada {end.isoformat()} — "
+            "verifikasi pengumuman BEI terbaru sebelum memasang order."
+        )
+    if days_left <= warn_days:
+        return (
+            f"Jendela aturan ARA/ARB BEI berakhir dalam {days_left} hari ({end.isoformat()}) — "
+            "cek pembaruan surat keputusan BEI."
+        )
+    return None

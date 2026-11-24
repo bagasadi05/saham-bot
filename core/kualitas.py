@@ -20,6 +20,8 @@ diisi nol, tidak dikarang, dan bukan alasan penolakan.
 """
 from __future__ import annotations
 
+import math
+
 import json
 import os
 
@@ -40,7 +42,7 @@ def _f(v) -> float | None:
         x = float(v)
     except (TypeError, ValueError):
         return None
-    return x
+    return x if math.isfinite(x) else None
 
 
 def judge(fund_raw: dict | None) -> dict:
@@ -66,9 +68,15 @@ def judge(fund_raw: dict | None) -> dict:
     if per is None and pbv is None and roe is None:
         return {"ok": None, "label": "belum dinilai", "bits": [],
                 "reason": "data fundamental tidak tersedia"}
+    if pbv is not None and pbv <= 0:
+        return {"ok": False, "label": "ekuitas negatif", "bits": bits,
+                "reason": "PBV ≤ 0 (ekuitas negatif / bermasalah)"}
     if (per is not None and per < 0) or (roe is not None and roe < 0):
         return {"ok": False, "label": "merugi", "bits": bits,
                 "reason": "laba negatif (PER/ROE < 0)"}
+    if per is None and roe is None:
+        return {"ok": None, "label": "belum dinilai", "bits": bits,
+                "reason": "PER & ROE tidak tersedia — kualitas laba belum bisa dipastikan"}
     if roe is not None and roe < ROE_MIN:
         return {"ok": False, "label": "ROE tipis", "bits": bits,
                 "reason": f"ROE {roe:.1f}% < ambang {ROE_MIN:.0f}%"

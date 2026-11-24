@@ -340,7 +340,7 @@ def test_rencana_small_modal_explains_25pct_shows_full_modal_capacity_no_context
     txt_direct = market_handler._rencana_single_text(
         plan_direct, cand, budget_from_modal=True, deps=bot
     )
-    assert "25%" in txt_direct
+    assert "20%" in txt_direct
     assert "modal penuh" in txt_direct.lower()
 
     upd = _FakeUpdate("/rencana BBCA")
@@ -348,7 +348,7 @@ def test_rencana_small_modal_explains_25pct_shows_full_modal_capacity_no_context
     txt, _ = upd.effective_message.replies[-1]
     cbs = _last_callbacks(upd.effective_message.replies)
 
-    assert "25%" in txt
+    assert "20%" in txt
     assert "modal penuh" in txt.lower()
     assert "1 lot" in txt.lower()
     assert "manual:rencana" in cbs
@@ -396,7 +396,7 @@ def test_rencana_valid_plan_explains_25pct_saves_context_and_shows_buy(
     txt, _ = upd.effective_message.replies[-1]
     cbs = _last_callbacks(upd.effective_message.replies)
 
-    assert "25%" in txt
+    assert "20%" in txt
     assert "exec:buy:BBCA" in cbs
     ctx_saved = store.get_signal_context(100, "BBCA", intent="beli")
     assert ctx_saved is not None

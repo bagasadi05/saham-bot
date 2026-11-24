@@ -26,8 +26,10 @@ import math
 
 import pandas as pd
 
-MAX_POS_PCT = 0.25        # satu posisi maks 25% dari modal acuan
-MAX_SECTOR_PCT = 0.40     # satu sektor maks 40%
+import config
+
+MAX_POS_PCT = config.DEFAULT_MAX_POS_PCT        # satu posisi maks 20% dari modal acuan
+MAX_SECTOR_PCT = config.DEFAULT_MAX_SECTOR_PCT  # satu sektor maks 40%
 MIN_POS_LIMIT = 0.05      # batas minimum posisi kustom (5%)
 MAX_POS_LIMIT = 0.50      # batas maksimum posisi kustom (50%)
 MIN_SEC_LIMIT = 0.10      # batas minimum sektor kustom (10%)
@@ -35,7 +37,12 @@ MAX_SEC_LIMIT = 0.80      # batas maksimum sektor kustom (80%)
 CORR_WARN = 0.80          # korelasi pasangan tertinggi
 BETA_WARN = 1.30
 DD_WARN_PCT = -15.0       # drawdown berjalan
-MIN_DAYS = 20
+MIN_DAYS_VOL = 60         # minimal hari bursa untuk volatilitas/korelasi/beta
+MIN_DAYS_VAR = 120        # minimal hari bursa untuk VaR/ES historis
+MIN_DAYS_OOS_VAR = 250    # minimal hari bursa untuk backtest VaR out-of-sample (Kupiec)
+MIN_ES_TAIL_OBS = 5       # minimal observasi ekor untuk menghitung Expected Shortfall
+MIN_VAR_COVERAGE = 0.80   # minimal cakupan nilai portofolio (80%) agar VaR ditampilkan
+MIN_DAYS = MIN_DAYS_VOL   # alias kompatibel mundur
 UNKNOWN_SECTOR = "tidak diketahui"
 MAX_WF_ROUNDS = 50        # putaran maksimum water-filling (posisi & sektor)
 VAR_LEVEL = 0.05          # persentil 5% => VaR 95%
@@ -289,6 +296,43 @@ def _pct(part: float, whole: float) -> float | None:
     return round(part / whole * 100, 1) if whole else None
 
 
+def _kupiec_pof_pvalue(breaches: int, n_obs: int, alpha: float = VAR_LEVEL) -> float | None:
+    """Uji Kupiec Proportion of Failures (LR_pof ~ chi2(df=1)) tanpa dependensi scipy."""
+    if n_obs <= 0 or not (0.0 < alpha < 1.0):
+        return None
+    x = int(breaches)
+    n = int(n_obs)
+    p_hat = x / n
+    if x == 0:
+        lr = -2.0 * (n * math.log(1.0 - alpha))
+    elif x == n:
+        lr = -2.0 * (n * math.log(alpha))
+    else:
+        ll0 = (n - x) * math.log(1.0 - alpha) + x * math.log(alpha)
+        ll1 = (n - x) * math.log(1.0 - p_hat) + x * math.log(p_hat)
+        lr = max(0.0, -2.0 * (ll0 - ll1))
+    # Untuk chi2(df=1), p-value = erfc(sqrt(lr / 2))
+    return round(float(math.erfc(math.sqrt(lr / 2.0))), 4)
+
+
+def _oos_var_backtest(port: pd.Series, window: int = MIN_DAYS_VAR,
+                      alpha: float = VAR_LEVEL) -> tuple[int, int, float | None] | None:
+    """Backtest VaR out-of-sample: bandingkan return hari t dengan kuantil historis < t."""
+    vals = port.dropna().to_numpy(dtype=float)
+    if len(vals) < MIN_DAYS_OOS_VAR:
+        return None
+    breaches = 0
+    tested = 0
+    for t in range(window, len(vals)):
+        hist = vals[:t]
+        q = float(pd.Series(hist).quantile(alpha))
+        tested += 1
+        if vals[t] <= q + 1e-12:
+            breaches += 1
+    p_val = _kupiec_pof_pvalue(breaches, tested, alpha)
+    return breaches, tested, p_val
+
+
 def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
                    bench_rets: pd.Series | None = None,
                    *,
@@ -335,7 +379,7 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
         ({"sector": s, "value": round(v), "pct": _pct(v, total)}
          for s, v in sectors.items()), key=lambda r: -r["value"])
 
-    rets = [x for x in priced if x["rets"] is not None and len(x["rets"]) >= MIN_DAYS]
+    rets = [x for x in priced if x["rets"] is not None and len(x["rets"]) >= MIN_DAYS_VOL]
     warnings: list[str] = []
     mdd = vol_ann = var95_pct = var95_rp = None
     beta = corr_avg = corr_max = None
@@ -343,27 +387,34 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
     risk_contrib: dict[str, float] | None = None
     rc_note: str | None = None
     hist_var_pct = hist_var_rp = hist_es_pct = hist_es_rp = None
-    var_n_days = var_breaches = var_expected = None
+    var_n_days = var_breaches = var_expected = var_kupiec_p = None
+    var_coverage_pct: float | None = None
     var_note: str | None = None
     days = 0
 
+    covered_val = sum(x["value"] for x in rets)
+    coverage = (covered_val / total) if total > 0 else 0.0
+    if rets:
+        var_coverage_pct = round(coverage * 100.0, 1)
+
     if len(rets) < len(priced):
         warnings.append(
-            f"{len(priced) - len(rets)} posisi tanpa riwayat cukup — "
-            "tidak dihitung di drawdown/korelasi/kontribusi risiko/"
-            "VaR historis")
+            f"{len(priced) - len(rets)} posisi tanpa riwayat cukup (< {MIN_DAYS_VOL} hari) — "
+            f"risiko/VaR hanya mencakup {coverage * 100:.0f}% nilai portofolio"
+        )
 
     if rets:
         frame = pd.concat({x["ticker"]: x["rets"] for x in rets}, axis=1,
                           join="inner").dropna()
         days = len(frame)
-        if days >= MIN_DAYS:
-            w = pd.Series({x["ticker"]: weights[x["ticker"]] for x in rets})
+        if days >= MIN_DAYS_VOL:
+            # F-02: normalisasi ulang bobot pada subset berriwayat agar jumlah bobot = 1.0
+            raw_w = pd.Series({x["ticker"]: weights[x["ticker"]] for x in rets})
+            w_sum = float(raw_w.sum())
+            w = (raw_w / w_sum) if w_sum > 0 else raw_w
             port = (frame * w).sum(axis=1)
             vol_daily = float(port.std(ddof=1))
             vol_ann = round(vol_daily * math.sqrt(252) * 100, 1)
-            var95_pct = round(1.645 * vol_daily * 100, 2)
-            var95_rp = round(total * 1.645 * vol_daily)
             equity = (1 + port).cumprod()
             mdd = round(float((equity / equity.cummax() - 1).min()) * 100, 1)
 
@@ -381,17 +432,36 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
             else:
                 rc_note = "varians portofolio nol/tidak terhingga"
 
-            # VaR historis 95% = persentil 5% return harian; ES = rata-rata ekor.
-            q05 = float(port.quantile(VAR_LEVEL))
-            hist_var_pct = round(max(0.0, -q05) * 100.0, 2)
-            hist_var_rp = round(total * hist_var_pct / 100.0)
-            tail = port[port <= q05 + 1e-12]
-            var_n_days = int(len(port))
-            var_breaches = int(len(tail))
-            var_expected = round(var_n_days * VAR_LEVEL, 1)
-            if len(tail):
-                hist_es_pct = round(max(0.0, -float(tail.mean())) * 100.0, 2)
-                hist_es_rp = round(total * hist_es_pct / 100.0)
+            # F-02 & F-04: VaR hanya valid bila cakupan >= 80% dan riwayat >= MIN_DAYS_VAR (120h)
+            if coverage < MIN_VAR_COVERAGE:
+                var_note = (
+                    f"cakupan riwayat {coverage * 100:.0f}% (< {MIN_VAR_COVERAGE * 100:.0f}%) — "
+                    "VaR/ES tidak ditampilkan agar tidak menyesatkan"
+                )
+            elif days < MIN_DAYS_VAR:
+                var_note = (
+                    f"irisan tanggal return {days} hari (< {MIN_DAYS_VAR} hari) — "
+                    "VaR historis/ES tidak dihitung"
+                )
+                # VaR parametrik (asumsi normal) tetap dihitung pada subset tercakup
+                var95_pct = round(1.645 * vol_daily * 100, 2)
+                var95_rp = round(covered_val * 1.645 * vol_daily)
+            else:
+                var95_pct = round(1.645 * vol_daily * 100, 2)
+                var95_rp = round(covered_val * 1.645 * vol_daily)
+                q05 = float(port.quantile(VAR_LEVEL))
+                hist_var_pct = round(max(0.0, -q05) * 100.0, 2)
+                hist_var_rp = round(covered_val * hist_var_pct / 100.0)
+                tail = port[port <= q05 + 1e-12]
+                var_n_days = int(len(port))
+                if len(tail) >= MIN_ES_TAIL_OBS:
+                    hist_es_pct = round(max(0.0, -float(tail.mean())) * 100.0, 2)
+                    hist_es_rp = round(covered_val * hist_es_pct / 100.0)
+                # F-03: Backtest VaR out-of-sample (Kupiec POF) bila data >= 250 hari
+                bt = _oos_var_backtest(port, window=MIN_DAYS_VAR, alpha=VAR_LEVEL)
+                if bt is not None:
+                    var_breaches, oos_n, var_kupiec_p = bt
+                    var_expected = round(oos_n * VAR_LEVEL, 1)
 
             if len(rets) >= 2:
                 corr = frame.corr()
@@ -406,7 +476,7 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
             if bench_rets is not None and isinstance(bench_rets, pd.Series):
                 both = pd.concat([port, bench_rets], axis=1,
                                  join="inner").dropna()
-                if len(both) >= MIN_DAYS:
+                if len(both) >= MIN_DAYS_VOL:
                     var_b = float(both.iloc[:, 1].var(ddof=1))
                     if var_b > 0:
                         beta = round(float(both.cov().iloc[0, 1] / var_b), 2)
@@ -414,11 +484,11 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
     if not rets:
         short = any(x["rets"] is not None for x in priced)
         var_note = (
-            f"riwayat return harian < {MIN_DAYS} hari — "
+            f"riwayat return harian < {MIN_DAYS_VOL} hari — "
             "VaR historis/ES tidak dihitung"
             if short else "tidak ada posisi dengan riwayat return harian")
-    elif days < MIN_DAYS:
-        var_note = (f"irisan tanggal return {days} hari (< {MIN_DAYS}) — "
+    elif days < MIN_DAYS_VOL:
+        var_note = (f"irisan tanggal return {days} hari (< {MIN_DAYS_VOL}) — "
                     "VaR historis/ES tidak dihitung")
     if risk_contrib is None and rc_note is None:
         rc_note = var_note or "kontribusi risiko tidak tersedia"
@@ -472,6 +542,8 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
         "var_n_days": var_n_days,
         "var_breaches": var_breaches,
         "var_expected_breaches": var_expected,
+        "var_kupiec_p": var_kupiec_p,
+        "var_coverage_pct": var_coverage_pct,
         "var_note": var_note,
         "risk_contrib_pct": risk_contrib,
         "risk_contrib_note": rc_note,

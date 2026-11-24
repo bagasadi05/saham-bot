@@ -38,6 +38,8 @@ COPY handlers/ ./handlers/
 COPY vendor/ ./vendor/
 COPY data/validation.json ./data/validation.json
 COPY data/idx_universe.json ./data/idx_universe.json
+COPY data/idx_sectors.json ./data/idx_sectors.json
+COPY data/idx_syariah.json ./data/idx_syariah.json
 COPY tools/ ./tools/
 
 # user non-root & folder data untuk volume

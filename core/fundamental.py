@@ -169,6 +169,7 @@ def _fetch_uncached(symbol: str) -> dict | None:
         "name": g("longName", "shortName") or symbol.replace(".JK", ""),
         "sector": g("sector", "industry"),
         "currency": fin_currency,
+        "price_currency": normalize_currency(g("currency")),
         "market_cap": g("marketCap"),
         "per": _finite_float(g("trailingPE")),
         "pbv": _finite_float(g("priceToBook")),
@@ -396,8 +397,12 @@ SECTOR_BENCHMARKS: dict[str, tuple[float, float]] = {
 
 
 def compute_fcf_yield(f: dict | None) -> float | None:
-    """FCF Yield (%) = Free Cash Flow / Market Cap × 100."""
+    """FCF Yield (%) = Free Cash Flow / Market Cap × 100 (ditolak bila beda mata uang USD vs IDR)."""
     raw = f or {}
+    fin_cur = normalize_currency(raw.get("currency"))
+    px_cur = normalize_currency(raw.get("price_currency")) if raw.get("price_currency") else "IDR"
+    if fin_cur.upper() != "TIDAK TERSEDIA" and px_cur.upper() != "TIDAK TERSEDIA" and fin_cur.upper() != px_cur.upper():
+        return None
     fcf = _finite_float(raw.get("fcf"))
     mcap = _finite_float(raw.get("market_cap"))
     if fcf is None or mcap is None or mcap <= 0:

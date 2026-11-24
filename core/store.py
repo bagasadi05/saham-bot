@@ -509,6 +509,8 @@ from core.store_profile import (  # noqa: E402, F401
     set_onboard_state,
     set_position_thesis,
     set_user_mode,
+    get_syariah_mode,
+    set_syariah_mode,
 )
 from core.store_scan import (  # noqa: E402, F401
     _HISTORY_COLS,

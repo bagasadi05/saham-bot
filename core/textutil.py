@@ -127,7 +127,20 @@ def split_message(text: str, limit: int = 4000) -> list[str]:
             idx = end
 
     flush()
-    return parts
+    balanced: list[str] = []
+    open_bq: str | None = None
+    for part in parts:
+        chunk = (open_bq + part) if open_bq else part
+        # Track net unclosed <blockquote...>
+        opens = list(re.finditer(r"<blockquote(?:\s+expandable)?>", chunk))
+        closes = list(re.finditer(r"</blockquote>", chunk))
+        if len(opens) > len(closes):
+            open_bq = opens[-1].group(0)
+            chunk = chunk + "</blockquote>"
+        else:
+            open_bq = None
+        balanced.append(chunk)
+    return balanced
 
 
 def parse_rupiah(tok: str) -> float | None:
@@ -148,7 +161,19 @@ def parse_rupiah(tok: str) -> float | None:
     if not re.fullmatch(r"[0-9.,]+", s):
         return None
     if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".")          # 5.000.000,50
+        # Tentukan pemisah desimal dari tanda yang muncul paling belakang
+        if s.rfind(".") > s.rfind(","):
+            s = s.replace(",", "")                        # 5,000.50 (Inggris)
+        else:
+            s = s.replace(".", "").replace(",", ".")      # 5.000.000,50 (Indonesia)
+    elif mult > 1.0:
+        # Dengan akhiran jt/rb/k, koma/titik tunggal selalu desimal ("1,500jt" = 1,5jt)
+        if s.count(".") >= 2:
+            s = s.replace(".", "")
+        elif s.count(",") >= 2:
+            s = s.replace(",", "")
+        else:
+            s = s.replace(",", ".")
     elif s.count(".") >= 2 or re.search(r"\.\d{3}$", s):
         s = s.replace(".", "")                            # 5.000.000
     elif s.count(",") >= 2 or re.search(r",\d{3}$", s):

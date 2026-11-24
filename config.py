@@ -78,7 +78,10 @@ ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
 
 # Cadangan SQLite otomatis (job harian 23:30 WIB)
 BACKUP_DIR = os.getenv("BACKUP_DIR", "backups")
-BACKUP_KEEP = max(1, int(os.getenv("BACKUP_KEEP", "7") or 7))
+try:
+    BACKUP_KEEP = max(1, int(os.getenv("BACKUP_KEEP", "7") or 7))
+except ValueError:
+    BACKUP_KEEP = 7
 BACKUP_AUTO = os.getenv("BACKUP_AUTO", "on").strip().lower() not in (
     "0", "off", "false", "no", "")
 
@@ -92,3 +95,9 @@ IDX_ROUND_TRIP = IDX_BUY_FEE + IDX_SELL_FEE   # 0,40%
 
 # Nama tampilan bot di menu /start (opsional, default: SahamBuddy)
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "SahamBuddy").strip() or "SahamBuddy"
+
+# ------------------------------------------------------- batas risiko portofolio
+# Sumber tunggal batas eksposur (dipakai bersama core/saran, core/rencana, core/risk).
+DEFAULT_MAX_POS_PCT = 0.20          # maks 20% modal per posisi
+DEFAULT_MAX_SECTOR_PCT = 0.40       # maks 40% modal per sektor
+DEFAULT_MAX_TOTAL_EXPOSURE = 0.90   # maks 90% total eksposur (45% saat IHSG defensif)

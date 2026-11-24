@@ -12,7 +12,7 @@ if (Test-Path .env) {
         $line = $_.Trim()
         if ($line -and -not $line.StartsWith('#') -and $line.Contains('=')) {
             $k, $v = $line -split '=', 2
-            [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim(), 'Process')
+            [Environment]::SetEnvironmentVariable($k.Trim(), $v.Trim().Trim('"').Trim("'"), 'Process')
         }
     }
 }

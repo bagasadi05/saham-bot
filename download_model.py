@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unduh model sentimen indo-roBERTa finansial (HuggingFace) → folder lokal.
 Dipakai saat build Docker. Tahan jaringan resek: resume per-chunk + retry."""
+import hashlib
 import os
 import sys
 import time
@@ -10,6 +11,32 @@ DEST = os.environ.get("SAHAMBOT_LOCAL_MODEL", "/app/models/indo-fin-roberta")
 CHUNK = int(os.environ.get("DOWNLOAD_CHUNK", "4")) * 1024 * 1024
 FILES = ["config.json", "tokenizer_config.json", "special_tokens_map.json",
          "tokenizer.json", "vocab.json", "merges.txt", "model.safetensors"]
+
+EXPECTED_SHA256: dict[str, str] = {
+    "config.json": "47578f5ebb8ca5140b1440172411e21fa8ff3a9c96306c0ec6e5fd86a3bc108b",
+    "merges.txt": "8557587ff36ebe40c0bafea1e7f6afe4e9033b87e6eff7da54c91acb7fa8f45a",
+    "model.safetensors": "00e94809dd0f1288bbe0c66c887b1769bb7028f612d98fbe8957167811636f4c",
+    "special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+    "tokenizer.json": "ec8faafdb01f96fca946efbfa82a71f5c2c803b5413e8ef8f4690cbd8626176f",
+    "tokenizer_config.json": "e243d25a6773518bf621b7b6da0a94441efb3a4a92b8c1d4e71c9eebb624f549",
+    "vocab.json": "7f0d797638915eaae6540a8141e247921b130ead34b03aa0b646a8fc17750972",
+}
+
+
+def sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_sha256(path: str, expected: str | None = None) -> bool:
+    exp = expected if expected is not None else EXPECTED_SHA256.get(os.path.basename(path))
+    if not exp:
+        return True
+    return sha256_file(path) == exp
+
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 | saham-bot-deploy"
 
 

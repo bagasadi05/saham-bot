@@ -321,8 +321,8 @@ _MANUAL_PROMPT = menu_handler._MANUAL_PROMPT
 ALLOWED_IDS: set[int] = set()
 
 
-def main_menu_markup(mode: str = "pemula") -> InlineKeyboardMarkup:
-    return menu_handler.main_menu_markup(mode)
+def main_menu_markup(mode: str = "pemula", syariah_only: bool = False) -> InlineKeyboardMarkup:
+    return menu_handler.main_menu_markup(mode, syariah_only=syariah_only)
 
 
 def mode_menu_markup(mode: str = "pemula") -> InlineKeyboardMarkup:
@@ -416,6 +416,7 @@ async def _post_init(app: Application):
         await app.bot.set_my_commands([
             BotCommand("start", "Buka menu utama (tombol)"),
             BotCommand("mode", "Ganti level menu: pemula / expert"),
+            BotCommand("syariah", "Filter saham syariah (ISSI) vs semua"),
             BotCommand("help", "Panduan pemula (3 langkah mulai)"),
             BotCommand("cek", "Cek 6 poin layak beli: /cek BBCA"),
             BotCommand("analisis", "Grafik & analisis lengkap: /analisis BBCA"),
@@ -703,6 +704,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await info_handler.do_mode(update, ctx, sys.modules[__name__])
+
+
+async def cmd_syariah(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await info_handler.do_syariah(update, ctx, sys.modules[__name__])
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1383,16 +1388,22 @@ def main():
                     "Telegram dipisah koma (cek id-mu dengan @userinfobot)") from None
     user_filter = filters.User(user_id=user_ids) if user_ids else None
     if not user_ids:
-        if os.getenv("REQUIRE_ALLOWLIST", "").strip().lower() in ("1", "true", "yes"):
-            raise SystemExit("ALLOWED_USER_IDS kosong tetapi REQUIRE_ALLOWLIST aktif — "
-                             "isi id Telegram kamu atau matikan REQUIRE_ALLOWLIST.")
-        log.warning("ALLOWED_USER_IDS kosong — bot bisa dipakai siapa saja. "
-                    "Isi env ALLOWED_USER_IDS (dipisah koma) untuk membatasi.")
+        allow_public = os.getenv("ALLOW_PUBLIC", "").strip().lower() in ("1", "true", "yes")
+        req_env = os.getenv("REQUIRE_ALLOWLIST", "").strip().lower()
+        explicitly_disabled = req_env in ("0", "false", "no", "off")
+        if not allow_public and not explicitly_disabled:
+            raise SystemExit(
+                "ALLOWED_USER_IDS kosong — bot menolak start (fail-closed). "
+                "Isi ALLOWED_USER_IDS dengan ID Telegram kamu, atau set ALLOW_PUBLIC=1 "
+                "jika memang sengaja membuka bot untuk publik."
+            )
+        log.warning("ALLOWED_USER_IDS kosong (mode publik aktif) — bot bisa dipakai siapa saja.")
 
     def reg(names, fn):
         app.add_handler(CommandHandler(names, timed(fn), filters=user_filter))
     reg(["start", "menu"], cmd_start)
     reg(["mode", "level"], cmd_mode)
+    reg(["syariah", "sharia", "halal"], cmd_syariah)
     reg("help", cmd_help)
     reg(["analisa", "analysis", "analisis"], cmd_analisis)
     reg("skor", cmd_skor)
@@ -1442,7 +1453,7 @@ def main():
                         name="full-market-scan")
     # laporan kondisi pasar penutupan 16:15 WIB ke chat /auto on
     job_queue.run_daily(closing_market_report_job,
-                        time=_dt.time(16, 15, tzinfo=WIB),
+                        time=_dt.time(16, 25, tzinfo=WIB),
                         name="closing-market-report")
     # [P28] laporan berkala mingguan (Jumat 16:45 WIB) realisasi asli vs paper
     job_queue.run_daily(weekly_journal_report,

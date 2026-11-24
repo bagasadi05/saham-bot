@@ -17,6 +17,7 @@ import math
 import os
 from collections import Counter
 
+import config
 from core import fundamental, pricing, regime, risk, saran, store, universe
 
 def _env_num(name: str, default: float, cast=float):
@@ -29,11 +30,11 @@ def _env_num(name: str, default: float, cast=float):
 MIN_VALUE = float(_env_num("PLAN_MIN_VALUE", 2_000_000_000))
 # Filter likuiditas/tidur & risiko Pemantauan Khusus (bukan lantai reguler BEI yang kini Rp1)
 MIN_PRICE = float(_env_num("PLAN_MIN_PRICE", 50))
-MAX_POS_PCT = min(0.5, max(0.05, float(_env_num("PLAN_MAX_POS_PCT", 0.20))))
+MAX_POS_PCT = min(0.5, max(0.05, float(_env_num("PLAN_MAX_POS_PCT", config.DEFAULT_MAX_POS_PCT))))
 MAX_PLANS = max(1, min(5, int(_env_num("PLAN_MAX_PLANS", 3))))
 POOL_LIMIT = max(4, min(40, int(_env_num("PLAN_POOL", 16))))
 MAX_PER_SECTOR = 2
-MAX_TOTAL_PCT = 0.90
+MAX_TOTAL_PCT = config.DEFAULT_MAX_TOTAL_EXPOSURE
 MIN_REL = 60.0
 TRAP_RET20D = 15.0
 NEWS_VETO = -30.0

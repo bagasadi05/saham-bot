@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import datetime as dt
+
+import config
 import json
+import math
 
 from core import store as _store
 
@@ -82,8 +85,8 @@ def _check_lot_price(lots, price) -> tuple[int, float]:
         raise ValueError("lot dan harga harus berupa angka") from None
     if n <= 0:
         raise ValueError("lot harus lebih dari 0")
-    if p <= 0:
-        raise ValueError("harga harus lebih dari 0")
+    if not math.isfinite(p) or p <= 0:
+        raise ValueError("harga harus berupa angka positif yang valid")
     return n, p
 
 
@@ -631,7 +634,7 @@ def open_executions_by_ticker(chat_id: int | str) -> dict[str, dict]:
     for t, st in cycles.items():
         if st["lots"] <= 0:
             continue
-        if open_pos and t not in open_pos:
+        if t not in open_pos:
             continue
         entry = st["cost"] / (st["lots"] * 100.0) if st["lots"] > 0 else 0.0
         out[t] = {
@@ -658,7 +661,7 @@ def execution_chats() -> list[str]:
 
 def get_risk_limits(
     chat_id: int | str,
-    default_pos: float = 0.25,
+    default_pos: float = config.DEFAULT_MAX_POS_PCT,
     default_sec: float = 0.40,
 ) -> tuple[float, float]:
     """Ambil batas posisi & sektor per chat (fraksi, mis. 0.25 dan 0.40)."""

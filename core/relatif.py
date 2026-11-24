@@ -324,3 +324,37 @@ def summary_line(item: dict, quintiles: dict[int, dict] | None = None) -> str:
         f"historis OOS kuintil ini: {cal.get('excess_pct', 0):+.2f}% vs pasar "
         f"per 20 hari{iqr_txt} · peringkat relatif, bukan jaminan return"
     )
+
+
+def check_quintile_monotonicity(quintiles: dict[int, dict] | None = None) -> dict:
+    """Uji monotonisitas peringkat kuintil Q1..Q5 (Spearman rank correlation, F-12)."""
+    qs = quintiles if quintiles is not None else load_oos_quintiles()
+    def _qval(v: dict) -> float | None:
+        for key in ("excess_ret_pct", "excess_pct", "ret_pct", "mean_pct"):
+            if v.get(key) is not None:
+                return float(v[key])
+        return None
+
+    ordered = sorted(
+        (int(k), float(val))
+        for k, v in (qs or {}).items()
+        if isinstance(v, dict) and (val := _qval(v)) is not None
+    )
+    if len(ordered) < 3:
+        return {"monotonic": False, "spearman_rho": None, "n_quintiles": len(ordered)}
+    ranks_q = [i + 1 for i in range(len(ordered))]
+    vals = [v for _, v in ordered]
+    # Rank values (1..n)
+    order_idx = sorted(range(len(vals)), key=lambda i: vals[i])
+    ranks_v = [0.0] * len(vals)
+    for r, idx in enumerate(order_idx, 1):
+        ranks_v[idx] = float(r)
+    n = len(vals)
+    d2 = sum((rq - rv) ** 2 for rq, rv in zip(ranks_q, ranks_v, strict=True))
+    rho = round(1.0 - (6.0 * d2) / (n * (n * n - 1)), 4)
+    strictly_mono = all(vals[i] <= vals[i + 1] for i in range(n - 1))
+    return {
+        "monotonic": strictly_mono,
+        "spearman_rho": rho,
+        "n_quintiles": n,
+    }

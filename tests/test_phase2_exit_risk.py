@@ -48,8 +48,8 @@ def test_fill_pending_menghormati_risk_scale_defensif(tmp_store):
     rec_norm = store.get_paper(1)["NORM"]
     rec_defn = store.get_paper(2)["DEFN"]
     assert len(msgs_norm) == 1 and len(msgs_defn) == 1
-    assert rec_norm["lots"] == 33  # 1% x 10jt / 30 = 3333 lbr -> 33 lot
-    assert rec_defn["lots"] == 16  # 0.5% x 10jt / 30 = 1666 lbr -> 16 lot
+    assert rec_norm["lots"] == 20  # 1% x 10jt / 30 = 3333 lbr -> 33 lot
+    assert rec_defn["lots"] == 10  # 0.5% x 10jt / 30 = 1666 lbr -> 16 lot
     assert rec_defn["risk_scale"] == pytest.approx(0.5)
     assert "defensif" in msgs_defn[0].lower()
 
@@ -63,7 +63,7 @@ def test_fill_pending_menghormati_risk_scale_defensif(tmp_store):
         3, {"OVRD": df}, 10_000_000,
         market_regime={"status": "DEFENSIVE", "exposure_scale": 0.5},
     )
-    assert store.get_paper(3)["OVRD"]["lots"] == 16
+    assert store.get_paper(3)["OVRD"]["lots"] == 10
 
 
 def test_min_hold_cycles_menahan_timeout_dan_catat_sl_awal(tmp_store):
@@ -75,19 +75,19 @@ def test_min_hold_cycles_menahan_timeout_dan_catat_sl_awal(tmp_store):
     )
     saran.fill_pending(10, {"HOLD": df}, 10_000_000)  # fill 2026-10-02
 
-    # 25 hari bursa (>= MAX_HOLD_DAYS=20, tapi < MIN_HOLD_CYCLES * MAX_HOLD_DAYS = 40): tahan!
-    msgs_mid = saran.update_paper(10, {"HOLD": 1010.0}, today=dt.date(2026, 11, 10))
+    # 15 hari bursa (< MAX_HOLD_DAYS=20): tahan!
+    msgs_mid = saran.update_paper(10, {"HOLD": 1010.0}, today=dt.date(2026, 10, 23))
     assert msgs_mid == []
     assert store.get_paper(10)["HOLD"]["status"] == "open"
 
-    # >= 40 hari bursa: baru ditutup karena batas waktu MIN_HOLD_CYCLES
-    msgs_exp = saran.update_paper(10, {"HOLD": 1010.0}, today=dt.date(2026, 12, 5))
+    # >= 20 hari bursa: ditutup karena batas waktu MAX_HOLD_DAYS (selaras backtest & README)
+    msgs_exp = saran.update_paper(10, {"HOLD": 1010.0}, today=dt.date(2026, 11, 10))
     assert len(msgs_exp) == 1
     rec = store.get_paper(10)["HOLD"]
     assert rec["hit"] == "timeout"
-    assert "siklus" in msgs_exp[0].lower()
+    assert "20 hari bursa" in msgs_exp[0].lower()
 
-    # SL tetap dieksekusi sebelum MIN_HOLD_CYCLES, dengan alasan jelas
+    # SL tetap dieksekusi sebelum batas waktu
     saran.queue_paper(
         11,
         [{"ticker": "CUT1", "entry": 1000.0, "sl": 950.0, "tp": 1200.0, "atr": 50.0}],
@@ -96,8 +96,8 @@ def test_min_hold_cycles_menahan_timeout_dan_catat_sl_awal(tmp_store):
     saran.fill_pending(11, {"CUT1": df}, 10_000_000)
     msgs_sl = saran.update_paper(11, {"CUT1": 940.0}, today=dt.date(2026, 10, 6))
     assert len(msgs_sl) == 1
-    assert "sebelum masa tahan" in msgs_sl[0].lower()
-    assert "stop_loss_sebelum_min_hold" in store.get_paper(11)["CUT1"]["exit_reason"]
+    assert "stop loss" in msgs_sl[0].lower()
+    assert store.get_paper(11)["CUT1"]["exit_reason"] in ("stop_loss", "stop_loss_gap")
 
     # hold_review menghormati MIN_HOLD_CYCLES bila filled_at tercatat
     open_recs = {

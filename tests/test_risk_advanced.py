@@ -73,7 +73,7 @@ def test_store_migrasi_v5_ke_v6_dan_batas_kustom(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "STORE_DB", str(db))
     store._ready_for = None
 
-    assert store.get_risk_limits(100) == (0.25, 0.40)
+    assert store.get_risk_limits(100) == (0.20, 0.40)
     pos, sec = store.set_risk_limits(100, 0.15, 0.30)
     assert (pos, sec) == (0.15, 0.30)
     assert store.get_risk_limits(100) == (0.15, 0.30)
@@ -81,8 +81,8 @@ def test_store_migrasi_v5_ke_v6_dan_batas_kustom(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         store.set_risk_limits(100, 0.35, 0.25)
 
-    assert store.set_risk_limits(100, None, None) == (0.25, 0.40)
-    assert store.get_risk_limits(100) == (0.25, 0.40)
+    assert store.set_risk_limits(100, None, None) == (0.20, 0.40)
+    assert store.get_risk_limits(100) == (0.20, 0.40)
 
     conn2 = sqlite3.connect(store.STORE_DB)
     try:
@@ -193,4 +193,4 @@ def test_handler_portofolio_batas_dan_inv_vol(monkeypatch, tmp_store):
 
     upd_reset = _Upd("/portofolio batas reset")
     asyncio.run(bot.cmd_portofolio(upd_reset, types.SimpleNamespace()))
-    assert store.get_risk_limits(888) == (0.25, 0.40)
+    assert store.get_risk_limits(888) == (0.20, 0.40)

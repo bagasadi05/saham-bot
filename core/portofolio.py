@@ -72,6 +72,7 @@ def summarize(
     rows: list[dict] = []
     value_sum = 0.0
     cost_sum = 0.0
+    cost_priced_sum = 0.0
     risk_sum = 0.0
     risk_known = False
     unpriced = 0
@@ -114,6 +115,7 @@ def summarize(
         }
         cost_sum += cost
         if close and close > 0:
+            cost_priced_sum += cost
             c_val = float(close)
             value = c_val * shares
             pnl_net = round(saran.pnl_pct(avg, c_val), 2) if avg > 0 else None
@@ -131,7 +133,8 @@ def summarize(
                 sl = round(saved_sl, 2)
                 sl_src = "eksekusi"
             elif atr and float(atr) > 0:
-                sl = float(saran.stop_price(c_val, float(atr)))
+                anchor = avg if avg > 0 else c_val
+                sl = float(saran.stop_price(anchor, float(atr)))
                 sl_src = "atr"
             else:
                 sl = None
@@ -147,7 +150,8 @@ def summarize(
             if saved_tp is not None:
                 row["tp"] = round(saved_tp, 2)
             elif atr and float(atr) > 0:
-                row["tp"] = float(saran.target_price(c_val, float(atr)))
+                anchor = avg if avg > 0 else c_val
+                row["tp"] = float(saran.target_price(anchor, float(atr)))
 
             if avg > 0:
                 atr_v = float(atr) if atr and float(atr) > 0 else avg * 0.03
@@ -221,14 +225,15 @@ def summarize(
         if ew not in warnings:
             warnings.append(ew)
 
-    pnl = value_sum - cost_sum
+    pnl = (value_sum - cost_priced_sum) if cost_priced_sum > 0 else 0.0
     return {
         "rows": rows,
         "n_positions": len(rows),
         "value": round(value_sum),
         "cost": round(cost_sum),
+        "cost_priced": round(cost_priced_sum),
         "pnl": round(pnl),
-        "pnl_pct": _pct(pnl, cost_sum),
+        "pnl_pct": _pct(pnl, cost_priced_sum) if cost_priced_sum > 0 else None,
         "risk": round(risk_sum) if risk_known else None,
         "risk_pct": (_pct(risk_sum, value_sum) if risk_known else None),
         "sectors": sector_rows,

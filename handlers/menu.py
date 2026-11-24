@@ -8,6 +8,8 @@ kompatibel dengan monkeypatch tes pada `bot`.
 """
 from __future__ import annotations
 
+from core import syariah
+
 import asyncio
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -102,11 +104,16 @@ def _render_menu_text(deps, mode: str) -> str:
         return deps._menu_text()
 
 
-def _render_main_menu_markup(deps, mode: str) -> InlineKeyboardMarkup:
+def _render_main_menu_markup(
+    deps, mode: str, *, syariah_only: bool = False
+) -> InlineKeyboardMarkup:
     try:
-        return deps.main_menu_markup(mode=mode)
+        return deps.main_menu_markup(mode=mode, syariah_only=syariah_only)
     except TypeError:
-        return deps.main_menu_markup()
+        try:
+            return deps.main_menu_markup(mode=mode)
+        except TypeError:
+            return deps.main_menu_markup()
 
 
 def menu_text(mode: str = "pemula") -> str:
@@ -135,7 +142,7 @@ def menu_text(mode: str = "pemula") -> str:
     )
 
 
-def main_menu_markup(mode: str = "pemula") -> InlineKeyboardMarkup:
+def main_menu_markup(mode: str = "pemula", syariah_only: bool = False) -> InlineKeyboardMarkup:
     if _safe_mode(mode) == "expert":
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("🛡️ Cek 6 Poin", callback_data="pick:cek"),
@@ -152,7 +159,9 @@ def main_menu_markup(mode: str = "pemula") -> InlineKeyboardMarkup:
              InlineKeyboardButton("👀 Pantau", callback_data="sub:pantau")],
             [InlineKeyboardButton("🧪 Riset & Pro", callback_data="sub:pro"),
              InlineKeyboardButton("📋 Semua Perintah", callback_data="sub:allcmd")],
-            [InlineKeyboardButton("🎚️ Level: Expert (Ganti)", callback_data="mode:menu")],
+            [InlineKeyboardButton("🎚️ Level: Expert", callback_data="mode:menu"),
+             InlineKeyboardButton("☪️ Saham: Syariah" if syariah_only else "🌐 Saham: Semua",
+                                  callback_data="syariah:menu")],
         ])
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🧭 Pandu Aku Langkah demi Langkah", callback_data="guide:start")],
@@ -190,6 +199,35 @@ def mode_menu_markup(cur_mode: str = "pemula") -> InlineKeyboardMarkup:
         [InlineKeyboardButton(lbl_pemula, callback_data="mode:set:pemula"),
          InlineKeyboardButton(lbl_expert, callback_data="mode:set:expert")],
         [InlineKeyboardButton("🧭 Panduan Bertahap (Tahap 1→5)", callback_data="onboard:s1")],
+        [InlineKeyboardButton("☪️ Filter Saham Syariah vs Biasa", callback_data="syariah:menu")],
+        [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
+    ])
+
+
+def syariah_text(enabled: bool = False) -> str:
+    meta = syariah.metadata()
+    status = "☪️ Saham Syariah Saja (ISSI)" if enabled else "🌐 Semua Saham (Biasa + Syariah)"
+    return (
+        "☪️ <b>Filter Jenis Saham (Syariah vs Biasa)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"Aktif saat ini: <b>{status}</b>\n\n"
+        f"☪️ <b>Saham Syariah Saja</b> — menyaring <code>/sinyal</code>, <code>/saran</code>, "
+        f"dan <code>/paket</code> hanya ke konstituen <b>ISSI / DES OJK</b> ({meta['count']} emiten, "
+        f"acuan <code>{esc(meta['announcement'])}</code> efektif {esc(meta['effective_date'])}).\n"
+        "🌐 <b>Semua Saham (Biasa)</b> — menampilkan seluruh emiten BEI termasuk perbankan konvensional.\n\n"
+        "• Cek status satu emiten: <code>/syariah cek TLKM</code> atau <code>/syariah cek BBCA</code>\n"
+        "• Ganti cepat: <code>/syariah on</code> atau <code>/syariah off</code>\n\n"
+        "<blockquote>ℹ️ DES OJK direview tiap Mei &amp; November. Selalu pastikan status syariah "
+        "terbaru di aplikasi sekuritas syariahmu sebelum transaksi.</blockquote>"
+    )
+
+
+def syariah_menu_markup(enabled: bool = False) -> InlineKeyboardMarkup:
+    lbl_on = "✅ ☪️ Syariah Saja (Aktif)" if enabled else "☪️ Saham Syariah Saja"
+    lbl_off = "✅ 🌐 Semua Saham (Aktif)" if not enabled else "🌐 Semua Saham (Biasa)"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(lbl_on, callback_data="syariah:set:on"),
+         InlineKeyboardButton(lbl_off, callback_data="syariah:set:off")],
         [InlineKeyboardButton("🏠 Menu Utama", callback_data="menu")],
     ])
 
@@ -884,11 +922,12 @@ def _onboard_tick_markup(
 
 async def _edit_current_menu(msg, chat_id: int, deps) -> None:
     mode = await asyncio.to_thread(store.get_user_mode, chat_id)
+    syariah_only = await asyncio.to_thread(store.get_syariah_mode, chat_id)
     await deps._safe_edit(
         msg,
         _render_menu_text(deps, mode),
         parse_mode=ParseMode.HTML,
-        reply_markup=_render_main_menu_markup(deps, mode),
+        reply_markup=_render_main_menu_markup(deps, mode, syariah_only=syariah_only),
     )
 
 
@@ -1025,6 +1064,41 @@ async def menu_callback(update: Update, ctx, deps):
             return
         await deps._safe_edit(
             msg, "❌ Tombol level menu tidak dikenal.", reply_markup=deps.home_markup(),
+        )
+        return
+
+    if cb_data.startswith("syariah:"):
+        deps._pending_clear(chat_id)
+        sub_sy = cb_data.split(":", 1)[1]
+        if sub_sy == "menu":
+            cur_sy = await asyncio.to_thread(store.get_syariah_mode, chat_id)
+            await deps._safe_edit(
+                msg,
+                syariah_text(cur_sy),
+                parse_mode=ParseMode.HTML,
+                reply_markup=syariah_menu_markup(cur_sy),
+            )
+            return
+        if sub_sy in ("set:on", "set:off"):
+            target_sy = sub_sy == "set:on"
+            saved_sy = await asyncio.to_thread(store.set_syariah_mode, chat_id, target_sy)
+            banner = (
+                "☪️ <b>Filter Saham Syariah AKTIF!</b>\n"
+                "Sekarang <code>/sinyal</code>, <code>/saran</code>, dan <code>/paket</code> "
+                "hanya menampilkan emiten ISSI / DES OJK.\n\n"
+                if saved_sy
+                else "🌐 <b>Mode Semua Saham (Biasa) AKTIF!</b>\n"
+                "Sekarang seluruh emiten BEI (syariah &amp; non-syariah) ditampilkan.\n\n"
+            )
+            await deps._safe_edit(
+                msg,
+                banner + syariah_text(saved_sy),
+                parse_mode=ParseMode.HTML,
+                reply_markup=syariah_menu_markup(saved_sy),
+            )
+            return
+        await deps._safe_edit(
+            msg, "❌ Tombol filter syariah tidak dikenal.", reply_markup=deps.home_markup(),
         )
         return
 

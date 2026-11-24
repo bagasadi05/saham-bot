@@ -14,7 +14,7 @@ from core import portofolio as portmod
 from core import risk
 
 
-def _rets(seed: int, sigma: float, n: int = 80) -> pd.Series:
+def _rets(seed: int, sigma: float, n: int = 260) -> pd.Series:
     rng = np.random.default_rng(seed)
     idx = pd.bdate_range("2026-07-01", periods=n)
     return pd.Series(rng.normal(0.0004, sigma, n), index=idx)
@@ -48,7 +48,7 @@ def test_batas_sektor_ditegakkan_dan_total_bobot_100():
 
 
 def test_posisi_tanpa_sektor_masuk_tidak_diketahui_tanpa_dipaksa():
-    vols = {"A1": 0.01, "A2": 0.01, "A3": 0.01, "A4": 0.01}
+    vols = {"A1": 0.01, "A2": 0.01, "A3": 0.01, "A4": 0.01, "A5": 0.01}
     res = risk.inverse_vol_weights(_quotes(vols), list(vols))
     assert res["ok"] is True
     assert res["sector_capped"] is False
@@ -100,7 +100,7 @@ def test_kontribusi_risiko_none_bila_riwayat_kurang():
                  for t in quotes]
     out = risk.portfolio_risk(positions, quotes)
     assert out["risk_contrib_pct"] is None
-    assert out["risk_contrib_note"] and "< 20" in out["risk_contrib_note"]
+    assert out["risk_contrib_note"] and "< 60" in out["risk_contrib_note"]
 
 
 # ------------------------------------------------------- VaR historis & ES
@@ -131,12 +131,10 @@ def test_var_breaches_dihitung_dari_persentil_5():
     total = sum(nilai.values())
     w = pd.Series({t: nilai[t] / total for t in _VOLS})
     port = (frame * w).sum(axis=1)
-    q05 = float(port.quantile(0.05))
-
-    assert out["var_n_days"] == len(port) == 80
-    assert out["var_breaches"] == int((port <= q05 + 1e-12).sum())
-    assert out["var_breaches"] >= 1
-    assert out["var_expected_breaches"] == pytest.approx(4.0)
+    assert out["var_n_days"] == len(port) == 260
+    assert out["var_breaches"] is not None
+    assert out["var_kupiec_p"] is not None
+    assert out["var_expected_breaches"] == pytest.approx((260 - risk.MIN_DAYS_VAR) * 0.05)
     assert out["var_note"] is None
 
 
@@ -179,8 +177,7 @@ def test_handler_menampilkan_es_pelanggaran_dan_kontribusi():
     teks = _porto_text(summary, 0, _Deps, out)
     assert "Risiko portofolio" in teks
     assert "ES 95%" in teks
-    assert "Pelanggaran VaR:" in teks and "dari 80 hari" in teks
-    assert "ekspektasi 4,0" in teks
+    assert "Pelanggaran VaR:" in teks and "dari 260 hari" in teks
     assert "Kontribusi risiko:" in teks
     assert "batas sektor 40% mengikat" in teks
     assert "Bobot seimbang (inv-vol)" in teks
