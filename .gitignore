@@ -35,6 +35,10 @@ htmlcov/
 # skill pihak ketiga lokal (skill repo resmi: .agents/skills/idx-*)
 .agents/skills/alphaear-*/
 
+# artefak build aplikasi desktop Windows
+build/
+dist/
+
 !data/idx_syariah.json
 !data/regime_eval.json
 !data/lgbm_expanded_20d.json
