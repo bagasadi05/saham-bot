@@ -171,3 +171,26 @@ def test_sinyal_filters_syariah_rows(tmp_store, monkeypatch):
     assert "TLKM" in out
     assert "BBCA" not in out
     assert "HMSP" not in out
+
+
+def test_scan_summary_filters_syariah(monkeypatch):
+    import bot
+
+    sample_rows = [
+        {"ticker": "BBCA.JK", "signal": "BELI", "rel_pct": 95, "close": 9000, "ret1d": 1.0, "ret20d": 5.0},
+        {"ticker": "TLKM.JK", "signal": "BELI", "rel_pct": 90, "close": 3100, "ret1d": 0.8, "ret20d": 4.0},
+        {"ticker": "HMSP.JK", "signal": "JUAL", "rel_pct": 10, "close": 700, "ret1d": -1.0, "ret20d": -5.0},
+    ]
+
+    def _fake_load(sig=None):
+        return sample_rows if sig is None else [r for r in sample_rows if r["signal"] == sig]
+
+    monkeypatch.setattr(store, "load_market_scan", _fake_load)
+    res = {"meta": {"ok": 3, "universe": 3, "elapsed_sec": 1}, "counts": {"BELI": 2, "JUAL": 1, "TAHAN": 0}}
+    out = asyncio.run(bot._scan_summary_text(res, "✅ <b>Scan pasar selesai</b>", syariah_only=True))
+    assert "Mode Syariah aktif" in out
+    assert "TLKM" in out
+    assert "BBCA" not in out
+    assert "HMSP" not in out
+    assert "BELI <b>1</b>" in out
+    assert "JUAL <b>0</b>" in out

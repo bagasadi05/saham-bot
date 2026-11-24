@@ -876,15 +876,30 @@ async def run_scan_job(ctx: ContextTypes.DEFAULT_TYPE, deps):
     res = None
     try:
         res = await scan_with_guard(True, deps, owns_flag=True)
+        syariah_only = bool(await asyncio.to_thread(store.get_syariah_mode, chat_id))
         kval = {}
         if res is not None:
-            top = (await asyncio.to_thread(store.load_market_scan,
-                                           "BELI"))[:5]
+            top_rows = await asyncio.to_thread(store.load_market_scan, "BELI")
+            if syariah_only:
+                top_rows = syariah.filter_rows(top_rows)
+            top = top_rows[:5]
             kval = await deps._kualitas_map([r["ticker"] for r in top])
-        txt = (await deps._scan_summary_text(res, "✅ <b>Scan pasar selesai</b>", kval)
-               if res is not None
-               else "⏳ Scan lain sedang berjalan — permintaan ini dilewati. "
-                    "Coba /scan lagi setelah yang sekarang selesai.")
+        try:
+            txt = (
+                await deps._scan_summary_text(
+                    res, "✅ <b>Scan pasar selesai</b>", kval, syariah_only=syariah_only
+                )
+                if res is not None
+                else "⏳ Scan lain sedang berjalan — permintaan ini dilewati. "
+                     "Coba /scan lagi setelah yang sekarang selesai."
+            )
+        except TypeError:
+            txt = (
+                await deps._scan_summary_text(res, "✅ <b>Scan pasar selesai</b>", kval)
+                if res is not None
+                else "⏳ Scan lain sedang berjalan — permintaan ini dilewati. "
+                     "Coba /scan lagi setelah yang sekarang selesai."
+            )
     except Exception as exc:
         log.exception("scan pasar gagal")
         txt = (f"❌ Scan gagal: <code>{esc(str(exc)[:300])}</code>\n"
@@ -939,11 +954,21 @@ async def do_scan(update: Update, args: list[str], job_queue, deps,
     today = marketcal.now_wib().date().isoformat()
     if not force and (meta.get("scanned_at") or "")[:10] == today:
         counts = await asyncio.to_thread(store.market_scan_counts)
-        await deps.reply_long(update.effective_message,
-                         await deps._scan_summary_text({"cached": True,
-                                             "meta": meta,
-                                             "counts": counts},
-                                            "📡 <b>Screener pasar</b>"),
+        syariah_only = bool(
+            await asyncio.to_thread(store.get_syariah_mode, update.effective_chat.id)
+        )
+        try:
+            summary = await deps._scan_summary_text(
+                {"cached": True, "meta": meta, "counts": counts},
+                "📡 <b>Screener pasar</b>",
+                syariah_only=syariah_only,
+            )
+        except TypeError:
+            summary = await deps._scan_summary_text(
+                {"cached": True, "meta": meta, "counts": counts},
+                "📡 <b>Screener pasar</b>",
+            )
+        await deps.reply_long(update.effective_message, summary,
                          reply_markup=_scan_followup_markup())
         return
     if deps._screener_running:

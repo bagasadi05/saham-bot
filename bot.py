@@ -17,6 +17,8 @@ Perintah:
 """
 from __future__ import annotations
 
+from core import syariah
+
 import asyncio
 import functools
 import html
@@ -1172,25 +1174,43 @@ async def cmd_pasar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def _scan_summary_text(res: dict, intro: str,
-                             kval: dict | None = None) -> str:
+                             kval: dict | None = None,
+                             *, syariah_only: bool = False) -> str:
     m = res.get("meta") or {}
     counts = res.get("counts") or {}
+    sy_note = (
+        "☪️ <i>Mode Syariah aktif — hasil disaring ke konstituen ISSI/DES OJK.</i>\n"
+        if syariah_only
+        else ""
+    )
+    if syariah_only:
+        all_sy = syariah.filter_rows(await asyncio.to_thread(store.load_market_scan))
+        counts = {"BELI": 0, "JUAL": 0, "TAHAN": 0}
+        for row in all_sy:
+            sig = str(row.get("signal") or "")
+            if sig in counts:
+                counts[sig] += 1
     if res.get("cached"):
-        return (f"{intro}\n\n<i>Snapshot hari ini sudah ada — tidak scan ulang.</i>\n"
+        return (f"{intro}\n{sy_note}\n<i>Snapshot hari ini sudah ada — tidak scan ulang.</i>\n"
                 f"{esc(_scan_when(m))}\n\n"
                 f"🟢 BELI <b>{counts.get('BELI', 0)}</b> · "
                 f"🔴 JUAL <b>{counts.get('JUAL', 0)}</b> · "
                 f"⚪ TAHAN <b>{counts.get('TAHAN', 0)}</b>\n\n"
                 "Lihat: <code>/sinyal</code>")
     # SQL sudah ORDER BY rel_pct DESC, ticker — tidak perlu sort ulang.
-    buys = (await asyncio.to_thread(store.load_market_scan, "BELI"))[:5]
-    sells = (await asyncio.to_thread(store.load_market_scan, "JUAL"))[:5]
+    raw_buys = await asyncio.to_thread(store.load_market_scan, "BELI")
+    raw_sells = await asyncio.to_thread(store.load_market_scan, "JUAL")
+    if syariah_only:
+        raw_buys = syariah.filter_rows(raw_buys)
+        raw_sells = syariah.filter_rows(raw_sells)
+    buys = raw_buys[:5]
+    sells = raw_sells[:5]
     skipped = int(m.get("skipped") or 0)
     failed = int(m.get("failed") or 0)
     skipped_stale = int(m.get("skipped_stale") or 0)
     skipped_quality = int(m.get("skipped_quality") or 0)
     quality_flagged = int(m.get("quality_flagged") or 0)
-    out = [intro, "",
+    out = ([intro, sy_note.rstrip("\n"), ""] if sy_note else [intro, ""]) + [
            f"✅ <b>{m.get('ok', '?')}</b> emiten dianalisis dari "
            f"{m.get('universe', '?')} kode universe "
            f"({m.get('elapsed_sec', '?')} detik).",
