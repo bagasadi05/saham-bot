@@ -36,3 +36,7 @@ htmlcov/
 .agents/skills/alphaear-*/
 
 !data/idx_syariah.json
+!data/regime_eval.json
+!data/lgbm_expanded_20d.json
+!data/lgbm_syariah_5d.json
+!data/quality_combo.json
