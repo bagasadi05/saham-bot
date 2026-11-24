@@ -29,6 +29,7 @@ import json
 import math
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 import time
 
 import numpy as np
@@ -58,52 +59,97 @@ def price_cache(ticker: str, period: str) -> pd.DataFrame | None:
     return df
 
 
-def build_dataset(tickers: list[str], period: str, horizon: int) -> pd.DataFrame:
-    rows = []
-    for n, t in enumerate(tickers, 1):
-        df = price_cache(t, period)
+def _build_ticker_frame(t: str, df: pd.DataFrame, horizon: int) -> pd.DataFrame | None:
+    """Hitung indikator & fitur secara tervektorisasi (10-20x lebih cepat dari iloc loop)."""
+    ind = analysis.compute_indicators(df)
+    n_ind = len(ind)
+    if n_ind <= WARMUP:
+        return None
+    volat20 = ind["ret1d"].rolling(20).std().to_numpy(dtype=float) / 100.0
+    close = ind["close"].to_numpy(dtype=float)
+    fwd = np.full(n_ind, np.nan, dtype=float)
+    if n_ind > horizon:
+        fwd[:-horizon] = close[horizon:] / close[:-horizon] - 1.0
+
+    valid_idx = np.arange(WARMUP, n_ind)
+    valid_idx = valid_idx[np.isfinite(fwd[valid_idx])]
+    if len(valid_idx) == 0:
+        return None
+
+    # to_dict("records") jauh lebih cepat dibanding ind.iloc[i] berulang
+    recs = ind.to_dict("records")
+    scores = np.empty(len(valid_idx), dtype=float)
+    ratings: list[str] = []
+    for k, i in enumerate(valid_idx):
+        sc = analysis.score_from_rows(recs[i], recs[i - 1])
+        scores[k] = float(sc["pct"])
+        ratings.append(sc["rating"])
+
+    def _arr(col: str) -> np.ndarray:
+        return ind[col].to_numpy(dtype=float)[valid_idx]
+
+    c_v = close[valid_idx]
+    sma20 = _arr("sma20")
+    sma50 = _arr("sma50")
+    sma200 = _arr("sma200")
+    macd_h = _arr("macd_hist")
+    rsi14 = _arr("rsi14")
+    high20 = _arr("high20")
+    vol = _arr("volume")
+    vol_avg20 = _arr("vol_avg20")
+    ret20d = _arr("ret20d")
+    ret1d = _arr("ret1d")
+    atr14 = _arr("atr14")
+    fwd_v = fwd[valid_idx]
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f_vol = np.where(np.isfinite(vol_avg20) & (vol_avg20 != 0), vol / vol_avg20 - 1.0, np.nan)
+        out = pd.DataFrame({
+            "date": ind.index[valid_idx].normalize(),
+            "ticker": t,
+            "close": c_v,
+            "score": scores,
+            "rating": ratings,
+            "fwd": fwd_v,
+            "fwd_net": fwd_v - ROUND_TRIP_COST,
+            "f_close_sma50": c_v / sma50 - 1.0,
+            "f_close_sma200": c_v / sma200 - 1.0,
+            "f_sma20_sma50": sma20 / sma50 - 1.0,
+            "f_sma50_sma200": sma50 / sma200 - 1.0,
+            "f_macd": macd_h / c_v,
+            "f_rsi": (rsi14 - 60.0) / 20.0,
+            "f_breakout": c_v / high20 - 1.0,
+            "f_volume": f_vol,
+            "f_mom20": ret20d / 100.0,
+            "f_mom1": ret1d / 100.0,
+            "f_volat": volat20[valid_idx],
+            "f_atr": atr14 / c_v,
+        })
+    return out
+
+
+def build_dataset(tickers: list[str], period: str, horizon: int,
+                  max_workers: int = 8) -> pd.DataFrame:
+    """Bangun dataset riset dengan unduhan paralel & ekstraksi fitur tervektorisasi."""
+    total = len(tickers)
+    workers = max(1, min(int(max_workers), total)) if total else 1
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            fetched = list(pool.map(lambda tk: (tk, price_cache(tk, period)), tickers))
+    else:
+        fetched = [(tk, price_cache(tk, period)) for tk in tickers]
+
+    frames: list[pd.DataFrame] = []
+    for n, (t, df) in enumerate(fetched, 1):
         if df is None:
             continue
-        ind = analysis.compute_indicators(df)
-        ind["volat20"] = ind["ret1d"].rolling(20).std() / 100
-        close = ind["close"].to_numpy(dtype=float)
-        fwd = np.full(len(ind), np.nan)
-        fwd[:-horizon] = close[horizon:] / close[:-horizon] - 1
-
-        for i in range(WARMUP, len(ind)):
-            r = ind.iloc[i]
-            if not np.isfinite(fwd[i]):
-                continue
-            sc = analysis.score_from_rows(r, ind.iloc[i - 1])
-            rows.append({
-                "date": ind.index[i].normalize(),
-                "ticker": t,
-                "close": float(r["close"]),
-                "score": float(sc["pct"]),
-                "rating": sc["rating"],
-                "fwd": float(fwd[i]),
-                # forward return bersih-biaya pulang-pergi BEI (0,40%)
-                "fwd_net": float(fwd[i]) - ROUND_TRIP_COST,
-                # fitur kontinu (kandidat skor v2)
-                "f_close_sma50": float(r["close"] / r["sma50"] - 1) if pd.notna(r["sma50"]) else np.nan,
-                "f_close_sma200": float(r["close"] / r["sma200"] - 1) if pd.notna(r["sma200"]) else np.nan,
-                "f_sma20_sma50": float(r["sma20"] / r["sma50"] - 1) if pd.notna(r["sma50"]) else np.nan,
-                "f_sma50_sma200": float(r["sma50"] / r["sma200"] - 1) if pd.notna(r["sma200"]) else np.nan,
-                "f_macd": float(r["macd_hist"] / r["close"]) if pd.notna(r["macd_hist"]) else np.nan,
-                "f_rsi": (float(r["rsi14"]) - 60.0) / 20.0 if pd.notna(r["rsi14"]) else np.nan,
-                "f_breakout": float(r["close"] / r["high20"] - 1) if pd.notna(r["high20"]) else np.nan,
-                "f_volume": float(r["volume"] / r["vol_avg20"] - 1) if pd.notna(r["vol_avg20"]) and r["vol_avg20"] else np.nan,
-                "f_mom20": float(r["ret20d"]) / 100 if pd.notna(r["ret20d"]) else np.nan,
-                "f_mom1": float(r["ret1d"]) / 100 if pd.notna(r["ret1d"]) else np.nan,
-                "f_volat": float(r["volat20"]) if pd.notna(r["volat20"]) else np.nan,
-                "f_atr": float(r["atr14"] / r["close"]) if pd.notna(r["atr14"]) else np.nan,
-            })
-        print(f"  [{n}/{len(tickers)}] {t}: {len(ind)} baris")
-        time.sleep(0.25)
-    df = pd.DataFrame(rows)
-    if df.empty:
+        part = _build_ticker_frame(t, df, horizon)
+        if part is not None and not part.empty:
+            frames.append(part)
+        print(f"  [{n}/{total}] {t}: {len(df)} baris", flush=True)
+    if not frames:
         raise SystemExit("dataset kosong — cek koneksi/universum")
-    return df
+    return pd.concat(frames, ignore_index=True)
 
 
 # ---------------------------------------------------------------- statistik
