@@ -6,38 +6,38 @@
     "always_100": {
       "n_periods": 112,
       "avg_exposure_pct": 100.0,
-      "mean_period_ret_pct": 1.699,
-      "ann_return_pct": 18.33,
+      "mean_period_ret_pct": 1.707,
+      "ann_return_pct": 18.45,
       "max_drawdown_pct": -48.57,
-      "sharpe": 0.716,
-      "calmar": 0.377
+      "sharpe": 0.72,
+      "calmar": 0.38
     },
     "sma50_200_half": {
       "n_periods": 112,
       "avg_exposure_pct": 95.5,
-      "mean_period_ret_pct": 1.639,
-      "ann_return_pct": 17.97,
+      "mean_period_ret_pct": 1.647,
+      "ann_return_pct": 18.09,
       "max_drawdown_pct": -44.2,
-      "sharpe": 0.73,
-      "calmar": 0.407
+      "sharpe": 0.734,
+      "calmar": 0.409
     },
     "vol_breadth_3tier": {
       "n_periods": 112,
       "avg_exposure_pct": 76.8,
-      "mean_period_ret_pct": 1.282,
-      "ann_return_pct": 15.09,
+      "mean_period_ret_pct": 1.286,
+      "ann_return_pct": 15.15,
       "max_drawdown_pct": -33.16,
-      "sharpe": 0.787,
-      "calmar": 0.455
+      "sharpe": 0.789,
+      "calmar": 0.457
     },
     "adaptive_dd_guard": {
       "n_periods": 112,
       "avg_exposure_pct": 76.1,
-      "mean_period_ret_pct": 1.276,
-      "ann_return_pct": 15.03,
+      "mean_period_ret_pct": 1.28,
+      "ann_return_pct": 15.09,
       "max_drawdown_pct": -33.7,
-      "sharpe": 0.787,
-      "calmar": 0.446
+      "sharpe": 0.789,
+      "calmar": 0.448
     }
   }
 }
