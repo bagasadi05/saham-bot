@@ -1,0 +1,28 @@
+{
+  "universe": "expanded",
+  "n_evaluated": 0,
+  "all_stocks": {
+    "n": 0,
+    "pass_rate_pct": 0.0,
+    "avg_ret20d_all": null,
+    "avg_ret20d_pass": null
+  },
+  "top_quintiles_q4_q5": {
+    "n": 0,
+    "pass_rate_pct": 0.0,
+    "avg_ret20d_all": null,
+    "avg_ret20d_pass": null
+  },
+  "syariah_all": {
+    "n": 0,
+    "pass_rate_pct": 0.0,
+    "avg_ret20d_all": null,
+    "avg_ret20d_pass": null
+  },
+  "syariah_top_quintiles_q4_q5": {
+    "n": 0,
+    "pass_rate_pct": 0.0,
+    "avg_ret20d_all": null,
+    "avg_ret20d_pass": null
+  }
+}

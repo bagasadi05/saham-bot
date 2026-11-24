@@ -29,17 +29,17 @@ import pandas as pd
 # Bobot rata-rata walk-forward CV 2022–2026 (`data/validation.json` → weights).
 # Nama fitur = kunci internal (tanpa prefiks `f_`).
 WEIGHTS = {
-    "close_sma50": -0.02034,
-    "rsi": 0.0186,
+    "close_sma50": -0.02032,
+    "rsi": 0.01862,
     "sma50_sma200": 0.01126,
     "breakout": -0.01084,
     "mom20": 0.00748,
     "macd": 0.00706,
     "mom1": -0.00668,
-    "volat": -0.006,
+    "volat": -0.00602,
     "close_sma200": -0.00578,
     "volume": 0.00532,
-    "sma20_sma50": 0.00392,
+    "sma20_sma50": 0.0039,
     "atr": 0.00054,
 }
 
@@ -47,11 +47,11 @@ WEIGHTS = {
 # Sumber: `data/validation.json` ("quintiles") & `temp/research/evaluation.md`.
 # Ditampilkan sebagai konteks deskriptif, bukan janji.
 OOS_QUINTILES = {
-    1: {"excess_pct": -0.267, "win_rate": 43.5, "n": 9883},
-    2: {"excess_pct": -0.342, "win_rate": 43.8, "n": 9740},
-    3: {"excess_pct": -0.105, "win_rate": 45.0, "n": 9524},
-    4: {"excess_pct": 0.328, "win_rate": 47.5, "n": 9740},
-    5: {"excess_pct": 0.384, "win_rate": 47.2, "n": 9849},
+    1: {"excess_pct": -0.266, "win_rate": 43.5, "n": 9883},
+    2: {"excess_pct": -0.34, "win_rate": 43.8, "n": 9740},
+    3: {"excess_pct": -0.11, "win_rate": 45.0, "n": 9524},
+    4: {"excess_pct": 0.326, "win_rate": 47.4, "n": 9740},
+    5: {"excess_pct": 0.387, "win_rate": 47.3, "n": 9849},
 }
 
 MIN_UNIVERSE = 8      # di bawah ini statistik cross-sectional tidak berarti
