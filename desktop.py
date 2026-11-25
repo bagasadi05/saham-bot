@@ -299,6 +299,25 @@ SECTOR_ALIAS_IDX_IC = {
 }
 
 
+def format_plan_levels(plan: Any) -> dict[str, str]:
+    """Format level rencana beli (entry/SL/TP/lot/biaya/risiko) untuk kartu ringkasan.
+
+    ``plan`` dengan ``ok=False``/bukan dict menghasilkan semua ``"-"`` (jujur: tidak ada angka).
+    """
+    keys = ("entry", "pullback", "sl", "tp", "lots", "cost", "risk")
+    if not isinstance(plan, dict) or not plan.get("ok"):
+        return {k: "-" for k in keys}
+    return {
+        "entry": _fmt_num(plan.get("entry"), 0),
+        "pullback": _fmt_num(plan.get("entry_pullback"), 0),
+        "sl": f"{_fmt_num(plan.get('sl'), 0)} ({_fmt_pct(plan.get('sl_dist_pct'))})",
+        "tp": f"{_fmt_num(plan.get('tp'), 0)} (RR {float(plan.get('rr') or 0.0):.2f}x)",
+        "lots": _fmt_num(plan.get("lots"), 0),
+        "cost": _fmt_rp(plan.get("buy_cost")),
+        "risk": f"{_fmt_rp(plan.get('max_loss'))} ({_fmt_pct(plan.get('max_loss_pct'), signed=False)})",
+    }
+
+
 def match_sector_option(name: str, options: list[str]) -> str | None:
     """Cocokkan nama sektor grafik IDX-IC ke opsi filter sinyal (alias, exact, lalu substring)."""
     n = str(name or "").strip()
@@ -1256,10 +1275,13 @@ class SahamBotDesktopApp:
             log.exception("Gagal menyimpan state UI desktop")
 
     def _update_tab_badges(self) -> None:
-        """Badge counter pada tab Watchlist & Sinyal sesuai jumlah baris terakhir."""
+        """Badge counter pada tab sesuai jumlah data terakhir (Watchlist/Sinyal/Paket/Portofolio)."""
         try:
             self.notebook.tab(1, text=tab_label("⭐ Watchlist", len(self._last_watch_rows)))
             self.notebook.tab(2, text=tab_label("🎯 Sinyal Pasar", len(self._last_sinyal_rows)))
+            plans = (self._last_paket_res or {}).get("plans") or []
+            self.notebook.tab(3, text=tab_label("📦 Paket Beli", len(plans)))
+            self.notebook.tab(4, text=tab_label("💼 Portofolio", len(self._last_port_rows)))
         except Exception:
             pass
 
@@ -1345,6 +1367,16 @@ class SahamBotDesktopApp:
                 widget.insert("end", text, tags)
             widget.insert("end", "\n", (base,))
         widget.configure(state="disabled")
+
+    def _set_plan_cards(self, levels: dict[str, str]) -> None:
+        """Tampilkan kartu ringkasan rencana beli (Entry/SL/TP/Lot/Biaya/Risiko) di tab Cek."""
+        get = levels.get
+        _set_kpi(self.pc_entry, get("entry", "-"), f"pullback {get('pullback', '-')}", color=THEME["accent"])
+        _set_kpi(self.pc_sl, get("sl", "-"), "batas rugi jika harga turun ke SL", color=THEME["red"])
+        _set_kpi(self.pc_tp, get("tp", "-"), "target ambil untung (TP)", color=THEME["green"])
+        _set_kpi(self.pc_lots, get("lots", "-"), "1 lot = 100 saham", color=THEME["fg"])
+        _set_kpi(self.pc_cost, get("cost", "-"), "entry × lot × 100", color=THEME["fg"])
+        _set_kpi(self.pc_risk, get("risk", "-"), "kehilangan maks bila SL tersentuh", color=THEME["amber"])
 
     # ------------------------------------------------------------------
     # Semua fitur saling terhubung: lompat lintas tab & klik grafik sektor
@@ -1986,7 +2018,10 @@ class SahamBotDesktopApp:
 
         self.lbl_cek_header = tk.Label(
             self.tab_cek,
-            text="Pilih atau masukkan kode emiten (contoh: BBCA, TLKM, BBRI) lalu tekan Cek Lengkap.",
+            text=(
+                "Masukkan kode emiten (contoh: BBCA, TLKM, BBRI) lalu tekan Cek Lengkap — "
+                "ringkasan Entry/SL/TP muncul di kartu di bawah. Daftar rekomendasi beli: tab 📦 Paket Beli."
+            ),
             bg=THEME["card"],
             fg=THEME["fg"],
             font=FONT_UI_BOLD,
@@ -1997,6 +2032,22 @@ class SahamBotDesktopApp:
             highlightthickness=1,
         )
         self.lbl_cek_header.pack(fill="x", padx=8, pady=(0, 6))
+
+        # Kartu ringkasan RENCANA BELI (Entry/SL/TP/Lot/Biaya/Risiko) langsung terlihat
+        plan_row = tk.Frame(self.tab_cek, bg=THEME["bg"], padx=8)
+        plan_row.pack(fill="x", pady=(0, 6))
+        for c in range(6):
+            plan_row.columnconfigure(c, weight=1, uniform="plancard")
+        self.pc_entry = _make_kpi_card(plan_row, "🎯 Entry")
+        self.pc_sl = _make_kpi_card(plan_row, "🛡️ Stop-Loss")
+        self.pc_tp = _make_kpi_card(plan_row, "🏁 Target TP")
+        self.pc_lots = _make_kpi_card(plan_row, "Lot")
+        self.pc_cost = _make_kpi_card(plan_row, "Est. Biaya")
+        self.pc_risk = _make_kpi_card(plan_row, "Risiko ke SL")
+        for idx, card in enumerate(
+            (self.pc_entry, self.pc_sl, self.pc_tp, self.pc_lots, self.pc_cost, self.pc_risk)
+        ):
+            card["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
 
         body = tk.PanedWindow(
             self.tab_cek, orient="horizontal", bg=THEME["bg"], sashwidth=6, bd=0,
@@ -2733,6 +2784,7 @@ class SahamBotDesktopApp:
     def _apply_paket(self, data: dict[str, Any]) -> None:
         self._last_paket_res = data
         plans = data.get("plans") or []
+        self._update_tab_badges()
         scale = float(data.get("scale") or 1.0)
         modal = float(data.get("modal") or 0.0)
         alloc = float(data.get("total_alloc_rp") or 0.0)
@@ -2806,6 +2858,7 @@ class SahamBotDesktopApp:
         summary = data.get("summary") or {}
         self._last_port_rows = rows
         self._last_port_summary = summary
+        self._update_tab_badges()
 
         n_pos = int(summary.get("n_positions") or 0)
         priced_cnt = int(summary.get("priced_count") or 0)
@@ -2979,6 +3032,7 @@ class SahamBotDesktopApp:
             self._set_text(self.txt_cek, msg)
             self._chart_photo = None
             self.lbl_chart.configure(image="", text=msg)
+            self._set_plan_cards(format_plan_levels(None))
             return
 
         sym = data.get("ticker", "")
@@ -3013,6 +3067,7 @@ class SahamBotDesktopApp:
             f"PowerScore: {ps.get('rating', '-')} ({ps_pct:.0f}%)"
         )
         self.lbl_cek_header.configure(text=header_txt, fg=v_clr)
+        self._set_plan_cards(format_plan_levels(plan))
         self._resize_chart_preview()
 
         lines: list[str] = []

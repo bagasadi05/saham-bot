@@ -152,3 +152,23 @@ def test_hit_test_rects_dan_match_sector_option():
     assert desktop.match_sector_option("Energy", opts) == "Energi"
     assert desktop.match_sector_option("ZZZ", opts) is None
     assert desktop.match_sector_option("", opts) is None
+
+
+def test_format_plan_levels_rencana_beli():
+    plan = {
+        "ok": True,
+        "entry": 9900, "entry_pullback": 9800, "sl": 9500, "sl_dist_pct": -3.94,
+        "tp": 10500, "rr": 1.58, "lots": 2, "buy_cost": 1_980_000,
+        "max_loss": 80_000, "max_loss_pct": 4.04,
+    }
+    lv = desktop.format_plan_levels(plan)
+    assert lv["entry"] == "9.900"
+    assert lv["pullback"] == "9.800"
+    assert lv["sl"] == "9.500 (-3.94%)"
+    assert lv["tp"] == "10.500 (RR 1.58x)"
+    assert lv["lots"] == "2"
+    assert lv["cost"] == "Rp1.980.000"
+    assert lv["risk"] == "Rp80.000 (4.04%)"
+    # tanpa rencana valid -> semua "-" (jujur, bukan angka karang)
+    for bad in (None, {}, {"ok": False}, "bukan dict"):
+        assert set(desktop.format_plan_levels(bad).values()) == {"-"}

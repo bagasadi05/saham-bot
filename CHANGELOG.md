@@ -10,6 +10,12 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ## [Unreleased] — 2026-11-25
 
+- **Ringkasan rencana beli (Entry/SL/TP) langsung terlihat di tab Cek Emiten** (`desktop.py`, 1 tes baru → total **969 tes**):
+  - Enam kartu KPI baru di bawah header Cek Emiten: **🎯 Entry** (plus pullback), **🛡️ Stop-Loss** (plus % jarak), **🏁 Target TP** (plus RR), **Lot**, **Est. Biaya**, **Risiko ke SL** — terisi saat analisis sukses, dan bernilai `-` (jujur, bukan angka karang) saat data tidak tersedia.
+  - Teks panduan di header Cek Emiten kini menyebut lokasi rekomendasi beli: **tab 📦 Paket Beli**.
+  - Badge counter kini juga muncul di tab **📦 Paket Beli (n)** dan **💼 Portofolio (n)** selain Watchlist/Sinyal/Alert.
+  - Helper murni `format_plan_levels()` teruji offline (`tests/test_desktop_ui_ux.py`); smoke test GUI memverifikasi kartu terisi & badge tampil.
+
 - **Peningkatan keterbacaan, loading & konektivitas aplikasi Desktop** (`desktop.py`, 4 tes baru → total **968 tes**):
   - **Teks penjelasan rapi & enak dibaca**: panel Pasar, Cek Emiten, dan Jurnal kini memakai rich text — judul `===` tampil aksen bold, verdict LAYAK/HINDARI/TUNGGU/VETO berwarna hijau/merah/amber, markup `<b>`/`<i>` dari core dirender bold/italic (bukan lagi di-strip), plus spasi antarbaris (`spacing1/spacing3`) pada ketiga panel.
   - **Indikator loading jelas per tombol**: saat proses berjalan, tombol terkait (Segarkan Pasar, Terapkan, Scan BEI, Hitung Paket, Cek Lengkap, Segarkan Jurnal, dan tombol topbar Refresh/Semua Tab) otomatis nonaktif + label spinner animasi `⠋ …`; kembali normal saat selesai.
