@@ -1,7 +1,8 @@
-"""Domain penyimpanan: mode pengguna, onboarding, dan pelacak tesis posisi."""
+"""Domain penyimpanan: mode pengguna, onboarding, pelacak tesis, dan state UI desktop."""
 from __future__ import annotations
 
 import json
+import re
 
 from core import store as _store
 
@@ -243,3 +244,107 @@ def get_all_position_theses(chat_id: int | str) -> dict[str, dict]:
             sym = str(r["key"])[len(prefix):].upper()
             out[sym] = dec
     return out
+
+
+# ------------------------------------------- state UI aplikasi desktop ---------
+_DESKTOP_UI_STATE_KEY = "desktop_ui_state"
+
+# Opsi auto-refresh yang dikenal aplikasi desktop (menit); "Manual" = 0.
+DESKTOP_REFRESH_OPTIONS = {"Manual": 0, "5m": 5, "15m": 15, "30m": 30}
+DESKTOP_TAB_MAX = 7  # 8 tab: indeks 0..7
+FONT_SCALE_MIN = 0.8
+FONT_SCALE_MAX = 1.5
+RECENT_TICKERS_MAX = 12
+
+DEFAULT_DESKTOP_UI_STATE: dict = {
+    "geometry": "",
+    "tab_index": 0,
+    "refresh": "15m",
+    "toast": True,
+    "font_scale": 1.0,
+    "recent_tickers": [],
+}
+
+_GEOMETRY_RE = re.compile(r"\d{3,5}x\d{3,5}\+\d{1,5}\+\d{1,5}")
+
+
+def clamp_font_scale(value: object) -> float:
+    """apitkan skala zoom font ke rentang aman [FONT_SCALE_MIN, FONT_SCALE_MAX]."""
+    try:
+        v = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 1.0
+    if v != v:  # NaN
+        return 1.0
+    return round(min(FONT_SCALE_MAX, max(FONT_SCALE_MIN, v)), 3)
+
+
+def normalize_recent_tickers(raw: object, limit: int = RECENT_TICKERS_MAX) -> list[str]:
+    """Normalkan daftar ticker riwayat cek: uppercase, tanpa sufiks .JK, ASCII-alnum, unik."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        t = str(item or "").strip().upper().removesuffix(".JK")
+        t = "".join(ch for ch in t if ch.isascii() and ch.isalnum())
+        if t and t not in out:
+            out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def decode_ui_state(raw: str | None) -> dict:
+    """Decode JSON state UI desktop menjadi dict aman; nilai invalid jatuh ke default."""
+    state = dict(DEFAULT_DESKTOP_UI_STATE)
+    state["recent_tickers"] = []
+    if not raw:
+        return state
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return state
+    if not isinstance(parsed, dict):
+        return state
+    geo = str(parsed.get("geometry") or "")
+    if _GEOMETRY_RE.fullmatch(geo):
+        state["geometry"] = geo
+    try:
+        tab = int(parsed.get("tab_index", 0))
+    except (TypeError, ValueError):
+        tab = 0
+    state["tab_index"] = max(0, min(DESKTOP_TAB_MAX, tab))
+    refresh = str(parsed.get("refresh") or "")
+    state["refresh"] = refresh if refresh in DESKTOP_REFRESH_OPTIONS else state["refresh"]
+    state["toast"] = bool(parsed.get("toast", True))
+    state["font_scale"] = clamp_font_scale(parsed.get("font_scale", 1.0))
+    state["recent_tickers"] = normalize_recent_tickers(parsed.get("recent_tickers"))
+    return state
+
+
+def encode_ui_state(state: dict) -> str:
+    """Sanitasi ``state`` via decode lalu kembalikan sebagai JSON string."""
+    clean = decode_ui_state(json.dumps(state or {}, ensure_ascii=False))
+    return json.dumps(clean, ensure_ascii=False)
+
+
+def get_desktop_ui_state(chat_id: int | str) -> dict:
+    """Ambil state UI desktop tersimpan (geometri, tab aktif, zoom, riwayat ticker, dst)."""
+    with _store._db() as conn:
+        raw = _read_chat_setting(conn, str(chat_id), _DESKTOP_UI_STATE_KEY)
+    return decode_ui_state(raw)
+
+
+def set_desktop_ui_state(chat_id: int | str, **updates: object) -> dict:
+    """Gabungkan ``updates`` ke state tersimpan, simpan, dan kembalikan state baru."""
+    current = get_desktop_ui_state(chat_id)
+    current.update(updates)
+    clean = decode_ui_state(json.dumps(current, ensure_ascii=False))
+    with _store._db() as conn:
+        _upsert_chat_setting(
+            conn,
+            str(chat_id),
+            _DESKTOP_UI_STATE_KEY,
+            json.dumps(clean, ensure_ascii=False),
+        )
+    return clean
