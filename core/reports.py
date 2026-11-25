@@ -30,8 +30,19 @@ def fmt_rp(v: float) -> str:
 
 
 def _norm_cur(currency: str | None) -> str:
+    """Normalisasi kode mata uang; hanya alfanumerik yang lolos (anti HTML injection).
+
+    Kode mata uang valid (ISO 4217) hanya huruf alfabet. Nilai apa pun dari
+    sumber eksternal (mis. yfinance `financialCurrency`) yang mengandung
+    karakter non-alfanumerik (mis. `<script>`) ditolak → "TIDAK TERSEDIA",
+    sehingga tidak pernah masuk ke pesan HTML Telegram tanpa escaping.
+    """
     s = str(currency or "").strip().upper()
-    return s if s else "TIDAK TERSEDIA"
+    if not s:
+        return "TIDAK TERSEDIA"
+    if not s.isalnum() or len(s) > 10:
+        return "TIDAK TERSEDIA"
+    return s
 
 
 def fmt_amount(v: float, currency: str | None = "IDR") -> str:

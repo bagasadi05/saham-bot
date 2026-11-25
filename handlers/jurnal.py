@@ -464,6 +464,8 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
     if not msg:
         return True
     chat_id = update.effective_chat.id
+    user = update.effective_user
+    uid = user.id if user else None
 
     if cb_data == "exec:cancel":
         deps._pending_clear(chat_id)
@@ -494,7 +496,7 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
     stale_warn = _ctx_staleness_warning(ctx)
 
     if kind == "buy":
-        deps._pending_set(chat_id, f"exec_buy:{ticker}")
+        deps._pending_set(chat_id, f"exec_buy:{ticker}", user_id=uid)
         lines = [f"📝 <b>Catat BELI {esc(ticker)} (Stockbit)</b>", ""]
         if ctx:
             bits = [f"Harga sinyal acuan: <b>{deps._money(ctx['signal_price'])}</b>"]
@@ -550,7 +552,7 @@ async def handle_exec_callback(update: Update, cb_data: str, deps) -> bool:
         )
         return True
 
-    deps._pending_set(chat_id, f"exec_sell:{ticker}")
+    deps._pending_set(chat_id, f"exec_sell:{ticker}", user_id=uid)
     held_lots = int(held["lots"])
     lines = [
         f"📝 <b>Catat JUAL {esc(ticker)} (Stockbit)</b>",

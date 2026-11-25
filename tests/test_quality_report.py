@@ -47,3 +47,26 @@ def test_reports_mata_uang_non_idr_tanpa_mengarang_kurs():
     assert "USD" in line_usd and "Rp" not in line_usd
     assert "USD" in reports.fmt_amount(1250.0, currency="USD")
     assert "Rp" not in reports.fmt_amount(1250.0, currency=None)
+
+
+def test_norm_cur_menolak_html_injection():
+    """CWE-79: kode mata uang dari sumber eksternal tidak boleh mengandung HTML.
+
+    yfinance `financialCurrency` bisa saja (secara teori) membawa payload;
+    `_norm_cur` harus menolak apa pun yang bukan alfanumerik polos.
+    """
+    # kode valid tetap lolos
+    assert reports._norm_cur("usd") == "USD"
+    assert reports._norm_cur("IDR") == "IDR"
+    # payload HTML ditolak → TIDAK TERSEDIA
+    assert reports._norm_cur("<script>alert(1)</script>") == "TIDAK TERSEDIA"
+    assert reports._norm_cur("USD<img src=x>") == "TIDAK TERSEDIA"
+    assert reports._norm_cur("USD' onmouseover='alert(1)") == "TIDAK TERSEDIA"
+    assert reports._norm_cur("") == "TIDAK TERSEDIA"
+    assert reports._norm_cur(None) == "TIDAK TERSEDIA"
+    # terlalu panjang juga ditolak
+    assert reports._norm_cur("A" * 11) == "TIDAK TERSEDIA"
+    # fmt_compact_amount dengan payload → tidak mengandung karakter berbahaya
+    out = reports.fmt_compact_amount(1.5e9, currency="<b>USD</b>")
+    assert "<" not in out and ">" not in out
+    assert "<b>" not in out and "USD" not in out  # payload dibuang total
