@@ -8,6 +8,31 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ---
 
+## [Unreleased] — 2026-11-25
+
+- **Desktop App (`desktop.py`, `core/desktop_monitor.py`) — Perbaikan bug produksi & peningkatan UI/UX 8 tab:**
+  - Memperbaiki rendering grafik Cek Emiten yang sebelumnya memanggil `chartmod.render_chart` yang tidak ada menjadi `chartmod.build_chart` dengan penanda level `entry`/`sl`/`tp`, pratinjau `PIL.ImageTk` responsif, pemilih rentang `3mo/6mo/1y/2y`, dan ekspor PNG.
+  - Memperbaiki pemanggilan modul fundamental menjadi `fetch_fundamentals`/`score_fundamentals` (dengan fallback kompatibel untuk mock uji lama), meneruskan `"price"` & `"sector"` yang benar ke `rencana.budget_plan`, membaca `buy_cost`/`value` yang valid, menambahkan `bandar.call_with_stale` + aliran asing BEI pada panel Pasar, serta menyambungkan `bars_by_ticker` & `bench_close` untuk statistik MAE/MFE & Alpha vs IHSG di tab Jurnal.
+  - Memperbarui antarmuka terminal gelap (`THEME`), angka monospace tabular (`Consolas`), profil persisten (`"desktop"` / `chat_id` Telegram), tombol `⚡ Scan BEI (~944)` di Sinyal Pasar, filter Syariah (ISSI) persisten di Watchlist/Sinyal/Paket, dialog alert cepat (`ALL_KINDS`), rotasi sektor IDX-IC, KPI & batas risiko kustom + VaR95/ES95 di Portofolio, pencatat eksekusi Stockbit (`record_desktop_execution`), kolom terurut klik-header (`▲`/`▼`), menu klik kanan, pintasan papan ketik, ekspor CSV terproteksi formula, tiket order Stockbit (`Rp` bertitik), notifikasi `NotifyIcon` WinForms & HiDPI, serta tes offline baru di `tests/test_desktop_features.py`.
+  - Memperbaiki bug runtime lanjutan pada `desktop.py`: pemanggilan `fetch_market_pulse(include_idx=True, include_news=True)`, format skor float berita (`news["pct"]`), ekstraksi sentimen `_news_item_tag`, pratinjau grafik PNG cek emiten saat panel belum terukur, antrean klik asinkron agar pilihan emiten tidak terbuang saat sibuk, tampilan veto verdict, format `None` di Jurnal diagnostics & portofolio tanpa harga, serta lebar label `Switch` pada skala DPI tinggi.
+
+- **Perbaikan lanjutan hasil audit menyeluruh (`docs/audit_sahambot.md`)**:
+  - **Presisi finansial & mikrostruktur BEI**:
+    - Teruskan `unit=roe_unit` ke `fundamental.normalize_roe` di `core/rencana.py`, `core/banding.py`, dan `handlers/info.py` (cegah skala ganda 100×).
+    - Bulatkan level `entry_pullback`, `sl`, `tp`, `chase_above` (`core/rencana.py`) dan `tp1` (`core/saran.py:scale_out_plan`) sesuai pita tick masing-masing; perbaiki `arb_floor` untuk rentang harga Rp11–14 pada `saran.arb_gap_risk`.
+    - Terapkan penalti forensik `utang_gt_2x_kas` (`+15`) saat `total_cash <= 0 and total_debt > 0` (`core/fundamental.py`), selaraskan `core/portofolio.atr14` ke Wilder RMA, hindari label `-Rp0M`/`Rp0M` pada nominal `< Rp1 miliar` (`core/reports.py:fmt_compact_amount`), perpanjang deteksi volume intraday belum lengkap hingga `16:00 WIB` (`core/analysis.py`), saring DataFrame `ind` kosong (`core/relatif.py`), dan abaikan pasangan korelasi `NaN` (`core/risk.py`).
+  - **Handler Telegram, job terjadwal & keamanan**:
+    - Hilangkan double-escape HTML `&lt;i&gt;` pada `quality_note` melalui `core/data_quality.plain_note` di `core/verdict.py`, `handlers/cek.py`, `handlers/market.py`, dan `handlers/sinyal.py`.
+    - Sambungkan kembali `@job_guard` pada `backup_job` dan `full_market_scan_job` (`handlers/jobs.py`), serta saring `get_auto_chats()` terhadap `ALLOWED_IDS` saat allowlist aktif.
+    - Aktifkan pengambilan `bars_by_ticker` untuk MAE/MFE pada `/jurnal` (via `core/data.fetch_cached_history` agar bebas lonjakan jaringan) dan `weekly_journal_report`, serta teruskan `market_regime` + guard `atr` di `handlers/trading.do_tanya`.
+    - Terapkan `cooldown_ok` pada `do_berita`, `do_fundamental`, `cmd_agenda`, `cmd_jejak`, `do_skor`, `do_tanya`, `do_watch_list`; batasi jumlah emiten/kondisi `/alert` + gunakan `reply_long`.
+    - Tambah isolasi pemilik `PENDING` (`_pending_owner`), guard `effective_user is None`, filter `UpdateType.MESSAGE` pada `MessageHandler`, dan pembersihan `PENDING` otomatis saat perintah `/` dipanggil (`bot.py`, `core/guards.py`, `handlers/menu.py`).
+  - **Cache, konkurensi, sentimen, desktop & riset**:
+    - Invalidsi cache `screener.scan` pra-16:00 WIB saat dipanggil sesudah 16:00 WIB pada hari yang sama; tambahkan `bandar.call_with_stale` lintas `asyncio.to_thread` untuk `/sektor` dan `/pasar` + batas ukuran `bandar._cache`.
+    - Cegah false-positive `"ara"` pada nama tokoh di `core/news.py` (wajib `\bARA\b` kapital / `"auto reject atas"`), hapus `"ekuitas"` dari `_OTHER_METRICS`, jaga `.get("positive")`/`.get("negative")`, dan baca `config.json` `id2label` pada inferensi ONNX (`core/news_ml.py`).
+    - Amankan migrasi `store.json -> SQLite` agar rename hanya terjadi sesudah `COMMIT`, tambah guard atomik `rowcount == 1` pada `_reduce_real_position_conn`, lock `_yf_dl_lock` + batas cache memori di `core/data.py`, parsing aman `.env` di `run.sh`, User-Agent netral di `tools/build_sectors.py`, import opsional `pystray` di `desktop.py`, serta `nlags=max(1, h // 2)` (`research/horizons.py`) dan `ddof=1`/clip `[-3, 3]` (`research/evaluate_sector.py`).
+    - Tambah tes regresi offline di `tests/test_audit_fixes_regression.py`.
+
 ## [Unreleased] — 2026-11-24
 
 - **Filter anti "falling knife" di `/rencana` & `/paket`** (dari kasus BRIS: death cross + dead-cat bounce lolos entry):

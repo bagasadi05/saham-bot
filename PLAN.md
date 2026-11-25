@@ -524,6 +524,12 @@ keanggotaan; menambah scraper IDX/Stockbit; refactor `bot.py` sekaligus (satu do
 
 ---
 
+## Aplikasi Desktop Windows (`desktop.py` & `core/desktop_monitor.py`)
+
+- Memperbaiki kontrak data & rendering chart (`chartmod.build_chart`, `fetch_fundamentals`/`score_fundamentals`, `rencana.budget_plan` `"price"`, `bandar.call_with_stale`, `jurnal_diagnostics`), memperbarui antarmuka 8 tab bergaya terminal gelap tabular, filter Syariah ISSI persisten, ekspor CSV/Stockbit order ticket, serta menambah tes offline di `tests/test_desktop_features.py`.
+
+---
+
 ## Definisi "selesai" yang dipakai
 
 Satu item selesai hanya jika: (a) `pytest` lulus dengan jumlah tes naik,

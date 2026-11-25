@@ -1,1563 +1,3215 @@
-"""SahamBot Desktop (Windows) — Aplikasi Native Pantau Pasar, Sinyal, Paket, & Tesis.
+"""SahamBot Desktop — terminal pemantauan & analisis saham BEI (offline-ready GUI).
 
-Jalankan langsung:
-    SahamBot.exe                  (hasil build PyInstaller)
-atau via Python:
-    .venv\\Scripts\\python.exe desktop.py
-
-Fitur:
-- System Tray Windows (menutup jendela akan minimize ke tray dan tetap memantau di background).
-- 8 Tab lengkap: Kondisi Pasar (/pasar), Radar Watchlist (BUY/SELL), Sinyal & Scan BEI (/scan, /sinyal),
-  Paket Beli (/paket), Portofolio & Tesis (/portofolio), Jurnal & Alpha (/jurnal), Cek Emiten (/cek + grafik),
-  dan Log Alert + Windows Toast Notification.
-- UI dark "trading terminal": custom title bar (drag, minimize, maximize, close ke tray),
-  kartu KPI IHSG/rezim/kondisi, tab segmented, tabel zebra, dan panel teks dengan pewarnaan.
+Menyajikan 8 panel utama (Pasar & Rezim, Watchlist, Sinyal Pasar, Paket
+Rekomendasi, Portofolio Asli, Jurnal & Evaluasi, Cek Emiten, Alert & Riwayat)
+yang membaca mesin logika ``core/*`` dan SQLite ``store.db`` yang sama dengan
+bot Telegram. Tanpa auto-trading atau penyimpanan kredensial broker: semua
+eksekusi dilakukan secara manual oleh pengguna di Stockbit.
 """
 from __future__ import annotations
 
+import ctypes
 import html
+import logging
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
-import tkinter as tk
-from tkinter import messagebox, ttk
+from datetime import datetime
+from typing import Any, Callable
 
-if getattr(sys, "frozen", False):
-    os.chdir(os.path.dirname(os.path.abspath(sys.executable)))
+import tkinter as tk
+from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, simpledialog, ttk
 
 from PIL import Image, ImageDraw
-import pystray
 
-from core import (
-    chart as chartmod,
-    desktop_monitor as dm,
-    reports,
-    store_portfolio,
-    store_watchlist,
-    textutil,
-)
+try:
+    from PIL import ImageTk
+except Exception:  # pragma: no cover - environment headless tanpa Tcl/Tk PhotoImage
+    ImageTk = None
 
-# ---- Design tokens (dark trading-terminal theme) ----
-BG = "#0a0f1c"        # window background
-PANEL = "#0e1526"     # title bar / status bar / tab bar
-CARD = "#131d33"      # cards
-CARD2 = "#1a2745"     # inputs, hover, tree zebra
-TEXTBG = "#0d1626"    # text panels & tree
-BORDER = "#243354"    # 1px card borders
-FG = "#e8eefb"
-MUTED = "#8b9bb8"
-ACCENT = "#3b82f6"
-ACCENT_D = "#2456c9"
-GREEN = "#34d399"
-RED = "#f87171"
-AMBER = "#fbbf24"
-BLUE = "#38bdf8"
+try:
+    import pystray
+except ImportError:
+    pystray = None
 
-# Chip (badge) styles: nama -> (background, foreground)
-CHIPS = {
-    "green": ("#0d2b21", GREEN),
-    "red": ("#331720", RED),
-    "amber": ("#33270f", AMBER),
-    "blue": ("#0e2a3d", BLUE),
-    "gray": ("#1b2745", MUTED),
-    "accent": ("#14305c", "#9ec5ff"),
+import config
+from core import alerts as alertsmod
+from core import chart as chartmod
+from core import desktop_monitor as dm
+from core import marketcal
+from core import risk as riskmod
+from core import store_portfolio
+from core import store_profile
+from core import store_watchlist
+from core import textutil
+
+log = logging.getLogger(__name__)
+
+DESKTOP_CHAT_ID = dm.DEFAULT_PROFILE_ID
+APP_ID = "SahamBot.Desktop.Terminal.2"
+DEFAULT_MODAL_RP = 10_000_000
+VALID_REFRESH_MIN = {"Manual": 0, "5m": 5, "15m": 15, "30m": 30}
+
+# Palet UI/UX Financial Trading Terminal Dark (Slate + Tabular Mono)
+THEME = {
+    "bg": "#090d16",
+    "bg_elev": "#0e1526",
+    "card": "#131c31",
+    "card_hover": "#1a2540",
+    "border": "#24324d",
+    "border_subtle": "#19243b",
+    "fg": "#e2e8f0",
+    "muted": "#94a3b8",
+    "dim": "#64748b",
+    "accent": "#38bdf8",
+    "accent_dark": "#0284c7",
+    "accent_soft": "#0c2d48",
+    "green": "#22c55e",
+    "green_soft": "#052e16",
+    "red": "#ef4444",
+    "red_soft": "#3b0a0a",
+    "amber": "#f59e0b",
+    "amber_soft": "#3a2502",
+    "syariah": "#10b981",
+    "row_even": "#0e1526",
+    "row_odd": "#111a2e",
 }
 
-_KIND_CHIP = [
-    ("BULL", "green"), ("KONSTRUKTIF", "green"), ("MENGUAT", "green"), ("LAYAK", "green"), ("BELI", "green"),
-    ("POSITIF", "green"),
-    ("BEAR", "red"), ("GUGUR", "red"), ("HINDARI", "red"), ("JUAL", "red"), ("NEGATIF", "red"),
-    ("DEFENSIVE", "amber"), ("WASPADA", "amber"), ("TUNGGU", "amber"), ("MELEMAH", "amber"), ("CAMPURAN", "amber"),
-    ("TIDAK_CUKUP_DATA", "gray"),
-    ("SIAP BELI", "blue"),
-]
+FONT_UI = ("Segoe UI", 10)
+FONT_UI_BOLD = ("Segoe UI", 10, "bold")
+FONT_TITLE = ("Segoe UI", 13, "bold")
+FONT_SMALL = ("Segoe UI", 9)
+FONT_SMALL_BOLD = ("Segoe UI", 9, "bold")
+FONT_MONO = ("Consolas", 10)
+FONT_MONO_BOLD = ("Consolas", 10, "bold")
+FONT_KPI = ("Consolas", 15, "bold")
+
+ALERT_KIND_ORDER = (
+    "jump",
+    "drop",
+    "breakout",
+    "breakdown",
+    "oversold",
+    "overbought",
+    "ma_golden",
+    "ma_death",
+    "vol_spike",
+)
 
 
-def _chip_for(text: str | None) -> str:
-    """Pilih warna chip berdasarkan kata kunci status (BELI=green, JUAL=red, dst.)."""
-    t = (text or "").upper()
-    for kw, chip in _KIND_CHIP:
-        if kw in t:
-            return chip
-    return "accent"
+# ---------------------------------------------------------------------------
+# Formatter & Utilitas Dasar (teruji offline di tests/test_desktop_monitor.py)
+# ---------------------------------------------------------------------------
+
+def _fmt_rp(value: Any) -> str:
+    """Format nominal Rupiah bersih (``Rp1.500.000`` / ``-Rp1.500.000`` / ``-``)."""
+    if value is None:
+        return "-"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if num != num:  # NaN check
+        return "-"
+    sign = "-" if num < 0 else ""
+    rounded = round(abs(num))
+    formatted = f"{rounded:,}".replace(",", ".")
+    return f"{sign}Rp{formatted}"
 
 
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
+def _fmt_pct(value: Any, *, signed: bool = True) -> str:
+    """Format persentase dengan 2 desimal (``+1.23%`` / ``-2.50%`` / ``-``)."""
+    if value is None:
+        return "-"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if num != num:
+        return "-"
+    if signed:
+        return f"{num:+.2f}%"
+    return f"{num:.2f}%"
 
 
-def _strip_html(text: str) -> str:
-    return html.unescape(_HTML_TAG_RE.sub("", text or ""))
+def _fmt_num(value: Any, decimals: int = 0) -> str:
+    """Format angka biasa dengan pemisah ribuan titik untuk angka non-Rupiah."""
+    if value is None:
+        return "-"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if num != num:
+        return "-"
+    if decimals <= 0:
+        return f"{round(num):,}".replace(",", ".")
+    return f"{num:,.{decimals}f}".replace(",", ".")
+
+
+def _strip_html(text: Any) -> str:
+    """Bersihkan tag HTML sederhana dan decode entitas HTML."""
+    raw = str(text or "")
+    unescaped = html.unescape(raw)
+    cleaned = re.sub(r"<[^>]+>", "", unescaped)
+    return re.sub(r"[ \t]+", " ", cleaned).strip()
+
+
+def _fmt_arrow_pct(value: Any) -> str:
+    """Format persen dengan penanda arah ``▲``/``▼`` untuk aksesibilitas visual."""
+    if value is None:
+        return "-"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if num != num:
+        return "-"
+    if num > 0:
+        return f"▲ +{num:.2f}%"
+    if num < 0:
+        return f"▼ {num:.2f}%"
+    return "0.00%"
+
+
+def _safe_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        num = float(value)
+        return num if num == num else default
+    except (TypeError, ValueError):
+        return default
 
 
 def create_tray_icon_image(size: int = 64) -> Image.Image:
-    """Buat ikon SahamBot sederhana (grafik naik hijau di latar navy)."""
-    img = Image.new("RGBA", (size, size), (15, 23, 42, 255))
+    """Buat ikon baki sistem SahamBot (ikon candlestick & garis tren hijau/biru)."""
+    dim = max(16, int(size))
+    img = Image.new("RGBA", (dim, dim), (9, 13, 22, 255))
     draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle([2, 2, size - 3, size - 3], radius=12, outline=(56, 189, 248, 255), width=3)
-    pts = [(10, 46), (24, 34), (34, 40), (52, 16)]
-    draw.line(pts, fill=(34, 197, 94, 255), width=5)
-    draw.ellipse([47, 11, 57, 21], fill=(34, 197, 94, 255))
+
+    margin = max(2, dim // 12)
+    radius = max(3, dim // 6)
+    draw.rounded_rectangle(
+        [margin, margin, dim - margin - 1, dim - margin - 1],
+        radius=radius,
+        fill=(19, 28, 49, 255),
+        outline=(56, 189, 248, 255),
+        width=max(1, dim // 24),
+    )
+
+    # Tiga candlestick naik + garis tren aksen sky-blue
+    bars = [
+        (0.26, 0.52, 0.72, (239, 68, 68, 255)),
+        (0.49, 0.36, 0.62, (34, 197, 94, 255)),
+        (0.72, 0.22, 0.50, (34, 197, 94, 255)),
+    ]
+    bar_w = max(2, int(dim * 0.12))
+    wick_w = max(1, dim // 32)
+    for cx_r, top_r, bot_r, color in bars:
+        cx = int(dim * cx_r)
+        top_y = int(dim * top_r)
+        bot_y = int(dim * bot_r)
+        draw.line([(cx, max(margin + 2, top_y - bar_w)), (cx, min(dim - margin - 2, bot_y + bar_w))],
+                  fill=color, width=wick_w)
+        draw.rectangle(
+            [cx - bar_w // 2, top_y, cx + bar_w // 2, bot_y],
+            fill=color,
+        )
+
+    line_w = max(1, dim // 20)
+    draw.line(
+        [(int(dim * 0.20), int(dim * 0.74)),
+         (int(dim * 0.48), int(dim * 0.48)),
+         (int(dim * 0.80), int(dim * 0.20))],
+        fill=(56, 189, 248, 255),
+        width=line_w,
+    )
     return img
 
 
-def send_windows_toast(title: str, message: str) -> None:
-    """Kirim notifikasi toast Windows non-blocking (fail-soft, tanpa paket tambahan)."""
-    if sys.platform != "win32":
-        return
+def _news_item_tag(item: dict[str, Any]) -> str:
+    """Ambil label sentimen item berita (`POSITIF`/`NEGATIF`/`NETRAL`) dari skor `sent`."""
+    explicit = str(item.get("sentiment") or item.get("label") or "").strip().upper()
+    if explicit:
+        return explicit
+    s = _safe_float(item.get("sent"))
+    if s is None:
+        return "NETRAL"
+    if s >= 0.1:
+        return "POSITIF"
+    if s <= -0.1:
+        return "NEGATIF"
+    return "NETRAL"
 
-    def _run():
+
+def send_windows_toast(title: str, body: str) -> bool:
+    """Kirim notifikasi balon/toast Windows non-blocking via WinForms NotifyIcon."""
+    if sys.platform != "win32":
+        return False
+    clean_t = _strip_html(title)[:80].replace("'", "''")
+    clean_b = _strip_html(body)[:200].replace("'", "''")
+    ps = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$n = New-Object System.Windows.Forms.NotifyIcon;"
+        "$n.Icon = [System.Drawing.SystemIcons]::Information;"
+        "$n.BalloonTipIcon = 'Info';"
+        f"$n.BalloonTipTitle = '{clean_t}';"
+        f"$n.BalloonTipText = '{clean_b}';"
+        "$n.Visible = $true;"
+        "$n.ShowBalloonTip(4500);"
+        "Start-Sleep -Milliseconds 4800;"
+        "$n.Dispose()"
+    )
+    try:
         try:
             import winsound
             winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
         except Exception:
             pass
-        safe_t = str(title).replace("'", "''")[:80]
-        safe_m = str(message).replace("'", "''")[:180]
-        ps = (
-            "Add-Type -AssemblyName System.Windows.Forms;"
-            "$n = New-Object System.Windows.Forms.NotifyIcon;"
-            "$n.Icon = [System.Drawing.SystemIcons]::Information;"
-            "$n.BalloonTipIcon = 'Info';"
-            f"$n.BalloonTipTitle = '{safe_t}';"
-            f"$n.BalloonTipText = '{safe_m}';"
-            "$n.Visible = $true;"
-            "$n.ShowBalloonTip(5000);"
-            "Start-Sleep -Milliseconds 5500;"
-            "$n.Dispose()"
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
         )
-        try:
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
+        return True
+    except Exception:
+        return False
+
+
+def _enable_dark_titlebar(win: tk.Misc) -> None:
+    """Aktifkan dark titlebar DWM Windows 10/11 agar serasi dengan tema terminal."""
+    if sys.platform != "win32":
+        return
+    try:
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+        val = ctypes.c_int(1)
+        for attr in (20, 19):
+            res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(val), ctypes.sizeof(val),
             )
-        except Exception:
-            pass
-
-    threading.Thread(target=_run, daemon=True).start()
-
-
-def _fmt_rp(val: float | None) -> str:
-    if val is None:
-        return "-"
-    return f"Rp{val:,.0f}".replace(",", ".")
+            if res == 0:
+                break
+    except Exception:
+        pass
 
 
-def _fmt_pct(val: float | None) -> str:
-    if val is None:
-        return "-"
-    return f"{val:+.2f}%"
-
+# ---------------------------------------------------------------------------
+# Custom Widget Toggle (Switch)
+# ---------------------------------------------------------------------------
 
 class Switch(tk.Canvas):
-    """Toggle switch bergaya pill (kanvas kecil) untuk pengaturan ON/OFF."""
+    """Toggle switch halus bergaya terminal finansial modern."""
 
-    def __init__(self, parent, variable: tk.BooleanVar, command=None, bg: str = CARD, **kw):
-        super().__init__(parent, width=36, height=20, bg=bg, highlightthickness=0, bd=0,
-                         cursor="hand2", **kw)
-        self.var = variable
-        self.command = command
-        self._draw()
-        self.var.trace_add("write", lambda *_: self._draw())
+    def __init__(
+        self,
+        master: tk.Misc,
+        *,
+        text: str = "",
+        variable: tk.BooleanVar | None = None,
+        command: Callable[[], None] | None = None,
+        on_color: str = THEME["accent"],
+        off_color: str = "#2a3958",
+        bg: str = THEME["bg_elev"],
+        fg: str = THEME["fg"],
+        font: tuple = FONT_SMALL_BOLD,
+    ) -> None:
+        self._var = variable or tk.BooleanVar(value=False)
+        self._command = command
+        self._on_color = on_color
+        self._off_color = off_color
+        self._text = text
+        self._fg = fg
+        self._font = font
+        self._track_w = 40
+        self._track_h = 20
+        try:
+            txt_w = tkfont.Font(master, font=font).measure(text) if text else 0
+        except Exception:
+            txt_w = len(text) * 8 if text else 0
+        width = self._track_w + (16 + txt_w if text else 4)
+        super().__init__(
+            master,
+            width=max(self._track_w, width),
+            height=26,
+            bg=bg,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+        )
         self.bind("<Button-1>", self._toggle)
+        self._trace_id = self._var.trace_add("write", lambda *_: self._redraw())
+        self.bind("<Destroy>", self._on_destroy, add="+")
+        self._redraw()
 
-    def _toggle(self, _e) -> None:
-        self.var.set(not self.var.get())
-        if self.command:
-            self.command()
+    def _on_destroy(self, _event: tk.Event) -> None:
+        try:
+            self._var.trace_remove("write", self._trace_id)
+        except Exception:
+            pass
 
-    def _draw(self) -> None:
+    def _toggle(self, _event: tk.Event | None = None) -> None:
+        self._var.set(not bool(self._var.get()))
+        if self._command:
+            self._command()
+
+    def get(self) -> bool:
+        return bool(self._var.get())
+
+    def set(self, val: bool) -> None:
+        self._var.set(bool(val))
+
+    def _redraw(self) -> None:
         self.delete("all")
-        on = bool(self.var.get())
-        pill = ACCENT if on else BORDER
-        r = 9
-        self.create_oval(1, 1, 1 + 2 * r, 1 + 2 * r, fill=pill, outline="")
-        self.create_oval(35 - 2 * r, 1, 35, 1 + 2 * r, fill=pill, outline="")
-        self.create_rectangle(1 + r, 1, 35 - r, 1 + 2 * r, fill=pill, outline="")
-        kx = 19 if on else 3
-        self.create_oval(kx, 3, kx + 14, 17, fill="#ffffff" if on else MUTED, outline="")
+        active = bool(self._var.get())
+        bg_clr = self._on_color if active else self._off_color
+        y0 = 3
+        h = self._track_h
+        w = self._track_w
+        r = h // 2
+        self.create_oval(2, y0, 2 + h, y0 + h, fill=bg_clr, outline=bg_clr)
+        self.create_oval(w - h + 2, y0, w + 2, y0 + h, fill=bg_clr, outline=bg_clr)
+        self.create_rectangle(2 + r, y0, w - r + 2, y0 + h, fill=bg_clr, outline=bg_clr)
 
+        knob_d = h - 4
+        kx = (w - knob_d) if active else 4
+        self.create_oval(kx, y0 + 2, kx + knob_d, y0 + 2 + knob_d, fill="#f8fafc", outline="")
+
+        if self._text:
+            self.create_text(
+                w + 10,
+                13,
+                text=self._text,
+                anchor="w",
+                fill=self._fg if active else THEME["muted"],
+                font=self._font,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Pembantu Tabel, Kartu KPI & Dialog Modal
+# ---------------------------------------------------------------------------
+
+def _make_kpi_card(
+    parent: tk.Misc,
+    title: str,
+    default_val: str = "-",
+    default_sub: str = "",
+) -> dict[str, Any]:
+    """Bangun kartu KPI ringkas dengan angka tabular & keterangan sekunder."""
+    frame = tk.Frame(
+        parent,
+        bg=THEME["card"],
+        highlightbackground=THEME["border"],
+        highlightthickness=1,
+        padx=12,
+        pady=9,
+    )
+    lbl_title = tk.Label(
+        frame, text=title.upper(), bg=THEME["card"], fg=THEME["muted"],
+        font=("Segoe UI", 8, "bold"), anchor="w",
+    )
+    lbl_title.pack(fill="x")
+    lbl_val = tk.Label(
+        frame, text=default_val, bg=THEME["card"], fg=THEME["fg"],
+        font=FONT_KPI, anchor="w",
+    )
+    lbl_val.pack(fill="x", pady=(3, 1))
+    lbl_sub = tk.Label(
+        frame, text=default_sub, bg=THEME["card"], fg=THEME["dim"],
+        font=FONT_SMALL, anchor="w",
+    )
+    lbl_sub.pack(fill="x")
+    return {"frame": frame, "title": lbl_title, "val": lbl_val, "sub": lbl_sub}
+
+
+def _set_kpi(
+    card: dict[str, Any],
+    val: str,
+    sub: str = "",
+    *,
+    color: str = THEME["fg"],
+    sub_color: str = THEME["muted"],
+) -> None:
+    card["val"].configure(text=val, fg=color)
+    card["sub"].configure(text=sub, fg=sub_color)
+
+
+def _parse_sort_key(raw: str, kind: str) -> tuple[int, Any]:
+    """Konversi string sel Treeview menjadi kunci pengurutan yang konsisten."""
+    txt = str(raw or "").strip()
+    if txt in ("", "-", "NA", "tidak tersedia"):
+        return (1, 0.0)
+    if kind == "num":
+        cleaned = (
+            txt.replace("▲", "")
+            .replace("▼", "")
+            .replace("Rp", "")
+            .replace("%", "")
+            .replace("x", "")
+            .replace("+", "")
+            .replace(" ", "")
+        )
+        if cleaned.count(".") >= 1 and "," not in cleaned:
+            parts = cleaned.split(".")
+            if len(parts) > 2 or (len(parts) == 2 and len(parts[1]) == 3):
+                cleaned = "".join(parts)
+        cleaned = cleaned.replace(",", ".")
+        m = re.search(r"-?\d+(?:\.\d+)?", cleaned)
+        if m:
+            try:
+                return (0, float(m.group(0)))
+            except ValueError:
+                pass
+        return (1, txt.lower())
+    return (0, txt.lower())
+
+
+def _sort_treeview(tree: ttk.Treeview, col: str, kind: str, state: dict[str, Any]) -> None:
+    """Urutkan baris Treeview saat header diklik beserta indikator ``▲``/``▼``."""
+    prev_col = state.get("col")
+    desc = (not state.get("desc", False)) if prev_col == col else (kind == "num")
+    state["col"] = col
+    state["desc"] = desc
+
+    items = [(tree.set(iid, col), iid) for iid in tree.get_children("")]
+    if desc:
+        valid = [it for it in items if _parse_sort_key(it[0], kind)[0] == 0]
+        missing = [it for it in items if _parse_sort_key(it[0], kind)[0] != 0]
+        valid.sort(key=lambda x: _parse_sort_key(x[0], kind)[1], reverse=True)
+        ordered = valid + missing
+    else:
+        ordered = sorted(items, key=lambda x: _parse_sort_key(x[0], kind))
+
+    for idx, (_, iid) in enumerate(ordered):
+        tree.move(iid, "", idx)
+        tags = list(tree.item(iid, "tags") or ())
+        semantic = [t for t in tags if t in ("buy", "sell", "warn", "info", "muted")]
+        if semantic:
+            tree.item(iid, tags=tuple(semantic))
+        else:
+            tree.item(iid, tags=("row_even" if idx % 2 == 0 else "row_odd",))
+
+    headings: dict[str, str] = state.get("headings") or {}
+    arrow = " ▼" if desc else " ▲"
+    for c_name, base_text in headings.items():
+        tree.heading(c_name, text=(base_text + arrow) if c_name == col else base_text)
+
+
+def _configure_tree_tags(tree: ttk.Treeview) -> None:
+    tree.tag_configure("row_even", background=THEME["row_even"], foreground=THEME["fg"])
+    tree.tag_configure("row_odd", background=THEME["row_odd"], foreground=THEME["fg"])
+    tree.tag_configure("buy", background=THEME["green_soft"], foreground=THEME["green"])
+    tree.tag_configure("sell", background=THEME["red_soft"], foreground=THEME["red"])
+    tree.tag_configure("warn", background=THEME["amber_soft"], foreground=THEME["amber"])
+    tree.tag_configure("info", background=THEME["accent_soft"], foreground=THEME["accent"])
+    tree.tag_configure("muted", foreground=THEME["muted"])
+
+
+def _build_treeview(
+    parent: tk.Misc,
+    specs: list[tuple[str, str, int, str, str]],
+    *,
+    height: int = 12,
+    on_double_click: Callable[[tk.Event], None] | None = None,
+    on_right_click: Callable[[tk.Event], None] | None = None,
+) -> ttk.Treeview:
+    """Bangun Treeview standar dengan scrollbar Y/X, tag warna, dan click-to-sort.
+
+    ``specs`` berisi tuple ``(id_kolom, judul, lebar, anchor, jenis_sort['num'|'str'])``.
+    """
+    wrap = tk.Frame(parent, bg=THEME["bg"])
+    wrap.pack(fill="both", expand=True)
+
+    cols = [s[0] for s in specs]
+    tree = ttk.Treeview(wrap, columns=cols, show="headings", height=height, selectmode="browse")
+    ysb = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
+    xsb = ttk.Scrollbar(wrap, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+
+    tree.grid(row=0, column=0, sticky="nsew")
+    ysb.grid(row=0, column=1, sticky="ns")
+    xsb.grid(row=1, column=0, sticky="ew")
+    wrap.rowconfigure(0, weight=1)
+    wrap.columnconfigure(0, weight=1)
+
+    sort_state: dict[str, Any] = {
+        "col": None,
+        "desc": False,
+        "headings": {s[0]: s[1] for s in specs},
+    }
+    for cid, title, width, anchor, kind in specs:
+        stretch = cid in ("reasons", "notes", "warnings", "guidance", "message", "sector")
+        tree.heading(
+            cid,
+            text=title,
+            anchor="w" if anchor == "w" else "center",
+            command=lambda c=cid, k=kind: _sort_treeview(tree, c, k, sort_state),
+        )
+        tree.column(cid, width=width, minwidth=max(48, width // 2), anchor=anchor, stretch=stretch)
+
+    _configure_tree_tags(tree)
+    if on_double_click:
+        tree.bind("<Double-1>", on_double_click)
+    if on_right_click:
+        tree.bind("<Button-3>", on_right_click)
+    return tree
+
+
+def _populate_tree(
+    tree: ttk.Treeview,
+    rows_with_tags: list[tuple[tuple[Any, ...], str | None]],
+) -> None:
+    """Isi ulang Treeview sambil menjaga keterbacaan striping baris."""
+    tree.delete(*tree.get_children())
+    for idx, (values, tone_tag) in enumerate(rows_with_tags):
+        stripe = "row_even" if idx % 2 == 0 else "row_odd"
+        tags = (tone_tag,) if tone_tag else (stripe,)
+        tree.insert("", "end", values=values, tags=tags)
+
+
+# ---------------------------------------------------------------------------
+# Aplikasi Utama Desktop
+# ---------------------------------------------------------------------------
 
 class SahamBotDesktopApp:
-    """Antarmuka desktop Tkinter + System Tray untuk seluruh fitur SahamBot."""
+    """Aplikasi GUI Windows & System Tray untuk pemantauan pasar BEI SahamBot."""
 
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("SahamBot Desktop — Radar Pasar & Sinyal BEI")
-        self.root.configure(bg=BORDER)
-        self.root.overrideredirect(True)
+        self.root.title("SahamBot Desktop · Terminal Analisis BEI")
+        self.root.configure(bg=THEME["bg"])
+        self.root.minsize(1080, 680)
 
-        win_w, win_h = 1360, 860
-        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        x0 = max(0, (sw - win_w) // 2)
-        y0 = max(0, (sh - win_h) // 3)
-        self.root.geometry(f"{win_w}x{win_h}+{x0}+{y0}")
-        self._normal_geo = self.root.geometry()
-        self.root.minsize(1180, 720)
-        self._maxed = False
-        self._drag_off: tuple[int, int] | None = None
-        self._rs: tuple | None = None
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        win_w = min(1400, max(1080, int(sw * 0.88)))
+        win_h = min(880, max(680, int(sh * 0.86)))
+        pos_x = max(0, (sw - win_w) // 2)
+        pos_y = max(0, (sh - win_h) // 2)
+        self.root.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
 
-        try:
-            from PIL import ImageTk
-            self._icon_img = ImageTk.PhotoImage(create_tray_icon_image(64))
-            self.root.iconphoto(True, self._icon_img)
-        except Exception:
-            self._icon_img = None
+        self._ui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self._busy_flags: dict[str, bool] = {}
+        self._pending_jobs: dict[str, tuple[Callable[[], Any], str]] = {}
+        self._prev_alert_state: dict[str, str] = {}
+        self._last_market_pulse: dict[str, Any] = {}
+        self._last_sinyal_rows: list[dict[str, Any]] = []
+        self._last_paket_res: dict[str, Any] = {}
+        self._last_watch_rows: list[dict[str, Any]] = []
+        self._last_port_rows: list[dict[str, Any]] = []
+        self._last_port_summary: dict[str, Any] = {}
+        self._last_cek_detail: dict[str, Any] = {}
+        self._last_jurnal_res: dict[str, Any] = {}
+        self._alert_history: list[dict[str, Any]] = []
+        self._seen_alert_keys: set[str] = set()
+        self._chart_photo: Any = None
+        self._tray_icon: Any = None
+        self._closing = False
+        self._pump_after_id: str | None = None
+        self._auto_after_id: str | None = None
+        self._chart_after_id: str | None = None
 
-        self.main = tk.Frame(self.root, bg=BG)
-        self.main.pack(fill="both", expand=True, padx=1, pady=1)
+        # Variabel UI persisten (mendukung profil "desktop" maupun chat_id Telegram)
+        self.var_profile = tk.StringVar(value=str(DESKTOP_CHAT_ID))
+        cid = self._current_chat_id()
+        self._active_profile = cid
+        saved_modal = store_watchlist.get_modal(cid) or DEFAULT_MODAL_RP
+        saved_syariah = bool(store_profile.get_syariah_mode(cid))
+        self.var_modal = tk.StringVar(value=str(int(saved_modal)))
+        self.var_syariah = tk.BooleanVar(value=saved_syariah)
+        self.var_toast = tk.BooleanVar(value=True)
+        self.var_refresh_interval = tk.StringVar(value="15m")
+        self.var_status = tk.StringVar(value="Menyiapkan data pasar BEI...")
+        self.var_regime_badge = tk.StringVar(value="IHSG: memuat...")
 
-        self.ui_queue: queue.Queue = queue.Queue()
-        self.prev_alert_state: dict[str, str] = {}
-        self._refresh_busy = False
-        self._scan_busy = False
-        self._after_id: str | None = None
-        self._chart_img: tk.PhotoImage | None = None
-        self._tray_icon: pystray.Icon | None = None
-        self._tray_notified = False
-        self._last_regime: dict | None = None
-
-        self.profile_var = tk.StringVar(value=dm.DEFAULT_PROFILE_ID)
-        self.modal_var = tk.StringVar(value="10000000")
-        self.interval_var = tk.StringVar(value="60")
-        self.auto_var = tk.BooleanVar(value=True)
-        self.toast_var = tk.BooleanVar(value=True)
-        self.sinyal_filter_var = tk.StringVar(value="BELI")
-        self.sinyal_quality_var = tk.BooleanVar(value=False)
-
-        self.status_var = tk.StringVar(value="Siap memantau pasar.")
-        self.ihsg_close_var = tk.StringVar(value="—")
-        self.ihsg_chg_var = tk.StringVar(value="—")
-        self.regime_var = tk.StringVar(value="—")
-        self.regime_sub_var = tk.StringVar(value="")
-        self.cond_var = tk.StringVar(value="—")
-        self.cond_sub_var = tk.StringVar(value="")
-        self.update_var = tk.StringVar(value="—")
-        self.auto_chip_var = tk.StringVar(value="AUTO-PANTAU ON")
+        # Filter & input per tab
+        self.var_watch_add = tk.StringVar()
+        self.var_watch_search = tk.StringVar()
+        self.var_sinyal_filter = tk.StringVar(value="ALL")
+        self.var_sinyal_search = tk.StringVar()
+        self.var_sinyal_sector = tk.StringVar(value="Semua Sektor")
+        self.var_sinyal_quality = tk.BooleanVar(value=False)
+        self.var_paket_max = tk.StringVar(value="5")
+        self.var_port_ticker = tk.StringVar()
+        self.var_port_side = tk.StringVar(value="BELI")
+        self.var_port_price = tk.StringVar()
+        self.var_port_lots = tk.StringVar(value="1")
+        self.var_port_notes = tk.StringVar()
+        self.var_jurnal_limit = tk.StringVar(value="50")
+        self.var_cek_ticker = tk.StringVar(value="BBCA")
+        self.var_cek_period = tk.StringVar(value="1y")
+        self.var_alert_filter = tk.StringVar(value="Semua")
 
         self._setup_style()
-        self._build_chrome()
+        self._set_window_icon()
         self._build_layout()
-        self._build_edges()
-        self._load_initial_profile()
-        self._setup_tray()
-        self.root.protocol("WM_DELETE_WINDOW", self._minimize_to_tray)
-        self.root.after(150, self._poll_queue)
-        self.root.after(400, self.trigger_refresh_all)
+        self._bind_shortcuts()
+        _enable_dark_titlebar(self.root)
 
-    # ------------------------------------------------------------------ style
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close_or_tray)
+        self._pump_after_id = self.root.after(120, self._pump_queue)
+        self.root.after(200, self.refresh_all)
+        self._schedule_auto_refresh()
+        self._setup_tray()
+
+    # ------------------------------------------------------------------
+    # Tema & Gaya TTK
+    # ------------------------------------------------------------------
+
     def _setup_style(self) -> None:
-        style = ttk.Style()
+        style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
-        except Exception:
+        except tk.TclError:
             pass
-        s = style
-        s.configure(".", background=BG, foreground=FG, fieldbackground=CARD2, font=("Segoe UI", 9))
-        s.configure("TFrame", background=BG)
-        s.configure("Card.TFrame", background=CARD)
-        s.configure("Panel.TFrame", background=PANEL)
 
-        s.configure("TLabel", background=BG, foreground=FG, font=("Segoe UI", 9))
-        s.configure("Card.TLabel", background=CARD, foreground=FG, font=("Segoe UI", 9))
-        s.configure("Panel.TLabel", background=PANEL, foreground=FG, font=("Segoe UI", 9))
-        s.configure("Muted.TLabel", background=BG, foreground=MUTED, font=("Segoe UI", 9))
-        s.configure("Card.Muted.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 8))
-        s.configure("Panel.Muted.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 8))
-        s.configure("Title.TLabel", background=BG, foreground=FG, font=("Segoe UI", 15, "bold"))
-        s.configure("Card.Title.TLabel", background=CARD, foreground=FG, font=("Segoe UI", 15, "bold"))
-        s.configure("H2.TLabel", background=CARD, foreground=FG, font=("Segoe UI", 11, "bold"))
-        s.configure("KpiLabel.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 8, "bold"))
-        s.configure("Empty.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 10, "italic"))
+        style.configure(".", background=THEME["bg"], foreground=THEME["fg"], font=FONT_UI)
+        style.configure("TFrame", background=THEME["bg"])
+        style.configure("Card.TFrame", background=THEME["card"])
+        style.configure("TLabel", background=THEME["bg"], foreground=THEME["fg"], font=FONT_UI)
 
-        for name, (bgc, fgc) in CHIPS.items():
-            s.configure(f"Chip.{name}.TLabel", background=bgc, foreground=fgc,
-                        font=("Segoe UI", 9, "bold"), padding=(8, 3))
+        style.configure(
+            "TNotebook",
+            background=THEME["bg_elev"],
+            borderwidth=0,
+            tabmargins=[4, 6, 4, 0],
+        )
+        style.configure(
+            "TNotebook.Tab",
+            background=THEME["card"],
+            foreground=THEME["muted"],
+            padding=[14, 8],
+            borderwidth=0,
+            font=FONT_SMALL_BOLD,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", THEME["accent_soft"]), ("active", THEME["card_hover"])],
+            foreground=[("selected", THEME["accent"]), ("active", THEME["fg"])],
+        )
 
-        s.configure("TButton", background=CARD2, foreground=FG, bordercolor=BORDER,
-                    lightcolor=BORDER, darkcolor=BORDER, font=("Segoe UI", 9),
-                    padding=(10, 5), relief="flat")
-        s.map("TButton",
-              background=[("active", "#223257"), ("pressed", "#2a3d66"), ("disabled", CARD)],
-              foreground=[("disabled", MUTED)])
-        s.configure("Accent.TButton", background=ACCENT_D, foreground="#ffffff", bordercolor=ACCENT_D,
-                    lightcolor=ACCENT_D, darkcolor=ACCENT_D, font=("Segoe UI", 9, "bold"),
-                    padding=(12, 5), relief="flat")
-        s.map("Accent.TButton",
-              background=[("active", ACCENT), ("pressed", "#1e40af"), ("disabled", "#1e3a5f")],
-              foreground=[("disabled", MUTED)])
-        s.configure("Danger.TButton", background=CARD2, foreground=RED, bordercolor=BORDER,
-                    lightcolor=BORDER, darkcolor=BORDER, font=("Segoe UI", 9),
-                    padding=(10, 5), relief="flat")
-        s.map("Danger.TButton", background=[("active", "#3a1a22"), ("pressed", "#4a2028")])
+        style.configure(
+            "Treeview",
+            background=THEME["bg_elev"],
+            fieldbackground=THEME["bg_elev"],
+            foreground=THEME["fg"],
+            bordercolor=THEME["border"],
+            borderwidth=1,
+            rowheight=27,
+            font=FONT_MONO,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=THEME["card"],
+            foreground=THEME["muted"],
+            bordercolor=THEME["border"],
+            relief="flat",
+            padding=[8, 6],
+            font=FONT_SMALL_BOLD,
+        )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", THEME["card_hover"])],
+            foreground=[("active", THEME["fg"])],
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", THEME["accent_soft"])],
+            foreground=[("selected", THEME["accent"])],
+        )
 
-        s.configure("TEntry", fieldbackground=CARD2, foreground=FG, bordercolor=BORDER,
-                    relief="flat", padding=4, insertcolor=FG)
-        s.map("TEntry", bordercolor=[("focus", ACCENT)],
-              fieldbackground=[("focus", "#1b2a4a")])
-        s.configure("TCombobox", fieldbackground=CARD2, background=CARD2, foreground=FG,
-                    arrowcolor=MUTED, bordercolor=BORDER, relief="flat", padding=4)
-        s.map("TCombobox",
-              fieldbackground=[("readonly", CARD2), ("focus", "#1b2a4a")],
-              bordercolor=[("focus", ACCENT)],
-              selectbackground=[("readonly", CARD)],
-              selectforeground=[("readonly", FG)])
-        self.root.option_add("*TCombobox*Listbox.background", CARD2)
-        self.root.option_add("*TCombobox*Listbox.foreground", FG)
-        self.root.option_add("*TCombobox*Listbox.selectBackground", ACCENT_D)
-        self.root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
-        self.root.option_add("*TCombobox*Listbox.font", ("Segoe UI", 9))
+        style.configure(
+            "Accent.TButton",
+            background=THEME["accent_dark"],
+            foreground="#ffffff",
+            borderwidth=0,
+            padding=[12, 6],
+            font=FONT_SMALL_BOLD,
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", THEME["accent"]), ("disabled", THEME["border"])],
+        )
 
-        s.configure("TCheckbutton", background=CARD, foreground=FG, font=("Segoe UI", 9),
-                    focuscolor=CARD, indicatorcolor=ACCENT, selectcolor=ACCENT)
-        s.map("TCheckbutton",
-              background=[("active", CARD)],
-              foreground=[("active", FG), ("disabled", MUTED)],
-              indicatorcolor=[("selected", ACCENT), ("active", CARD2)])
+        style.configure(
+            "Ghost.TButton",
+            background=THEME["card"],
+            foreground=THEME["fg"],
+            bordercolor=THEME["border"],
+            borderwidth=1,
+            padding=[10, 5],
+            font=FONT_SMALL_BOLD,
+        )
+        style.map(
+            "Ghost.TButton",
+            background=[("active", THEME["card_hover"])],
+        )
 
-        s.configure("Treeview", background=TEXTBG, foreground=FG, fieldbackground=TEXTBG,
-                    rowheight=30, font=("Segoe UI", 9), bordercolor=BORDER, relief="flat")
-        s.configure("Treeview.Heading", background="#0c1424", foreground=MUTED,
-                    font=("Segoe UI", 8, "bold"), relief="flat", padding=(6, 6))
-        s.map("Treeview",
-              background=[("selected", ACCENT_D)],
-              foreground=[("selected", "#ffffff")])
-        s.map("Treeview.Heading", background=[("active", CARD2)])
+        style.configure(
+            "Danger.TButton",
+            background=THEME["red_soft"],
+            foreground=THEME["red"],
+            bordercolor=THEME["red"],
+            borderwidth=1,
+            padding=[10, 5],
+            font=FONT_SMALL_BOLD,
+        )
+        style.map(
+            "Danger.TButton",
+            background=[("active", "#5c1111")],
+        )
 
-        for orient in ("Vertical", "Horizontal"):
-            s.configure(f"{orient}.TScrollbar", background=CARD2, troughcolor=CARD,
-                        arrowcolor=MUTED, bordercolor=CARD, relief="flat", width=10)
-            s.map(f"{orient}.TScrollbar",
-                  background=[("active", "#2a3d66"), ("pressed", "#2a3d66")])
+        style.configure(
+            "Dark.TCombobox",
+            fieldbackground=THEME["card"],
+            background=THEME["card"],
+            foreground=THEME["fg"],
+            arrowcolor=THEME["accent"],
+            bordercolor=THEME["border"],
+        )
+        self.root.option_add("*TCombobox*Listbox.background", THEME["card"])
+        self.root.option_add("*TCombobox*Listbox.foreground", THEME["fg"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", THEME["accent_soft"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", THEME["accent"])
 
-    # ------------------------------------------------------------- chrome
-    def _build_chrome(self) -> None:
-        chrome = tk.Frame(self.main, bg=PANEL, height=42)
-        chrome.pack(fill="x")
-        chrome.pack_propagate(False)
-        tk.Frame(self.main, bg=BORDER, height=1).pack(fill="x")
-
-        logo = tk.Canvas(chrome, width=24, height=24, bg=PANEL, highlightthickness=0, bd=0)
-        logo.create_rectangle(1, 1, 23, 23, outline=BLUE, width=2)
-        logo.create_line(5, 17, 10, 12, 13, 14, 19, 6, fill=GREEN, width=2)
-        logo.create_oval(17, 4, 21, 8, fill=GREEN, outline="")
-        logo.pack(side="left", padx=(12, 8), pady=9)
-
-        brand = tk.Frame(chrome, bg=PANEL)
-        brand.pack(side="left")
-        tk.Label(brand, text="SahamBot", bg=PANEL, fg=FG, font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        tk.Label(brand, text="Desktop · Radar Pasar & Sinyal BEI", bg=PANEL, fg=MUTED,
-                 font=("Segoe UI", 8)).pack(anchor="w")
-
-        self._chrome_drag_widgets = [chrome, logo, brand] + brand.winfo_children()
-        for w in self._chrome_drag_widgets:
-            w.bind("<ButtonPress-1>", self._drag_start)
-            w.bind("<B1-Motion>", self._drag_move)
-            w.bind("<Double-Button-1>", self._toggle_max)
-
-        self.btn_close = self._chrome_button(chrome, "✕", hover="#e81123", command=self._minimize_to_tray)
-        self.btn_max = self._chrome_button(chrome, "□", hover=CARD2, command=lambda: self._toggle_max())
-        self.btn_min = self._chrome_button(chrome, "–", hover=CARD2, command=lambda: self.root.iconify())
-
-    def _chrome_button(self, parent, text, hover, command) -> tk.Label:
-        b = tk.Label(parent, text=text, bg=PANEL, fg=MUTED, font=("Segoe UI", 10),
-                     width=4, cursor="hand2")
-        b.pack(side="right")
-        b.bind("<Button-1>", lambda _e: command())
-        b.bind("<Enter>", lambda _e: b.configure(bg=hover, fg="#ffffff" if hover == "#e81123" else FG))
-        b.bind("<Leave>", lambda _e: b.configure(bg=PANEL, fg=MUTED))
-        return b
-
-    def _drag_start(self, e) -> None:
-        if self._maxed:
-            return
-        self._drag_off = (e.x_root - self.root.winfo_rootx(), e.y_root - self.root.winfo_rooty())
-
-    def _drag_move(self, e) -> None:
-        if self._maxed or self._drag_off is None:
-            return
-        self.root.geometry(f"+{e.x_root - self._drag_off[0]}+{e.y_root - self._drag_off[1]}")
-
-    def _work_area(self) -> tuple[int, int, int, int]:
-        """Work area layar (tanpa taskbar) via SystemParametersInfo; fallback layar penuh."""
+    def _set_window_icon(self) -> None:
         try:
-            import ctypes
-            from ctypes import wintypes
-            rect = wintypes.RECT()
-            ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)
-            if rect.right > rect.left and rect.bottom > rect.top:
-                return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+            img = create_tray_icon_image(64)
+            if ImageTk is not None:
+                self._icon_photo = ImageTk.PhotoImage(img)
+                self.root.iconphoto(True, self._icon_photo)
         except Exception:
             pass
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        return 0, 0, sw, max(0, sh - 48)
 
-    def _toggle_max(self, _e=None) -> None:
-        if self._maxed:
-            self.root.geometry(self._normal_geo)
-            self._maxed = False
-            self.btn_max.configure(text="□")
-        else:
-            self._normal_geo = self.root.geometry()
-            ax, ay, aw, ah = self._work_area()
-            self.root.geometry(f"{aw}x{ah}+{ax}+{ay}")
-            self._maxed = True
-            self.btn_max.configure(text="❐")
-
-    def _build_edges(self) -> None:
-        """Bingkai resize tipis di tepi jendela (frameless window)."""
-        specs = [
-            ("s", "sb_v_double_arrow", PANEL, dict(x=0, rely=1, y=-6, relwidth=1, height=6)),
-            ("n", "sb_v_double_arrow", PANEL, dict(x=170, y=0, relwidth=1, width=-320, height=5)),
-            ("w", "sb_h_double_arrow", BG, dict(x=0, y=46, relheight=1, height=-14, width=5)),
-            ("e", "sb_h_double_arrow", BG, dict(relx=1, x=-5, y=46, relheight=1, height=-14, width=5)),
-        ]
-        for dirs, cur, bgc, placekw in specs:
-            f = tk.Frame(self.main, bg=bgc, cursor=cur)
-            f.place(**placekw)
-            f.bind("<ButtonPress-1>", lambda e, d=dirs: self._rs_start(e, d))
-            f.bind("<B1-Motion>", self._rs_move)
-
-    def _rs_start(self, e, dirs: str) -> None:
-        if self._maxed:
-            return
-        self._rs = (dirs, e.x_root, e.y_root,
-                    self.root.winfo_width(), self.root.winfo_height(),
-                    self.root.winfo_rootx(), self.root.winfo_rooty())
-
-    def _rs_move(self, e) -> None:
-        if self._rs is None or self._maxed:
-            return
-        dirs, sx, sy, w0, h0, x0, y0 = self._rs
-        dw, dh = e.x_root - sx, e.y_root - sy
-        w, h, x, y = w0, h0, x0, y0
-        if "e" in dirs:
-            w = max(1180, w0 + dw)
-        if "s" in dirs:
-            h = max(720, h0 + dh)
-        if "w" in dirs:
-            w = max(1180, w0 - dw)
-            x = x0 + (w0 - w)
-        if "n" in dirs:
-            h = max(720, h0 - dh)
-            y = y0 + (h0 - h)
-        self._normal_geo = f"{w}x{h}+{x}+{y}"
-        self.root.geometry(self._normal_geo)
-
-    # ------------------------------------------------------------- layout
-    def _card(self, parent, padding: int = 10):
-        """Kartu dengan border 1px: kembalikan (outer_frame, inner_card)."""
-        outer = tk.Frame(parent, bg=BORDER, bd=0, highlightthickness=0)
-        inner = ttk.Frame(outer, style="Card.TFrame", padding=padding)
-        inner.pack(fill="both", expand=True)
-        return outer, inner
+    def _entry(self, parent: tk.Misc, var: tk.StringVar, width: int = 14) -> tk.Entry:
+        return tk.Entry(
+            parent,
+            textvariable=var,
+            width=width,
+            bg=THEME["card"],
+            fg=THEME["fg"],
+            insertbackground=THEME["accent"],
+            relief="flat",
+            highlightbackground=THEME["border"],
+            highlightcolor=THEME["accent"],
+            highlightthickness=1,
+            font=FONT_MONO,
+        )
 
     def _build_layout(self) -> None:
-        content = ttk.Frame(self.main, padding=(14, 10, 14, 8))
-        content.pack(fill="both", expand=True)
+        # ---- Top Command Bar ----
+        topbar = tk.Frame(
+            self.root,
+            bg=THEME["bg_elev"],
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+            padx=12,
+            pady=8,
+        )
+        topbar.pack(fill="x")
 
-        # --- header: brand + kontrol profil ---
-        hdr_outer, hdr = self._card(content, padding=(12, 9))
-        hdr_outer.pack(fill="x", pady=(0, 10))
-        left = ttk.Frame(hdr, style="Card.TFrame")
-        left.pack(side="left", fill="x", expand=True)
-        ttk.Label(left, text="SahamBot Desktop", style="Card.Title.TLabel").pack(anchor="w")
-        ttk.Label(left, text=dm.DELAY_DISCLOSURE, style="Card.Muted.TLabel").pack(anchor="w")
+        brand = tk.Frame(topbar, bg=THEME["bg_elev"])
+        brand.pack(side="left")
+        tk.Label(
+            brand, text="SAHAMBOT", bg=THEME["bg_elev"], fg=THEME["accent"],
+            font=("Segoe UI", 12, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            brand, text=" · Terminal BEI", bg=THEME["bg_elev"], fg=THEME["muted"],
+            font=FONT_SMALL_BOLD,
+        ).pack(side="left", padx=(2, 12))
 
-        ctrl = ttk.Frame(hdr, style="Card.TFrame")
-        ctrl.pack(side="right")
-        ttk.Label(ctrl, text="Profil:", style="Card.TLabel").grid(row=0, column=0, padx=(0, 4))
-        ttk.Entry(ctrl, textvariable=self.profile_var, width=9).grid(row=0, column=1, padx=(0, 8))
-        ttk.Label(ctrl, text="Modal (Rp):", style="Card.TLabel").grid(row=0, column=2, padx=(0, 4))
-        ttk.Entry(ctrl, textvariable=self.modal_var, width=11).grid(row=0, column=3, padx=(0, 8))
-        ttk.Label(ctrl, text="Interval:", style="Card.TLabel").grid(row=0, column=4, padx=(0, 4))
-        ttk.Combobox(ctrl, textvariable=self.interval_var, values=("30", "60", "120", "300"),
-                     width=5, state="readonly").grid(row=0, column=5, padx=(0, 8))
+        self.lbl_regime = tk.Label(
+            topbar,
+            textvariable=self.var_regime_badge,
+            bg=THEME["card"],
+            fg=THEME["fg"],
+            padx=10,
+            pady=4,
+            font=FONT_SMALL_BOLD,
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+        )
+        self.lbl_regime.pack(side="left", padx=(0, 12))
 
-        auto_fr = ttk.Frame(ctrl, style="Card.TFrame")
-        ttk.Label(auto_fr, text="Auto-Pantau", style="Card.TLabel").pack(side="left", padx=(0, 5))
-        Switch(auto_fr, self.auto_var, command=self._reschedule_timer, bg=CARD).pack(side="left")
-        auto_fr.grid(row=0, column=6, padx=(0, 8))
+        # Kontrol kanan topbar
+        right_bar = tk.Frame(topbar, bg=THEME["bg_elev"])
+        right_bar.pack(side="right")
 
-        toast_fr = ttk.Frame(ctrl, style="Card.TFrame")
-        ttk.Label(toast_fr, text="Toast", style="Card.TLabel").pack(side="left", padx=(0, 5))
-        Switch(toast_fr, self.toast_var, bg=CARD).pack(side="left")
-        toast_fr.grid(row=0, column=7, padx=(0, 10))
+        tk.Label(
+            right_bar, text="Profil:", bg=THEME["bg_elev"], fg=THEME["muted"], font=FONT_SMALL,
+        ).pack(side="left", padx=(0, 3))
+        ent_prof = self._entry(right_bar, self.var_profile, width=9)
+        ent_prof.pack(side="left", padx=(0, 6))
+        ent_prof.bind("<Return>", lambda _e: self._save_profile())
 
-        tk.Frame(ctrl, bg=BORDER, width=1).grid(row=0, column=8, sticky="ns", padx=(6, 12))
-        ttk.Button(ctrl, text="Terapkan", command=self._save_profile).grid(row=0, column=9, padx=(0, 6))
-        ttk.Button(ctrl, text="⟳  Refresh", style="Accent.TButton",
-                   command=self.trigger_refresh_all).grid(row=0, column=10, padx=(0, 6))
-        ttk.Button(ctrl, text="Keluar", style="Danger.TButton", command=self._quit_app).grid(row=0, column=11)
+        tk.Label(
+            right_bar, text="Modal:", bg=THEME["bg_elev"], fg=THEME["muted"], font=FONT_SMALL,
+        ).pack(side="left", padx=(0, 3))
+        ent_modal = self._entry(right_bar, self.var_modal, width=12)
+        ent_modal.pack(side="left", padx=(0, 4))
+        ent_modal.bind("<Return>", lambda _e: self._save_profile())
+        ttk.Button(right_bar, text="Simpan", style="Ghost.TButton", command=self._save_profile).pack(
+            side="left", padx=(0, 8),
+        )
 
-        # --- strip KPI ---
-        kpi_row = ttk.Frame(content)
-        kpi_row.pack(fill="x", pady=(0, 10))
-        for i, wgt in enumerate((3, 2, 3, 2)):
-            kpi_row.grid_columnconfigure(i, weight=wgt)
+        self.sw_syariah = Switch(
+            right_bar,
+            text="Syariah (ISSI)",
+            variable=self.var_syariah,
+            command=self._on_toggle_syariah,
+            on_color=THEME["syariah"],
+            bg=THEME["bg_elev"],
+        )
+        self.sw_syariah.pack(side="left", padx=(0, 8))
 
-        ihsg_card, ihsg_top = self._kpi_card(kpi_row, 0, "IHSG", BLUE)
-        self.ihsg_chip = ttk.Label(ihsg_top, textvariable=self.ihsg_chg_var, style="Chip.gray.TLabel")
-        self.ihsg_chip.pack(side="right")
-        self.ihsg_val = self._kpi_value(ihsg_card, self.ihsg_close_var, FG, 16)
+        self.sw_toast = Switch(
+            right_bar,
+            text="Toast",
+            variable=self.var_toast,
+            on_color=THEME["accent"],
+            bg=THEME["bg_elev"],
+        )
+        self.sw_toast.pack(side="left", padx=(0, 8))
 
-        regime_card, _regime_top = self._kpi_card(kpi_row, 1, "REZIM IHSG", AMBER)
-        self.regime_val = self._kpi_value(regime_card, self.regime_var, AMBER, 14)
-        ttk.Label(regime_card, textvariable=self.regime_sub_var, style="Card.Muted.TLabel").pack(anchor="w")
+        tk.Label(
+            right_bar, text="Auto:", bg=THEME["bg_elev"], fg=THEME["muted"], font=FONT_SMALL,
+        ).pack(side="left", padx=(0, 4))
+        cb_auto = ttk.Combobox(
+            right_bar,
+            textvariable=self.var_refresh_interval,
+            values=list(VALID_REFRESH_MIN.keys()),
+            width=7,
+            state="readonly",
+            style="Dark.TCombobox",
+        )
+        cb_auto.pack(side="left", padx=(0, 8))
+        cb_auto.bind("<<ComboboxSelected>>", lambda _e: self._schedule_auto_refresh())
 
-        cond_card, _cond_top = self._kpi_card(kpi_row, 2, "KONDISI PASAR", AMBER)
-        self.cond_val = self._kpi_value(cond_card, self.cond_var, AMBER, 14)
-        ttk.Label(cond_card, textvariable=self.cond_sub_var, style="Card.Muted.TLabel",
-                  wraplength=380).pack(anchor="w")
+        ttk.Button(
+            right_bar, text="↻ Refresh", style="Accent.TButton", command=self.refresh_active_tab,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            right_bar, text="Semua Tab", style="Ghost.TButton", command=self.refresh_all,
+        ).pack(side="left")
 
-        upd_card, _upd_top = self._kpi_card(kpi_row, 3, "UPDATE TERAKHIR", GREEN)
-        self._kpi_value(upd_card, self.update_var, FG, 14)
-        self.auto_chip = ttk.Label(upd_card, textvariable=self.auto_chip_var, style="Chip.green.TLabel")
-        self.auto_chip.pack(anchor="w", pady=(2, 0))
+        # ---- Main Notebook (8 Tab) ----
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=8, pady=(6, 0))
 
-        # --- tab bar segmented + host ---
-        bar = tk.Frame(content, bg=PANEL, height=38)
-        bar.pack(fill="x", pady=(0, 0))
-        bar.pack_propagate(False)
+        self.tab_market = ttk.Frame(self.notebook)
+        self.tab_watch = ttk.Frame(self.notebook)
+        self.tab_sinyal = ttk.Frame(self.notebook)
+        self.tab_paket = ttk.Frame(self.notebook)
+        self.tab_port = ttk.Frame(self.notebook)
+        self.tab_jurnal = ttk.Frame(self.notebook)
+        self.tab_cek = ttk.Frame(self.notebook)
+        self.tab_alerts = ttk.Frame(self.notebook)
 
-        self.tab_host = ttk.Frame(content)
-        self.tab_host.pack(fill="both", expand=True, pady=(8, 0))
-
-        self.tab_frames: dict[str, ttk.Frame] = {}
-        self.tab_buttons: dict[str, tk.Label] = {}
-        tab_defs = [
-            ("market", "🌐 Kondisi Pasar"),
-            ("watch", "📡 Radar Watchlist"),
-            ("sinyal", "📊 Sinyal & Scan BEI"),
-            ("paket", "🎯 Paket Beli"),
-            ("port", "💼 Portofolio & Tesis"),
-            ("jurnal", "📒 Jurnal & Alpha"),
-            ("cek", "🔍 Cek Emiten"),
-            ("alerts", "🔔 Log Alert"),
-        ]
-        for key, label in tab_defs:
-            frame = ttk.Frame(self.tab_host)
-            self.tab_frames[key] = frame
-            b = tk.Label(bar, text=label, bg=PANEL, fg=MUTED, font=("Segoe UI", 9, "bold"),
-                         padx=12, cursor="hand2")
-            b.pack(side="left", padx=(3, 3), pady=5)
-            b.bind("<Button-1>", lambda _e, k=key: self._select_tab(k))
-            b.bind("<Enter>", lambda _e, b=b, k=key: self._tab_hover(b, k, True))
-            b.bind("<Leave>", lambda _e, b=b, k=key: self._tab_hover(b, k, False))
-            self.tab_buttons[key] = b
-        ttk.Label(bar, text="8 tab · klik ganda baris tabel untuk cek detail emiten",
-                  style="Panel.Muted.TLabel").pack(side="right", padx=10)
-        tk.Frame(content, bg=BORDER, height=1).pack(fill="x")
-        self._select_tab("market")
-
-        self.tab_market = self.tab_frames["market"]
-        self.tab_watch = self.tab_frames["watch"]
-        self.tab_sinyal = self.tab_frames["sinyal"]
-        self.tab_paket = self.tab_frames["paket"]
-        self.tab_port = self.tab_frames["port"]
-        self.tab_jurnal = self.tab_frames["jurnal"]
-        self.tab_cek = self.tab_frames["cek"]
-        self.tab_alerts = self.tab_frames["alerts"]
+        self.notebook.add(self.tab_market, text="📈 Pasar & Rezim")
+        self.notebook.add(self.tab_watch, text="⭐ Watchlist")
+        self.notebook.add(self.tab_sinyal, text="🎯 Sinyal Pasar")
+        self.notebook.add(self.tab_paket, text="📦 Paket Beli")
+        self.notebook.add(self.tab_port, text="💼 Portofolio Asli")
+        self.notebook.add(self.tab_jurnal, text="📓 Jurnal & Evaluasi")
+        self.notebook.add(self.tab_cek, text="🔍 Cek Emiten")
+        self.notebook.add(self.tab_alerts, text="🔔 Alert (0)")
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self._build_market_tab()
         self._build_watch_tab()
         self._build_sinyal_tab()
         self._build_paket_tab()
-        self._build_portfolio_tab()
+        self._build_port_tab()
         self._build_jurnal_tab()
         self._build_cek_tab()
         self._build_alerts_tab()
 
-        # --- status bar ---
-        tk.Frame(self.main, bg=BORDER, height=1).pack(fill="x")
-        sbar = tk.Frame(self.main, bg=PANEL, height=30)
-        sbar.pack(fill="x")
-        sbar.pack_propagate(False)
-        self.status_dot = tk.Label(sbar, text="●", bg=PANEL, fg=GREEN, font=("Segoe UI", 9))
-        self.status_dot.pack(side="left", padx=(12, 6))
-        ttk.Label(sbar, textvariable=self.status_var, style="Panel.TLabel").pack(side="left")
-        self.auto_chip_bar = ttk.Label(sbar, textvariable=self.auto_chip_var, style="Chip.green.TLabel")
-        self.auto_chip_bar.pack(side="right", padx=12)
-
-    def _kpi_card(self, parent, col: int, title: str, accent: str):
-        """Satu kartu KPI: strip aksen kiri + label kecil. Mengembalikan (body, top_row)."""
-        outer, body = self._card(parent, padding=0)
-        outer.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 6, 0))
-        strip = tk.Frame(body, bg=accent, width=3)
-        strip.pack(side="left", fill="y")
-        inner = ttk.Frame(body, style="Card.TFrame", padding=(10, 8))
-        inner.pack(side="left", fill="both", expand=True)
-        top = ttk.Frame(inner, style="Card.TFrame")
-        top.pack(fill="x")
-        ttk.Label(top, text=title, style="KpiLabel.TLabel").pack(side="left")
-        return inner, top
-
-    def _kpi_value(self, parent, var: tk.StringVar, fg: str, size: int) -> tk.Label:
-        v = tk.Label(parent, textvariable=var, bg=CARD, fg=fg, font=("Segoe UI", size, "bold"))
-        v.pack(anchor="w", pady=(1, 0))
-        return v
-
-    def _select_tab(self, key: str) -> None:
-        for f in self.tab_frames.values():
-            f.pack_forget()
-        for k, b in self.tab_buttons.items():
-            if k == key:
-                b.configure(bg=ACCENT_D, fg="#ffffff")
-            else:
-                b.configure(bg=PANEL, fg=MUTED)
-        self.tab_frames[key].pack(fill="both", expand=True)
-
-    def _tab_hover(self, b: tk.Label, key: str, enter: bool) -> None:
-        if str(b.cget("bg")) == ACCENT_D:
-            return
-        if enter:
-            b.configure(bg=CARD2, fg=FG)
-        else:
-            b.configure(bg=PANEL, fg=MUTED)
-
-    def _setup_rich_tags(self, tw: tk.Text) -> None:
-        tw.tag_configure("h", foreground=BLUE, font=("Consolas", 10, "bold"))
-        tw.tag_configure("sec", foreground=MUTED, font=("Consolas", 10, "bold"))
-        tw.tag_configure("muted", foreground=MUTED)
-        tw.tag_configure("green", foreground=GREEN)
-        tw.tag_configure("red", foreground=RED)
-        tw.tag_configure("amber", foreground=AMBER)
-        tw.tag_configure("bold", font=("Consolas", 10, "bold"))
-
-    def _rich_lines(self, tw: tk.Text, lines: list[str]) -> None:
-        """Render teks laporan dengan pewarnaan: header, bullet, & kata kunci status."""
-        self._setup_rich_tags(tw)
-        tw.configure(state="normal")
-        tw.delete("1.0", tk.END)
-        kw_tags = (
-            ("VERDICT", "bold"), ("LAYAK", "green"), ("MENGUAT", "green"), ("BELI", "green"),
-            ("POSITIF", "green"), ("BULL", "green"),
-            ("GUGUR", "red"), ("HINDARI", "red"), ("JUAL", "red"), ("NEGATIF", "red"), ("BEAR", "red"),
-            ("TUNGGU", "amber"), ("MELEMAH", "amber"), ("WASPADA", "amber"), ("DEFENSIVE", "amber"), ("CAMPURAN", "amber"),
+        # ---- Footer Status & Disclaimer Jujur ----
+        footer = tk.Frame(
+            self.root,
+            bg=THEME["bg_elev"],
+            highlightbackground=THEME["border_subtle"],
+            highlightthickness=1,
+            padx=12,
+            pady=5,
         )
-        for ln in lines:
-            s = ln.strip()
-            tags: list[str] = []
-            if s.startswith("==="):
-                tags.append("h")
-            elif s.startswith("---"):
-                tags.append("sec")
-            elif s.startswith("•") or s.startswith("+ "):
-                tags.append("muted")
-            upper = s.upper()
-            for kw, tag in kw_tags:
-                if kw in upper and tag not in tags:
-                    tags.append(tag)
-            tw.insert(tk.END, ln + "\n", tags or None)
-        tw.configure(state="disabled")
+        footer.pack(fill="x", side="bottom")
+        tk.Label(
+            footer,
+            textvariable=self.var_status,
+            bg=THEME["bg_elev"],
+            fg=THEME["accent"],
+            font=FONT_SMALL,
+            anchor="w",
+        ).pack(side="left")
+        tk.Label(
+            footer,
+            text=(
+                "Data ±15 menit delay · Tidak ada janji untung · "
+                "Eksekusi manual di Stockbit (tanpa auto-trading) · "
+                "Pintasan: F5/Ctrl+R Refresh | Ctrl+F Cari | Ctrl+K Cek Emiten | Ctrl+1..8 Tab"
+            ),
+            bg=THEME["bg_elev"],
+            fg=THEME["dim"],
+            font=("Segoe UI", 8),
+            anchor="e",
+        ).pack(side="right")
 
-    def _tree_base(self, parent, cols, headers, tags_fg: dict[str, str]) -> ttk.Treeview:
-        tree = ttk.Treeview(parent, columns=cols, show="headings")
-        for c, (label, width) in headers.items():
-            tree.heading(c, text=label)
-            tree.column(c, width=width)
-        tree.tag_configure("odd", background="#15203a")
-        for tag, color in tags_fg.items():
-            tree.tag_configure(tag, foreground=color)
-        return tree
+    def _bind_shortcuts(self) -> None:
+        self.root.bind("<F5>", lambda _e: self.refresh_active_tab())
+        self.root.bind("<Control-r>", lambda _e: self.refresh_active_tab())
+        self.root.bind("<Control-R>", lambda _e: self.refresh_active_tab())
+        self.root.bind("<Control-k>", lambda _e: self._focus_cek_ticker())
+        self.root.bind("<Control-K>", lambda _e: self._focus_cek_ticker())
+        self.root.bind("<Control-f>", lambda _e: self._focus_active_search())
+        self.root.bind("<Control-F>", lambda _e: self._focus_active_search())
+        for idx in range(1, 9):
+            self.root.bind(f"<Control-Key-{idx}>", lambda _e, i=idx - 1: self.notebook.select(i))
 
-    def _empty_label(self, parent, text: str) -> ttk.Label:
-        """Label empty-state yang melayang di tengah area konten."""
-        lbl = ttk.Label(parent, text=text, style="Empty.TLabel", anchor="center", justify="center", wraplength=460)
-        lbl.place(relx=0.5, rely=0.42, anchor="center")
-        return lbl
+    # ------------------------------------------------------------------
+    # Tab 1: Pasar & Rezim + Rotasi Sektor
+    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _show_empty(lbl: ttk.Label) -> None:
-        lbl.place(relx=0.5, rely=0.42, anchor="center")
-        lbl.lift()
-
-    @staticmethod
-    def _hide_empty(lbl: ttk.Label) -> None:
-        lbl.place_forget()
-
-    def _chip_row(self, parent, counts: dict[str, int], order: tuple[str, ...]) -> None:
-        """Render baris chip kecil (mis. 'BELI 3') di dalam parent (hancurkan isi lama)."""
-        for w in parent.winfo_children():
-            w.destroy()
-        for key in order:
-            n = counts.get(key, 0)
-            if n:
-                ttk.Label(parent, text=f"{key} {n}", style=f"Chip.{_chip_for(key)}.TLabel").pack(side="left", padx=(0, 6))
-
-    # ------------------------------------------------------------- tabs
     def _build_market_tab(self) -> None:
-        card, body = self._card(self.tab_market, padding=0)
-        card.pack(fill="both", expand=True)
-        pane = tk.PanedWindow(body, orient="horizontal", bg=BORDER, sashwidth=5,
-                              sashrelief="flat", bd=0)
-        pane.pack(fill="both", expand=True)
+        ctrl = tk.Frame(self.tab_market, bg=THEME["bg"], padx=8, pady=8)
+        ctrl.pack(fill="x")
+        tk.Label(
+            ctrl,
+            text="Ringkasan Kondisi Pasar BEI, Rezim IHSG, Breadth /scan, Asing & Sentimen",
+            bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL_BOLD,
+        ).pack(side="left")
+        ttk.Button(
+            ctrl, text="↻ Segarkan Pasar & IDX", style="Accent.TButton",
+            command=lambda: self.refresh_market(force=True),
+        ).pack(side="right")
 
-        # kiri: laporan teks
-        left_outer = tk.Frame(pane, bg=BORDER)
-        left = ttk.Frame(left_outer, style="Card.TFrame")
-        left.pack(fill="both", expand=True, padx=1, pady=1)
-        self.market_text = tk.Text(
-            left, wrap="word", bg=TEXTBG, fg=FG, insertbackground=FG,
-            font=("Consolas", 10), relief="flat", padx=14, pady=12, state="disabled",
+        kpi_row = tk.Frame(self.tab_market, bg=THEME["bg"], padx=8)
+        kpi_row.pack(fill="x", pady=(0, 8))
+        for c in range(5):
+            kpi_row.columnconfigure(c, weight=1, uniform="mkpi")
+
+        self.mk_ihsg = _make_kpi_card(kpi_row, "IHSG (^JKSE)")
+        self.mk_regime = _make_kpi_card(kpi_row, "Rezim & Skala")
+        self.mk_breadth = _make_kpi_card(kpi_row, "Breadth /scan")
+        self.mk_foreign = _make_kpi_card(kpi_row, "Aliran Asing BEI")
+        self.mk_cond = _make_kpi_card(kpi_row, "Kondisi & Kesegaran")
+        for idx, card in enumerate(
+            (self.mk_ihsg, self.mk_regime, self.mk_breadth, self.mk_foreign, self.mk_cond)
+        ):
+            card["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
+
+        body = tk.PanedWindow(
+            self.tab_market, orient="horizontal", bg=THEME["bg"], sashwidth=5, bd=0,
         )
-        sb = ttk.Scrollbar(left, orient="vertical", command=self.market_text.yview)
-        self.market_text.configure(yscrollcommand=sb.set)
-        self.market_text.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        pane.add(left_outer, stretch="always", minsize=430)
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        # kanan: ringkasan visual (breadth, penggerak, sentimen berita)
-        right_outer = tk.Frame(pane, bg=BORDER)
-        right = ttk.Frame(right_outer, style="Card.TFrame", padding=12)
-        right.pack(fill="both", expand=True, padx=1, pady=1)
-        pane.add(right_outer, stretch="never", width=390, minsize=330)
+        left = tk.Frame(
+            body, bg=THEME["card"], highlightbackground=THEME["border"],
+            highlightthickness=1, padx=10, pady=8,
+        )
+        tk.Label(
+            left, text="ROTASI SEKTOR BEI (IDX-IC 1 HARI)", bg=THEME["card"],
+            fg=THEME["accent"], font=FONT_SMALL_BOLD, anchor="w",
+        ).pack(fill="x", pady=(0, 6))
+        self.canvas_sectors = tk.Canvas(
+            left, bg=THEME["bg_elev"], highlightthickness=0, bd=0,
+        )
+        self.canvas_sectors.pack(fill="both", expand=True)
+        self.canvas_sectors.bind("<Configure>", lambda _e: self._draw_sector_bars())
+        body.add(left, stretch="always", minsize=420)
 
-        ttk.Label(right, text="BREADTH / HASIL SCAN", style="KpiLabel.TLabel").pack(anchor="w")
-        self.breadth_canvas = tk.Canvas(right, height=16, bg=TEXTBG, highlightthickness=1,
-                                        highlightbackground=BORDER)
-        self.breadth_canvas.pack(fill="x", pady=(6, 4))
-        self.breadth_counts_var = tk.StringVar(value="—")
-        ttk.Label(right, textvariable=self.breadth_counts_var, style="Card.TLabel").pack(anchor="w")
-        self.breadth_ma_var = tk.StringVar(value="")
-        ttk.Label(right, textvariable=self.breadth_ma_var, style="Card.Muted.TLabel").pack(anchor="w")
-        tk.Frame(right, bg=BORDER, height=1).pack(fill="x", pady=10)
+        right = tk.Frame(
+            body, bg=THEME["card"], highlightbackground=THEME["border"],
+            highlightthickness=1, padx=10, pady=8,
+        )
+        tk.Label(
+            right, text="DIAGNOSTIK PASAR & SENTIMEN BERITA", bg=THEME["card"],
+            fg=THEME["accent"], font=FONT_SMALL_BOLD, anchor="w",
+        ).pack(fill="x", pady=(0, 6))
+        self.txt_market = scrolledtext.ScrolledText(
+            right,
+            wrap="word",
+            bg=THEME["bg_elev"],
+            fg=THEME["fg"],
+            insertbackground=THEME["accent"],
+            font=FONT_UI,
+            relief="flat",
+            padx=10,
+            pady=8,
+        )
+        self.txt_market.pack(fill="both", expand=True)
+        self.txt_market.configure(state="disabled")
+        body.add(right, stretch="always", minsize=400)
 
-        ttk.Label(right, text="PENGGERAK NAIK / TURUN", style="KpiLabel.TLabel").pack(anchor="w")
-        self.market_gainers = tk.Label(right, text="—", bg=CARD, fg=GREEN, font=("Segoe UI", 9),
-                                       justify="left", wraplength=340, anchor="nw")
-        self.market_gainers.pack(anchor="w", pady=(4, 2))
-        self.market_losers = tk.Label(right, text="—", bg=CARD, fg=RED, font=("Segoe UI", 9),
-                                      justify="left", wraplength=340, anchor="nw")
-        self.market_losers.pack(anchor="w")
-        tk.Frame(right, bg=BORDER, height=1).pack(fill="x", pady=10)
-
-        sent_top = ttk.Frame(right, style="Card.TFrame")
-        sent_top.pack(fill="x")
-        ttk.Label(sent_top, text="SENTIMEN BERITA PASAR", style="KpiLabel.TLabel").pack(side="left")
-        self.news_chip = ttk.Label(sent_top, text="—", style="Chip.gray.TLabel")
-        self.news_chip.pack(side="right")
-        self.news_score_var = tk.StringVar(value="")
-        ttk.Label(right, textvariable=self.news_score_var, style="Card.Muted.TLabel").pack(anchor="w", pady=(2, 0))
-        self.news_headlines = tk.Label(right, text="—", bg=CARD, fg=MUTED, font=("Segoe UI", 8),
-                                       justify="left", wraplength=340, anchor="nw")
-        self.news_headlines.pack(anchor="w", pady=(4, 0))
+    # ------------------------------------------------------------------
+    # Tab 2: Watchlist + Quick Alert Editor + CSV
+    # ------------------------------------------------------------------
 
     def _build_watch_tab(self) -> None:
-        card, body = self._card(self.tab_watch, padding=10)
-        card.pack(fill="both", expand=True)
-        bar = ttk.Frame(body, style="Card.TFrame")
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Label(bar, text="Tambah Kode:", style="Card.TLabel").pack(side="left", padx=(0, 6))
-        self.add_watch_var = tk.StringVar()
-        ent = ttk.Entry(bar, textvariable=self.add_watch_var, width=12)
-        ent.pack(side="left", padx=(0, 6))
-        ent.bind("<Return>", lambda _e: self._add_watch())
-        ttk.Button(bar, text="+ Tambah Watchlist", command=self._add_watch).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="Hapus Terpilih", style="Danger.TButton", command=self._remove_watch).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="Cek Detail Terpilih", command=self._inspect_selected_watch).pack(side="left")
-        ttk.Label(bar, text="Klik ganda baris untuk cek detail & grafik", style="Card.Muted.TLabel").pack(side="right")
+        bar = tk.Frame(self.tab_watch, bg=THEME["bg"], padx=8, pady=8)
+        bar.pack(fill="x")
 
-        cols = ("ticker", "price", "ret1d", "action", "score", "entry", "sl", "tp", "lots", "reason")
-        headers = {
-            "ticker": ("Kode", 75), "price": ("Harga", 90), "ret1d": ("%1H", 75),
-            "action": ("Saran", 95), "score": ("Skor", 65), "entry": ("Entry", 85),
-            "sl": ("SL", 85), "tp": ("TP", 85), "lots": ("Lot", 55), "reason": ("Alasan", 360),
-        }
-        self.watch_tree = self._tree_base(body, cols, headers, {
-            "BELI": GREEN, "SIAP BELI": BLUE, "JUAL": RED, "TAHAN": FG, "TIDAK TERSEDIA": MUTED,
-        })
-        for c in cols:
-            self.watch_tree.column(c, anchor="w" if c in ("ticker", "action", "reason") else "e")
-        self.watch_tree.bind("<Double-1>", lambda _e: self._inspect_selected_watch())
-        self.watch_tree.pack(fill="both", expand=True)
-        self.watch_empty = self._empty_label(
-            body, "Watchlist kosong — tambahkan kode emiten di atas (mis. BBCA), lalu tekan Refresh.")
-        foot = ttk.Frame(body, style="Card.TFrame")
-        foot.pack(fill="x", pady=(8, 0))
-        self.watch_foot_var = tk.StringVar(value="")
-        ttk.Label(foot, textvariable=self.watch_foot_var, style="Card.Muted.TLabel").pack(side="left")
-        self.watch_chips = ttk.Frame(foot, style="Card.TFrame")
-        self.watch_chips.pack(side="right")
+        tk.Label(bar, text="Ticker:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 4),
+        )
+        self.ent_watch_add = self._entry(bar, self.var_watch_add, width=10)
+        self.ent_watch_add.pack(side="left", padx=(0, 4))
+        self.ent_watch_add.bind("<Return>", lambda _e: self._add_watchlist())
+        ttk.Button(bar, text="+ Tambah", style="Accent.TButton", command=self._add_watchlist).pack(
+            side="left", padx=(0, 10),
+        )
+
+        tk.Label(bar, text="Cari:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 4),
+        )
+        self.ent_watch_search = self._entry(bar, self.var_watch_search, width=14)
+        self.ent_watch_search.pack(side="left", padx=(0, 10))
+        self.var_watch_search.trace_add("write", lambda *_: self._render_watch_table())
+
+        ttk.Button(
+            bar, text="Cek Emiten", style="Ghost.TButton", command=self._watch_open_cek,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            bar, text="🔔 Atur Alert", style="Ghost.TButton", command=self._watch_edit_alerts,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            bar, text="Catat Beli", style="Ghost.TButton", command=self._watch_prefill_buy,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            bar, text="Hapus", style="Danger.TButton", command=self._remove_watchlist,
+        ).pack(side="left", padx=(0, 4))
+
+        ttk.Button(
+            bar, text="Ekspor CSV", style="Ghost.TButton", command=self._export_watch_csv,
+        ).pack(side="right")
+
+        kpi = tk.Frame(self.tab_watch, bg=THEME["bg"], padx=8)
+        kpi.pack(fill="x", pady=(0, 8))
+        for c in range(4):
+            kpi.columnconfigure(c, weight=1, uniform="wkpi")
+        self.wk_total = _make_kpi_card(kpi, "Total Watchlist")
+        self.wk_beli = _make_kpi_card(kpi, "Sinyal BELI")
+        self.wk_zona = _make_kpi_card(kpi, "Zona Beli Aktif")
+        self.wk_alert = _make_kpi_card(kpi, "Alert Terpicu / Stale")
+        for idx, c in enumerate((self.wk_total, self.wk_beli, self.wk_zona, self.wk_alert)):
+            c["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
+
+        self.tree_watch = _build_treeview(
+            self.tab_watch,
+            [
+                ("ticker", "Ticker", 80, "center", "str"),
+                ("sector", "Sektor", 130, "w", "str"),
+                ("syariah", "ISSI", 58, "center", "str"),
+                ("price", "Harga", 88, "e", "num"),
+                ("ret1d", "1H %", 86, "e", "num"),
+                ("score", "Skor", 70, "e", "num"),
+                ("signal", "Sinyal", 76, "center", "str"),
+                ("entry", "Entry", 84, "e", "num"),
+                ("sl", "SL", 80, "e", "num"),
+                ("tp", "TP", 80, "e", "num"),
+                ("alerts_cfg", "Alert Aktif", 135, "w", "str"),
+                ("reasons", "Zona / Trigger / Catatan", 280, "w", "str"),
+            ],
+            on_double_click=lambda _e: self._watch_open_cek(),
+            on_right_click=self._watch_context_menu,
+        )
+        self.tree_watch.bind("<Delete>", lambda _e: self._remove_watchlist())
+
+    # ------------------------------------------------------------------
+    # Tab 3: Sinyal Pasar (/scan lokal)
+    # ------------------------------------------------------------------
 
     def _build_sinyal_tab(self) -> None:
-        card, body = self._card(self.tab_sinyal, padding=10)
-        card.pack(fill="both", expand=True)
-        bar = ttk.Frame(body, style="Card.TFrame")
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Label(bar, text="Filter Sinyal:", style="Card.TLabel").pack(side="left", padx=(0, 6))
-        cb = ttk.Combobox(bar, textvariable=self.sinyal_filter_var, values=("ALL", "BELI", "JUAL", "TAHAN"),
-                          width=8, state="readonly")
-        cb.pack(side="left", padx=(0, 8))
-        cb.bind("<<ComboboxSelected>>", lambda _e: self.trigger_load_sinyal())
-        ttk.Checkbutton(bar, text="BELI Berkualitas (Fundamental Sehat)", variable=self.sinyal_quality_var,
-                        command=self.trigger_load_sinyal).pack(side="left", padx=(0, 8))
-        ttk.Button(bar, text="Muat Snapshot", command=self.trigger_load_sinyal).pack(side="left", padx=(0, 8))
-        ttk.Button(bar, text="⚡ Scan 944 Emiten BEI (/scan)", style="Accent.TButton",
-                   command=self.trigger_full_scan).pack(side="left")
-        ttk.Label(bar, text="Hasil scan & ringkasan ada di footer bawah tabel", style="Card.Muted.TLabel").pack(side="right")
+        bar = tk.Frame(self.tab_sinyal, bg=THEME["bg"], padx=8, pady=8)
+        bar.pack(fill="x")
 
-        cols = ("ticker", "name", "price", "ret1d", "signal", "rel_pct", "entry", "sl", "tp", "quality", "reason")
-        headers = {
-            "ticker": ("Kode", 65), "name": ("Emiten", 150), "price": ("Harga", 85),
-            "ret1d": ("%1H", 65), "signal": ("Sinyal", 70), "rel_pct": ("Rank%", 65),
-            "entry": ("Entry", 80), "sl": ("SL", 80), "tp": ("TP", 80),
-            "quality": ("Fund", 50), "reason": ("Catatan", 290),
-        }
-        self.sinyal_tree = self._tree_base(body, cols, headers, {"BELI": GREEN, "JUAL": RED, "TAHAN": FG})
-        for c in cols:
-            self.sinyal_tree.column(c, anchor="w" if c in ("ticker", "name", "signal", "quality", "reason") else "e")
-        self.sinyal_tree.bind("<Double-1>", lambda _e: self._inspect_selected_tree(self.sinyal_tree))
-        self.sinyal_tree.pack(fill="both", expand=True)
-        self.sinyal_empty = self._empty_label(
-            body, "Belum ada snapshot sinyal — klik 'Muat Snapshot' atau jalankan '⚡ Scan 944 Emiten BEI'.")
-        foot = ttk.Frame(body, style="Card.TFrame")
-        foot.pack(fill="x", pady=(8, 0))
-        self.sinyal_meta_var = tk.StringVar(value="Snapshot: -")
-        ttk.Label(foot, textvariable=self.sinyal_meta_var, style="Card.Muted.TLabel").pack(side="left")
-        self.sinyal_chips = ttk.Frame(foot, style="Card.TFrame")
-        self.sinyal_chips.pack(side="right")
+        for label, val in (("Semua", "ALL"), ("BELI", "BELI"), ("TAHAN", "TAHAN"), ("JUAL", "JUAL")):
+            tk.Radiobutton(
+                bar,
+                text=label,
+                variable=self.var_sinyal_filter,
+                value=val,
+                command=self.refresh_sinyal,
+                bg=THEME["card"],
+                fg=THEME["fg"],
+                selectcolor=THEME["accent_dark"],
+                activebackground=THEME["card_hover"],
+                activeforeground=THEME["fg"],
+                indicatoron=False,
+                padx=10,
+                pady=4,
+                font=FONT_SMALL_BOLD,
+                relief="flat",
+                bd=0,
+            ).pack(side="left", padx=(0, 4))
+
+        tk.Label(bar, text="Cari:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(10, 4),
+        )
+        self.ent_sinyal_search = self._entry(bar, self.var_sinyal_search, width=14)
+        self.ent_sinyal_search.pack(side="left", padx=(0, 8))
+        self.ent_sinyal_search.bind("<Return>", lambda _e: self.refresh_sinyal())
+
+        tk.Label(bar, text="Sektor:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 4),
+        )
+        self.cb_sinyal_sector = ttk.Combobox(
+            bar,
+            textvariable=self.var_sinyal_sector,
+            values=["Semua Sektor"],
+            width=18,
+            state="readonly",
+            style="Dark.TCombobox",
+        )
+        self.cb_sinyal_sector.pack(side="left", padx=(0, 8))
+        self.cb_sinyal_sector.bind("<<ComboboxSelected>>", lambda _e: self.refresh_sinyal())
+
+        self.sw_quality = Switch(
+            bar,
+            text="Saring Kualitas",
+            variable=self.var_sinyal_quality,
+            command=self.refresh_sinyal,
+            bg=THEME["bg"],
+        )
+        self.sw_quality.pack(side="left", padx=(4, 8))
+
+        ttk.Button(
+            bar, text="Terapkan", style="Accent.TButton", command=self.refresh_sinyal,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            bar, text="⚡ Scan BEI (~944)", style="Ghost.TButton", command=self._run_full_scan,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            bar, text="Ekspor CSV", style="Ghost.TButton", command=self._export_sinyal_csv,
+        ).pack(side="right")
+
+        kpi = tk.Frame(self.tab_sinyal, bg=THEME["bg"], padx=8)
+        kpi.pack(fill="x", pady=(0, 8))
+        for c in range(5):
+            kpi.columnconfigure(c, weight=1, uniform="skpi")
+        self.sk_scan_date = _make_kpi_card(kpi, "Snapshot /scan")
+        self.sk_matched = _make_kpi_card(kpi, "Hasil Filter")
+        self.sk_beli = _make_kpi_card(kpi, "Total BELI")
+        self.sk_tahan = _make_kpi_card(kpi, "Total TAHAN")
+        self.sk_jual = _make_kpi_card(kpi, "Total JUAL")
+        for idx, c in enumerate(
+            (self.sk_scan_date, self.sk_matched, self.sk_beli, self.sk_tahan, self.sk_jual)
+        ):
+            c["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
+
+        self.tree_sinyal = _build_treeview(
+            self.tab_sinyal,
+            [
+                ("ticker", "Ticker", 80, "center", "str"),
+                ("name", "Emiten", 150, "w", "str"),
+                ("sector", "Sektor", 130, "w", "str"),
+                ("syariah", "ISSI", 58, "center", "str"),
+                ("price", "Harga", 88, "e", "num"),
+                ("ret1d", "1H %", 86, "e", "num"),
+                ("score", "Skor", 70, "e", "num"),
+                ("signal", "Sinyal", 76, "center", "str"),
+                ("rsi", "RSI14", 66, "e", "num"),
+                ("vol_ratio", "Vol/Avg", 74, "e", "num"),
+                ("reasons", "Alasan / Kualitas Fundamental", 300, "w", "str"),
+            ],
+            on_double_click=lambda _e: self._sinyal_open_cek(),
+            on_right_click=self._sinyal_context_menu,
+        )
+
+    # ------------------------------------------------------------------
+    # Tab 4: Paket Rekomendasi (/paket)
+    # ------------------------------------------------------------------
 
     def _build_paket_tab(self) -> None:
-        card, body = self._card(self.tab_paket, padding=10)
-        card.pack(fill="both", expand=True)
-        bar = ttk.Frame(body, style="Card.TFrame")
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Button(bar, text="🎯 Susun Paket Beli Stockbit (/paket)", style="Accent.TButton",
-                   command=self.trigger_build_paket).pack(side="left", padx=(0, 8))
-        self.paket_info_var = tk.StringVar(value="Klik tombol di kiri untuk menyusun paket multi-saham dari snapshot /scan.")
-        ttk.Label(bar, textvariable=self.paket_info_var, style="Card.Muted.TLabel").pack(side="left")
+        bar = tk.Frame(self.tab_paket, bg=THEME["bg"], padx=8, pady=8)
+        bar.pack(fill="x")
 
-        cols = ("ticker", "grade", "entry", "sl", "tp", "lots", "value", "risk", "rr", "notes")
-        headers = {
-            "ticker": ("Kode", 70), "grade": ("Grade", 60), "entry": ("Entry Limit", 90),
-            "sl": ("SL", 85), "tp": ("TP", 85), "lots": ("Lot", 55),
-            "value": ("Nilai Beli", 110), "risk": ("Risiko Maks", 95), "rr": ("R:R", 55),
-            "notes": ("Catatan / Peringatan", 360),
-        }
-        self.paket_tree = self._tree_base(body, cols, headers, {})
-        for c in cols:
-            self.paket_tree.column(c, anchor="w" if c in ("ticker", "grade", "notes") else "e")
-        self.paket_tree.bind("<Double-1>", lambda _e: self._inspect_selected_tree(self.paket_tree))
-        self.paket_tree.pack(fill="both", expand=True)
-        self.paket_empty = self._empty_label(
-            body, "Belum ada paket beli — jalankan '⚡ Scan 944 Emiten BEI' di tab Sinyal & Scan BEI,\nlalu klik '🎯 Susun Paket Beli Stockbit'.")
+        tk.Label(bar, text="Maks Emiten:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 4),
+        )
+        cb_max = ttk.Combobox(
+            bar, textvariable=self.var_paket_max, values=["1", "2", "3", "4", "5"],
+            width=4, state="readonly", style="Dark.TCombobox",
+        )
+        cb_max.pack(side="left", padx=(0, 8))
+        cb_max.bind("<<ComboboxSelected>>", lambda _e: self.refresh_paket())
 
-    def _build_portfolio_tab(self) -> None:
-        card, body = self._card(self.tab_port, padding=10)
-        card.pack(fill="both", expand=True)
-        bar = ttk.Frame(body, style="Card.TFrame")
-        bar.pack(fill="x", pady=(0, 8))
-        self.tx_ticker = tk.StringVar()
-        self.tx_lots = tk.StringVar()
-        self.tx_price = tk.StringVar()
-        ttk.Label(bar, text="Kode:", style="Card.TLabel").pack(side="left", padx=(0, 4))
-        ttk.Entry(bar, textvariable=self.tx_ticker, width=9).pack(side="left", padx=(0, 6))
-        ttk.Label(bar, text="Lot:", style="Card.TLabel").pack(side="left", padx=(0, 4))
-        ttk.Entry(bar, textvariable=self.tx_lots, width=6).pack(side="left", padx=(0, 6))
-        ttk.Label(bar, text="Harga:", style="Card.TLabel").pack(side="left", padx=(0, 4))
-        ttk.Entry(bar, textvariable=self.tx_price, width=9).pack(side="left", padx=(0, 8))
-        ttk.Button(bar, text="Catat Beli", style="Accent.TButton", command=lambda: self._record_tx("buy")).pack(side="left", padx=(0, 6))
-        ttk.Button(bar, text="Catat Jual", style="Danger.TButton", command=lambda: self._record_tx("sell")).pack(side="left")
-        ttk.Label(bar, text="Catat manual sesuai eksekusi Stockbit PC — tanpa auto-trading & tanpa order otomatis",
-                  style="Card.Muted.TLabel").pack(side="right")
+        ttk.Button(
+            bar, text="↻ Hitung Ulang Paket", style="Accent.TButton", command=self.refresh_paket,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bar, text="📋 Salin Order Stockbit", style="Ghost.TButton", command=self._copy_paket_orders,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bar, text="Catat Beli Terpilih", style="Ghost.TButton", command=self._paket_prefill_buy,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bar, text="Ekspor CSV", style="Ghost.TButton", command=self._export_paket_csv,
+        ).pack(side="right")
 
-        cols = ("ticker", "lots", "avg", "price", "pnl", "sl", "trail", "tp", "thesis", "reasons")
-        headers = {
-            "ticker": ("Kode", 75), "lots": ("Lot", 55), "avg": ("Avg Beli", 90),
-            "price": ("Harga", 90), "pnl": ("PnL Net", 80), "sl": ("SL Efektif", 90),
-            "trail": ("Trailing 22h", 95), "tp": ("TP", 85), "thesis": ("Tesis", 105),
-            "reasons": ("Alasan Tesis", 340),
-        }
-        self.port_tree = self._tree_base(body, cols, headers, {
-            "GUGUR": RED, "MELEMAH": AMBER, "MENGUAT": GREEN, "TETAP": FG,
-        })
-        for c in cols:
-            self.port_tree.column(c, anchor="w" if c in ("ticker", "thesis", "reasons") else "e")
-        self.port_tree.pack(fill="both", expand=True)
-        self.port_empty = self._empty_label(
-            body, "Belum ada posisi terbuka — catat eksekusi Beli/Jual manual di atas\nsesuai order yang kamu eksekusi di Stockbit.")
-        foot = ttk.Frame(body, style="Card.TFrame")
-        foot.pack(fill="x", pady=(8, 0))
-        self.port_foot_var = tk.StringVar(value="")
-        ttk.Label(foot, textvariable=self.port_foot_var, style="Card.Muted.TLabel").pack(side="left")
+        kpi = tk.Frame(self.tab_paket, bg=THEME["bg"], padx=8)
+        kpi.pack(fill="x", pady=(0, 8))
+        for c in range(4):
+            kpi.columnconfigure(c, weight=1, uniform="pkpi")
+        self.pk_modal = _make_kpi_card(kpi, "Modal & Skala Rezim")
+        self.pk_alloc = _make_kpi_card(kpi, "Total Alokasi Paket")
+        self.pk_cash = _make_kpi_card(kpi, "Sisa Kas")
+        self.pk_risk = _make_kpi_card(kpi, "Total Risiko ke SL")
+        for idx, c in enumerate((self.pk_modal, self.pk_alloc, self.pk_cash, self.pk_risk)):
+            c["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
+
+        self.tree_paket = _build_treeview(
+            self.tab_paket,
+            [
+                ("grade", "Grade", 62, "center", "str"),
+                ("ticker", "Ticker", 78, "center", "str"),
+                ("sector", "Sektor", 120, "w", "str"),
+                ("syariah", "ISSI", 55, "center", "str"),
+                ("entry", "Entry", 82, "e", "num"),
+                ("pullback", "Pullback", 82, "e", "num"),
+                ("sl", "SL", 78, "e", "num"),
+                ("tp", "TP", 78, "e", "num"),
+                ("lots", "Lot", 56, "e", "num"),
+                ("buy_cost", "Est. Biaya", 112, "e", "num"),
+                ("real_risk", "Risiko SL", 104, "e", "num"),
+                ("warnings", "Catatan / Risiko", 280, "w", "str"),
+            ],
+            height=10,
+            on_double_click=lambda _e: self._paket_open_cek(),
+            on_right_click=self._paket_context_menu,
+        )
+
+        self.lbl_paket_footer = tk.Label(
+            self.tab_paket,
+            text="",
+            bg=THEME["card"],
+            fg=THEME["muted"],
+            font=FONT_SMALL,
+            anchor="w",
+            padx=10,
+            pady=6,
+            justify="left",
+        )
+        self.lbl_paket_footer.pack(fill="x", padx=8, pady=(0, 8))
+
+    # ------------------------------------------------------------------
+    # Tab 5: Portofolio Asli + Risiko VaR + Pelacak Tesis
+    # ------------------------------------------------------------------
+
+    def _build_port_tab(self) -> None:
+        kpi = tk.Frame(self.tab_port, bg=THEME["bg"], padx=8, pady=8)
+        kpi.pack(fill="x")
+        for c in range(4):
+            kpi.columnconfigure(c, weight=1, uniform="prkpi")
+        self.pt_val = _make_kpi_card(kpi, "Nilai Pasar / Cost")
+        self.pt_pnl = _make_kpi_card(kpi, "PnL Belum Realisasi")
+        self.pt_sl = _make_kpi_card(kpi, "Risiko ke Stop-Loss")
+        self.pt_var = _make_kpi_card(kpi, "VaR 95% / Batas Risiko")
+        for idx, c in enumerate((self.pt_val, self.pt_pnl, self.pt_sl, self.pt_var)):
+            c["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
+
+        self.lbl_port_warn = tk.Label(
+            self.tab_port,
+            text="",
+            bg=THEME["amber_soft"],
+            fg=THEME["amber"],
+            font=FONT_SMALL_BOLD,
+            anchor="w",
+            padx=10,
+            pady=4,
+        )
+
+        form = tk.Frame(
+            self.tab_port,
+            bg=THEME["card"],
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+            padx=10,
+            pady=7,
+        )
+        form.pack(fill="x", padx=8, pady=(0, 8))
+
+        tk.Label(form, text="Catat Eksekusi Manual Stockbit:", bg=THEME["card"],
+                 fg=THEME["accent"], font=FONT_SMALL_BOLD).pack(side="left", padx=(0, 10))
+        tk.Label(form, text="Kode:", bg=THEME["card"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 3),
+        )
+        ent_pt = self._entry(form, self.var_port_ticker, width=8)
+        ent_pt.pack(side="left", padx=(0, 6))
+        ttk.Combobox(
+            form, textvariable=self.var_port_side, values=["BELI", "JUAL"],
+            width=6, state="readonly", style="Dark.TCombobox",
+        ).pack(side="left", padx=(0, 6))
+        tk.Label(form, text="Harga:", bg=THEME["card"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 3),
+        )
+        ent_pp = self._entry(form, self.var_port_price, width=9)
+        ent_pp.pack(side="left", padx=(0, 6))
+        tk.Label(form, text="Lot:", bg=THEME["card"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 3),
+        )
+        ent_pl = self._entry(form, self.var_port_lots, width=6)
+        ent_pl.pack(side="left", padx=(0, 6))
+        tk.Label(form, text="Catatan:", bg=THEME["card"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 3),
+        )
+        ent_pn = self._entry(form, self.var_port_notes, width=16)
+        ent_pn.pack(side="left", padx=(0, 8))
+        for ent in (ent_pt, ent_pp, ent_pl, ent_pn):
+            ent.bind("<Return>", lambda _e: self._submit_execution())
+
+        ttk.Button(
+            form, text="Simpan Eksekusi", style="Accent.TButton", command=self._submit_execution,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            form, text="Siapkan Jual", style="Ghost.TButton", command=self._port_prefill_sell,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            form, text="⚙ Batas Risiko", style="Ghost.TButton", command=self._open_risk_limit_dialog,
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            form, text="Ekspor CSV", style="Ghost.TButton", command=self._export_port_csv,
+        ).pack(side="right")
+
+        self.tree_port = _build_treeview(
+            self.tab_port,
+            [
+                ("ticker", "Ticker", 76, "center", "str"),
+                ("sector", "Sektor", 112, "w", "str"),
+                ("lots", "Lot", 54, "e", "num"),
+                ("avg", "Avg Beli", 80, "e", "num"),
+                ("price", "Harga", 80, "e", "num"),
+                ("ret1d", "1H %", 78, "e", "num"),
+                ("value", "Nilai Pasar", 112, "e", "num"),
+                ("pnl_rp", "PnL Rp", 104, "e", "num"),
+                ("pnl_pct", "PnL %", 78, "e", "num"),
+                ("sl", "SL Efektif", 112, "e", "num"),
+                ("tp", "TP1 / TP", 104, "e", "str"),
+                ("days", "Hari", 52, "e", "num"),
+                ("thesis", "Tesis", 92, "center", "str"),
+                ("guidance", "Panduan Exit & Peringatan", 250, "w", "str"),
+            ],
+            on_double_click=lambda _e: self._port_open_cek(),
+            on_right_click=self._port_context_menu,
+        )
+
+    # ------------------------------------------------------------------
+    # Tab 6: Jurnal & Evaluasi (MAE/MFE + Alpha vs IHSG)
+    # ------------------------------------------------------------------
 
     def _build_jurnal_tab(self) -> None:
-        card, body = self._card(self.tab_jurnal, padding=0)
-        card.pack(fill="both", expand=True)
-        ttk.Button(body, text="Muat Ulang Jurnal (/jurnal)", command=self.trigger_load_jurnal).pack(anchor="w", padx=12, pady=(10, 6))
-        text_fr = ttk.Frame(body, style="Card.TFrame")
-        text_fr.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self.jurnal_text = tk.Text(
-            text_fr, wrap="word", bg=TEXTBG, fg=FG, insertbackground=FG,
-            font=("Consolas", 10), relief="flat", padx=14, pady=12, state="disabled",
+        bar = tk.Frame(self.tab_jurnal, bg=THEME["bg"], padx=8, pady=8)
+        bar.pack(fill="x")
+        tk.Label(bar, text="Riwayat Terakhir:", bg=THEME["bg"], fg=THEME["muted"],
+                 font=FONT_SMALL).pack(side="left", padx=(0, 4))
+        cb = ttk.Combobox(
+            bar, textvariable=self.var_jurnal_limit, values=["25", "50", "100", "200"],
+            width=6, state="readonly", style="Dark.TCombobox",
         )
-        sb = ttk.Scrollbar(text_fr, orient="vertical", command=self.jurnal_text.yview)
-        self.jurnal_text.configure(yscrollcommand=sb.set)
-        self.jurnal_text.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        cb.pack(side="left", padx=(0, 8))
+        cb.bind("<<ComboboxSelected>>", lambda _e: self.refresh_jurnal())
+        ttk.Button(
+            bar, text="↻ Segarkan Jurnal", style="Accent.TButton", command=self.refresh_jurnal,
+        ).pack(side="left")
+        ttk.Button(
+            bar, text="Ekspor Eksekusi CSV", style="Ghost.TButton", command=self._export_jurnal_csv,
+        ).pack(side="right")
+
+        kpi = tk.Frame(self.tab_jurnal, bg=THEME["bg"], padx=8)
+        kpi.pack(fill="x", pady=(0, 8))
+        for c in range(5):
+            kpi.columnconfigure(c, weight=1, uniform="jkpi")
+        self.jk_execs = _make_kpi_card(kpi, "Eksekusi Asli")
+        self.jk_wr = _make_kpi_card(kpi, "Win Rate / Closed")
+        self.jk_pf = _make_kpi_card(kpi, "Profit Factor")
+        self.jk_pnl = _make_kpi_card(kpi, "Realisasi PnL Bersih")
+        self.jk_alpha = _make_kpi_card(kpi, "Rata R / Alpha vs IHSG")
+        for idx, c in enumerate((self.jk_execs, self.jk_wr, self.jk_pf, self.jk_pnl, self.jk_alpha)):
+            c["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
+
+        self.txt_jurnal = scrolledtext.ScrolledText(
+            self.tab_jurnal,
+            wrap="word",
+            bg=THEME["bg_elev"],
+            fg=THEME["fg"],
+            insertbackground=THEME["accent"],
+            font=FONT_MONO,
+            relief="flat",
+            padx=12,
+            pady=10,
+        )
+        self.txt_jurnal.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.txt_jurnal.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Tab 7: Cek Emiten (Chart PIL + Rencana + Forensik + Fundamental + Berita)
+    # ------------------------------------------------------------------
 
     def _build_cek_tab(self) -> None:
-        card, body = self._card(self.tab_cek, padding=10)
-        card.pack(fill="both", expand=True)
-        bar = ttk.Frame(body, style="Card.TFrame")
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Label(bar, text="Kode Saham BEI:", style="Card.TLabel").pack(side="left", padx=(0, 6))
-        self.cek_ticker_var = tk.StringVar(value="BBCA")
-        ent = ttk.Entry(bar, textvariable=self.cek_ticker_var, width=12)
-        ent.pack(side="left", padx=(0, 6))
-        ent.bind("<Return>", lambda _e: self.trigger_inspect_ticker())
-        ttk.Button(bar, text="Analisis & Cek BUY/SELL", style="Accent.TButton",
-                   command=self.trigger_inspect_ticker).pack(side="left")
+        bar = tk.Frame(self.tab_cek, bg=THEME["bg"], padx=8, pady=8)
+        bar.pack(fill="x")
 
-        pane = tk.PanedWindow(body, orient="horizontal", bg=BORDER, sashwidth=5,
-                              sashrelief="flat", bd=0, opaqueresize=False)
-        pane.pack(fill="both", expand=True)
-
-        self.cek_text = tk.Text(
-            pane, wrap="word", bg=TEXTBG, fg=FG, insertbackground=FG,
-            font=("Consolas", 10), relief="flat", padx=14, pady=12, state="disabled", width=56,
+        tk.Label(bar, text="Ticker:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 4),
         )
-        pane.add(self.cek_text, stretch="always", minsize=380)
+        self.ent_cek = self._entry(bar, self.var_cek_ticker, width=10)
+        self.ent_cek.pack(side="left", padx=(0, 6))
+        self.ent_cek.bind("<Return>", lambda _e: self.refresh_cek())
 
-        chart_outer = tk.Frame(pane, bg=BORDER)
-        chart_inner = ttk.Frame(chart_outer, style="Card.TFrame")
-        chart_inner.pack(fill="both", expand=True, padx=1, pady=1)
-        self.chart_label = ttk.Label(chart_inner, text="Grafik akan tampil setelah Cek Emiten dijalankan.",
-                                     style="Card.Muted.TLabel", anchor="center", wraplength=460, justify="center")
-        self.chart_label.pack(fill="both", expand=True, padx=10, pady=10)
-        pane.add(chart_outer, stretch="always", minsize=420)
+        tk.Label(bar, text="Periode:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 4),
+        )
+        cb_p = ttk.Combobox(
+            bar, textvariable=self.var_cek_period, values=list(dm.VALID_CHART_PERIODS),
+            width=6, state="readonly", style="Dark.TCombobox",
+        )
+        cb_p.pack(side="left", padx=(0, 8))
+        cb_p.bind("<<ComboboxSelected>>", lambda _e: self.refresh_cek())
+
+        ttk.Button(
+            bar, text="🔍 Cek Lengkap", style="Accent.TButton", command=self.refresh_cek,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bar, text="+ Watchlist", style="Ghost.TButton", command=self._cek_add_watchlist,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bar, text="📋 Salin Order Stockbit", style="Ghost.TButton", command=self._copy_cek_order,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bar, text="💾 Simpan Chart PNG", style="Ghost.TButton", command=self._save_cek_chart_png,
+        ).pack(side="right")
+
+        self.frm_cek_chips = tk.Frame(self.tab_cek, bg=THEME["bg"], padx=8)
+        self.frm_cek_chips.pack(fill="x", pady=(0, 4))
+        self._rebuild_quick_chips()
+
+        self.lbl_cek_header = tk.Label(
+            self.tab_cek,
+            text="Pilih atau masukkan kode emiten (contoh: BBCA, TLKM, BBRI) lalu tekan Cek Lengkap.",
+            bg=THEME["card"],
+            fg=THEME["fg"],
+            font=FONT_UI_BOLD,
+            anchor="w",
+            padx=12,
+            pady=8,
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+        )
+        self.lbl_cek_header.pack(fill="x", padx=8, pady=(0, 6))
+
+        body = tk.PanedWindow(
+            self.tab_cek, orient="horizontal", bg=THEME["bg"], sashwidth=6, bd=0,
+        )
+        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        left = tk.Frame(
+            body, bg=THEME["card"], highlightbackground=THEME["border"],
+            highlightthickness=1, padx=6, pady=6,
+        )
+        self.lbl_chart = tk.Label(
+            left,
+            text="Grafik 4-panel (Harga/MA/BB/SL-TP, Volume, RSI, MACD) akan tampil di sini.",
+            bg=THEME["bg_elev"],
+            fg=THEME["muted"],
+            font=FONT_SMALL,
+            compound="center",
+        )
+        self.lbl_chart.pack(fill="both", expand=True)
+        self.lbl_chart.bind("<Configure>", lambda _e: self._resize_chart_preview())
+        body.add(left, stretch="always", minsize=460)
+
+        right = tk.Frame(
+            body, bg=THEME["card"], highlightbackground=THEME["border"],
+            highlightthickness=1, padx=6, pady=6,
+        )
+        self.txt_cek = scrolledtext.ScrolledText(
+            right,
+            wrap="word",
+            bg=THEME["bg_elev"],
+            fg=THEME["fg"],
+            insertbackground=THEME["accent"],
+            font=FONT_UI,
+            relief="flat",
+            padx=10,
+            pady=8,
+        )
+        self.txt_cek.pack(fill="both", expand=True)
+        self.txt_cek.configure(state="disabled")
+        body.add(right, stretch="always", minsize=400)
+
+    # ------------------------------------------------------------------
+    # Tab 8: Alert & Riwayat + Filter + Uji Toast
+    # ------------------------------------------------------------------
 
     def _build_alerts_tab(self) -> None:
-        card, body = self._card(self.tab_alerts, padding=10)
-        card.pack(fill="both", expand=True)
-        bar = ttk.Frame(body, style="Card.TFrame")
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Label(bar, text="Riwayat alert BUY / SELL / Perubahan Tesis (tidak berulang selama status sama):",
-                  style="Card.TLabel").pack(side="left")
-        ttk.Button(bar, text="Bersihkan Log", command=self._clear_alerts).pack(side="right")
+        bar = tk.Frame(self.tab_alerts, bg=THEME["bg"], padx=8, pady=8)
+        bar.pack(fill="x")
 
-        self.alert_list = tk.Text(
-            body, wrap="word", bg=TEXTBG, fg=FG, insertbackground=FG,
-            font=("Consolas", 9), relief="flat", padx=12, pady=10, state="disabled",
+        tk.Label(bar, text="Filter:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
+            side="left", padx=(0, 4),
         )
-        self.alert_empty = self._empty_label(
-            body, "Belum ada alert — alert muncul saat sinyal watchlist berubah (BELI/JUAL)\natau status tesis posisi berubah (GUGUR/MELEMAH/MENGUAT).")
-        for tag, color in (("green", GREEN), ("red", RED), ("amber", AMBER), ("gray", MUTED), ("blue", BLUE)):
-            self.alert_list.tag_configure(tag, foreground=color)
-        sb = ttk.Scrollbar(body, orient="vertical", command=self.alert_list.yview)
-        self.alert_list.configure(yscrollcommand=sb.set)
-        self.alert_list.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-
-    # ------------------------------------------------------------- tray & window
-    def _setup_tray(self) -> None:
-        menu = pystray.Menu(
-            pystray.MenuItem("Buka SahamBot", lambda _icon, _item: self.ui_queue.put(("tray_show", None)), default=True),
-            pystray.MenuItem("Refresh Sekarang", lambda _icon, _item: self.ui_queue.put(("tray_refresh", None))),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Keluar", lambda _icon, _item: self.ui_queue.put(("tray_quit", None))),
+        cb = ttk.Combobox(
+            bar,
+            textvariable=self.var_alert_filter,
+            values=["Semua", "Zona Beli", "Sinyal / Alert", "Exit / Tesis"],
+            width=16,
+            state="readonly",
+            style="Dark.TCombobox",
         )
-        self._tray_icon = pystray.Icon("SahamBot", create_tray_icon_image(), "SahamBot Desktop", menu)
-        threading.Thread(target=self._tray_icon.run, daemon=True).start()
+        cb.pack(side="left", padx=(0, 8))
+        cb.bind("<<ComboboxSelected>>", lambda _e: self._render_alerts_table())
 
-    def _minimize_to_tray(self) -> None:
-        self.root.withdraw()
-        if not self._tray_notified:
-            self._tray_notified = True
-            if self.toast_var.get():
-                send_windows_toast(
-                    "SahamBot berjalan di background",
-                    "Klik ikon SahamBot di System Tray untuk membuka kembali atau keluar.",
+        ttk.Button(
+            bar, text="Uji Toast Windows", style="Ghost.TButton",
+            command=lambda: send_windows_toast("SahamBot Desktop", "Notifikasi desktop aktif & siap."),
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            bar, text="Salin Ringkasan", style="Ghost.TButton", command=self._copy_alerts_text,
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            bar, text="Bersihkan Riwayat", style="Danger.TButton", command=self._clear_alerts,
+        ).pack(side="right")
+
+        self.tree_alerts = _build_treeview(
+            self.tab_alerts,
+            [
+                ("time", "Waktu WIB", 130, "center", "str"),
+                ("kind", "Kategori", 130, "center", "str"),
+                ("ticker", "Ticker", 80, "center", "str"),
+                ("message", "Detail Kondisi / Trigger", 620, "w", "str"),
+            ],
+            on_double_click=lambda _e: self._alert_open_cek(),
+        )
+
+    # ------------------------------------------------------------------
+    # Worker & Antrean UI Thread-Safe
+    # ------------------------------------------------------------------
+
+    def _run_async(self, key: str, fn: Callable[[], Any], done_event: str) -> None:
+        if self._busy_flags.get(key):
+            self._pending_jobs[key] = (fn, done_event)
+            return
+        self._busy_flags[key] = True
+
+        def _worker() -> None:
+            try:
+                res = fn()
+                self._ui_queue.put((done_event, (key, True, res)))
+            except Exception as exc:
+                log.exception("Worker desktop %s gagal", key)
+                self._ui_queue.put((done_event, (key, False, str(exc))))
+
+        threading.Thread(target=_worker, name=f"desktop-{key}", daemon=True).start()
+
+    def _pump_queue(self) -> None:
+        if self._closing:
+            return
+        try:
+            while True:
+                ev, payload = self._ui_queue.get_nowait()
+                if ev == "_tray_show":
+                    self._restore_window()
+                    continue
+                if ev == "_tray_refresh":
+                    self.refresh_all()
+                    continue
+                if ev == "_tray_quit":
+                    self._quit_app()
+                    return
+
+                key, ok, data = payload
+                self._busy_flags[key] = False
+                pending = self._pending_jobs.pop(key, None)
+                if not ok:
+                    self.var_status.set(f"[{key}] Gagal memuat: {data}")
+                    if key == "scan":
+                        messagebox.showwarning("Scan BEI", f"Scan gagal: {data}", parent=self.root)
+                else:
+                    handler = {
+                        "market": self._apply_market,
+                        "watch": self._apply_watch,
+                        "sinyal": self._apply_sinyal,
+                        "scan": self._apply_scan_done,
+                        "paket": self._apply_paket,
+                        "port": self._apply_port,
+                        "jurnal": self._apply_jurnal,
+                        "cek": self._apply_cek,
+                    }.get(ev)
+                    if handler:
+                        try:
+                            handler(data)
+                        except Exception as exc:
+                            log.exception("Render UI desktop %s gagal", ev)
+                            self.var_status.set(f"[{ev}] Gagal render UI: {exc}")
+                if pending is not None and not self._closing:
+                    p_fn, p_ev = pending
+                    self._run_async(key, p_fn, p_ev)
+        except queue.Empty:
+            pass
+        if not self._closing:
+            self._pump_after_id = self.root.after(120, self._pump_queue)
+
+    def _schedule_auto_refresh(self) -> None:
+        mins = VALID_REFRESH_MIN.get(self.var_refresh_interval.get(), 0)
+        if hasattr(self, "_auto_after_id") and self._auto_after_id:
+            try:
+                self.root.after_cancel(self._auto_after_id)
+            except Exception:
+                pass
+            self._auto_after_id = None
+        if mins > 0 and not self._closing:
+            self._auto_after_id = self.root.after(mins * 60_000, self._auto_tick)
+
+    def _auto_tick(self) -> None:
+        self._auto_after_id = None
+        if self._closing:
+            return
+        if marketcal.is_market_open() or not self._last_market_pulse:
+            self.refresh_all()
+        else:
+            self.refresh_market()
+            self.refresh_watch()
+            self.refresh_port()
+        self._schedule_auto_refresh()
+
+    # ------------------------------------------------------------------
+    # Refresh Triggers
+    # ------------------------------------------------------------------
+
+    def refresh_all(self) -> None:
+        self.var_status.set("Menyegarkan data pasar, watchlist, sinyal, paket, portofolio & jurnal...")
+        self.refresh_market()
+        self.refresh_watch()
+        self.refresh_sinyal()
+        self.refresh_paket()
+        self.refresh_port()
+        self.refresh_jurnal()
+
+    def refresh_active_tab(self) -> None:
+        idx = self.notebook.index(self.notebook.select())
+        actions = {
+            0: self.refresh_market,
+            1: self.refresh_watch,
+            2: self.refresh_sinyal,
+            3: self.refresh_paket,
+            4: self.refresh_port,
+            5: self.refresh_jurnal,
+            6: self.refresh_cek,
+            7: self._render_alerts_table,
+        }
+        fn = actions.get(idx, self.refresh_all)
+        fn()
+
+    def _on_tab_changed(self, _event: tk.Event) -> None:
+        idx = self.notebook.index(self.notebook.select())
+        if idx == 6:
+            if not self._last_cek_detail:
+                self.refresh_cek()
+            else:
+                self.root.after(40, self._resize_chart_preview)
+
+    def _current_chat_id(self) -> str:
+        raw = self.var_profile.get().strip() if hasattr(self, "var_profile") else ""
+        return raw or str(DESKTOP_CHAT_ID)
+
+    def _get_modal_rp(self) -> float:
+        raw = self.var_modal.get().strip()
+        parsed = textutil.parse_rupiah(raw)
+        if parsed is None:
+            parsed = _safe_float(raw.replace(".", "").replace(",", ""), float(DEFAULT_MODAL_RP))
+        return max(100_000.0, float(parsed or DEFAULT_MODAL_RP))
+
+    def _save_modal(self) -> None:
+        self._save_profile()
+
+    def _save_profile(self) -> None:
+        cid = self._current_chat_id()
+        prev_prof = getattr(self, "_active_profile", cid)
+        if cid != prev_prof:
+            # Muat pengaturan persisten milik profil baru bila user ganti Profil/Chat ID
+            self._active_profile = cid
+            saved_modal = store_watchlist.get_modal(cid) or DEFAULT_MODAL_RP
+            saved_syariah = bool(store_profile.get_syariah_mode(cid))
+            self.var_modal.set(str(int(saved_modal)))
+            self.var_syariah.set(saved_syariah)
+            self.var_status.set(f"Profil beralih ke '{cid}' (Modal {_fmt_rp(saved_modal)})")
+            self.refresh_all()
+            return
+        val = self._get_modal_rp()
+        store_watchlist.set_modal(cid, int(round(val)))
+        self.var_modal.set(str(int(round(val))))
+        self._active_profile = cid
+        self.var_status.set(f"Profil '{cid}' & modal {_fmt_rp(val)} disimpan.")
+        self.refresh_watch()
+        self.refresh_paket()
+        self.refresh_port()
+
+    def _on_toggle_syariah(self) -> None:
+        cid = self._current_chat_id()
+        enabled = bool(self.var_syariah.get())
+        store_profile.set_syariah_mode(cid, enabled)
+        label = "AKTIF (hanya saham ISSI)" if enabled else "NONAKTIF (semua saham BEI)"
+        self.var_status.set(f"Mode Syariah (ISSI): {label}")
+        self.refresh_watch()
+        self.refresh_sinyal()
+        self.refresh_paket()
+
+    def _regime_ctx(self) -> dict[str, Any] | None:
+        ihsg = (self._last_market_pulse or {}).get("ihsg") or {}
+        reg = ihsg.get("regime")
+        return reg if isinstance(reg, dict) else None
+
+    def refresh_market(self, force: bool = True) -> None:
+        if not force and self._last_market_pulse:
+            return
+        self.var_status.set("Mengambil data IHSG, breadth /scan, sektor BEI & berita pasar...")
+        self._run_async(
+            "market",
+            lambda: dm.fetch_market_pulse(include_idx=True, include_news=True),
+            "market",
+        )
+
+    def refresh_watch(self) -> None:
+        cid = self._current_chat_id()
+        tickers = store_watchlist.get_watchlist(cid)
+        alerts_map = store_watchlist.get_alerts(cid)
+        modal = self._get_modal_rp()
+        syariah_only = bool(self.var_syariah.get())
+        reg = self._regime_ctx()
+        self._run_async(
+            "watch",
+            lambda: dm.evaluate_watchlist_rows(
+                tickers,
+                modal,
+                market_regime=reg,
+                syariah_only=syariah_only,
+                alerts_map=alerts_map,
+            ),
+            "watch",
+        )
+
+    def refresh_sinyal(self) -> None:
+        sig = self.var_sinyal_filter.get()
+        qual = bool(self.var_sinyal_quality.get())
+        syar = bool(self.var_syariah.get())
+        q = self.var_sinyal_search.get().strip()
+        sec = self.var_sinyal_sector.get()
+        sector_filter = "" if sec == "Semua Sektor" else sec
+        self._run_async(
+            "sinyal",
+            lambda: dm.load_sinyal_rows(
+                sig,
+                quality_only=qual,
+                syariah_only=syar,
+                search=q,
+                sector=sector_filter,
+                limit=200,
+            ),
+            "sinyal",
+        )
+
+    def _run_full_scan(self) -> None:
+        if self._busy_flags.get("scan"):
+            messagebox.showinfo("Scan BEI", "Scan penuh ~944 emiten sedang berjalan di latar belakang.", parent=self.root)
+            return
+        self.var_status.set("Menjalankan scan pasar BEI (~944 emiten, ±2-5 menit)...")
+        self._run_async("scan", lambda: dm.run_full_market_scan(force=True), "scan")
+
+    def _apply_scan_done(self, res: dict[str, Any]) -> None:
+        cnt = res.get("count") or res.get("scanned") or 0
+        self.var_status.set(f"Scan BEI selesai ({cnt} emiten diproses). Memperbarui Sinyal, Paket & Pasar...")
+        if self.var_toast.get():
+            send_windows_toast("Scan BEI Selesai", "Snapshot sinyal & breadth pasar telah diperbarui.")
+        self.refresh_sinyal()
+        self.refresh_paket()
+        self.refresh_market()
+
+    def refresh_paket(self) -> None:
+        cid = self._current_chat_id()
+        modal = self._get_modal_rp()
+        try:
+            max_p = max(1, min(5, int(self.var_paket_max.get())))
+        except ValueError:
+            max_p = 5
+        syar = bool(self.var_syariah.get())
+        reg = self._regime_ctx()
+        self._run_async(
+            "paket",
+            lambda: dm.build_paket_picks(
+                modal,
+                chat_id=cid,
+                max_plans=max_p,
+                market_regime=reg,
+                syariah_only=syar,
+            ),
+            "paket",
+        )
+
+    def refresh_port(self) -> None:
+        cid = self._current_chat_id()
+        reg = self._regime_ctx()
+
+        def _work() -> dict[str, Any]:
+            rows = dm.evaluate_portfolio_rows(cid, market_regime=reg)
+            summary = dm.compute_portfolio_risk_summary(cid, rows)
+            return {"rows": rows, "summary": summary}
+
+        self._run_async("port", _work, "port")
+
+    def refresh_jurnal(self) -> None:
+        cid = self._current_chat_id()
+        try:
+            lim = max(10, min(200, int(self.var_jurnal_limit.get())))
+        except ValueError:
+            lim = 50
+        self._run_async("jurnal", lambda: dm.build_journal_summary(cid, limit=lim), "jurnal")
+
+    def refresh_cek(self) -> None:
+        sym = self.var_cek_ticker.get().strip().upper().replace(".JK", "")
+        if not sym:
+            messagebox.showinfo("Cek Emiten", "Masukkan kode ticker BEI (contoh: BBCA).")
+            return
+        self.var_cek_ticker.set(sym)
+        cid = self._current_chat_id()
+        period = self.var_cek_period.get() or "1y"
+        modal = self._get_modal_rp()
+        reg = self._regime_ctx()
+        self.var_status.set(f"Menganalisis {sym} ({period}) — teknikal, fundamental, forensik, berita...")
+
+        def _work() -> dict[str, Any]:
+            detail = dm.inspect_ticker_detail(
+                sym,
+                modal,
+                chat_id=cid,
+                period=period,
+                market_regime=reg,
+            )
+            chart_path = ""
+            res = detail.get("res") or {}
+            ind = res.get("ind")
+            if detail.get("ok") and ind is not None and not getattr(ind, "empty", True):
+                os.makedirs(config.TMP_DIR, exist_ok=True)
+                out_png = os.path.join(config.TMP_DIR, f"desktop_chart_{sym}_{period}.png")
+                plan = detail.get("plan") or {}
+                levels = {
+                    k: plan.get(k)
+                    for k in ("entry", "sl", "tp")
+                    if _safe_float(plan.get(k)) is not None
+                }
+                chart_path = chartmod.build_chart(
+                    sym,
+                    ind,
+                    float((res.get("score") or {}).get("pct") or 0.0),
+                    out_png,
+                    levels=levels or None,
                 )
+            detail["chart_path"] = chart_path
+            return detail
 
-    def _show_from_tray(self) -> None:
+        self._run_async("cek", _work, "cek")
+
+    # ------------------------------------------------------------------
+    # Penerap Hasil ke UI (Main Thread)
+    # ------------------------------------------------------------------
+
+    def _apply_market(self, data: dict[str, Any]) -> None:
+        self._last_market_pulse = data
+        ihsg = data.get("ihsg") or {}
+        reg = ihsg.get("regime") or {}
+        breadth = data.get("breadth") or {}
+        foreign = data.get("foreign") or {}
+        news = data.get("news") or {}
+
+        close_val = _safe_float(ihsg.get("close"))
+        ret1d = _safe_float(ihsg.get("ret1d"))
+        ret20d = _safe_float(ihsg.get("ret20d"))
+        ihsg_clr = THEME["green"] if (ret1d or 0) > 0 else (THEME["red"] if (ret1d or 0) < 0 else THEME["fg"])
+        _set_kpi(
+            self.mk_ihsg,
+            _fmt_num(close_val, 1) if close_val else "tidak tersedia",
+            f"1H {_fmt_arrow_pct(ret1d)} · 20H {_fmt_pct(ret20d)}",
+            color=ihsg_clr,
+        )
+
+        reg_label = str(reg.get("label") or "TIDAK TERSEDIA")
+        scale = _safe_float(reg.get("exposure_scale"), 1.0) or 1.0
+        reg_clr = THEME["green"] if scale >= 0.99 else (THEME["amber"] if scale >= 0.45 else THEME["red"])
+        _set_kpi(
+            self.mk_regime,
+            f"{reg_label} ({scale:.1f}x)",
+            str(reg.get("reason") or reg.get("summary") or "SMA50 vs SMA200 ^JKSE"),
+            color=reg_clr,
+        )
+        self.var_regime_badge.set(
+            f"IHSG {_fmt_num(close_val, 0)} ({_fmt_arrow_pct(ret1d)}) · Rezim {reg_label} ({scale:.1f}x)"
+        )
+        self.lbl_regime.configure(fg=reg_clr)
+
+        if breadth.get("ok"):
+            adv = breadth.get("advancing", 0)
+            dec = breadth.get("declining", 0)
+            beli = breadth.get("beli", 0)
+            tot = breadth.get("total", 0)
+            b_pct = _safe_float(breadth.get("beli_pct"))
+            _set_kpi(
+                self.mk_breadth,
+                f"▲{adv} / ▼{dec}",
+                f"BELI {beli}/{tot} ({b_pct:.1f}%)" if b_pct is not None else f"{tot} emiten",
+                color=THEME["green"] if adv >= dec else THEME["red"],
+            )
+        else:
+            _set_kpi(
+                self.mk_breadth, "tidak tersedia", str(breadth.get("reason") or "belum /scan"),
+                color=THEME["muted"],
+            )
+
+        if foreign.get("ok"):
+            net_v = _safe_float(foreign.get("net_value"), 0.0) or 0.0
+            f_clr = THEME["green"] if net_v > 0 else (THEME["red"] if net_v < 0 else THEME["fg"])
+            _set_kpi(
+                self.mk_foreign,
+                str(foreign.get("label") or "-"),
+                f"{foreign.get('n_rows', 0)} emiten BEI tercatat",
+                color=f_clr,
+            )
+        else:
+            _set_kpi(
+                self.mk_foreign,
+                "tidak tersedia",
+                str(foreign.get("reason") or "data asing BEI offline"),
+                color=THEME["muted"],
+            )
+
+        cond = str(data.get("condition") or "-")
+        stale_txt = str(data.get("index_stale_age") or data.get("as_of_label") or "-")
+        cond_clr = THEME["green"] if "KONDUSIF" in cond.upper() else (
+            THEME["red"] if "WASPADA" in cond.upper() or "BERAT" in cond.upper() else THEME["amber"]
+        )
+        _set_kpi(
+            self.mk_cond,
+            cond,
+            f"As of: {stale_txt}",
+            color=cond_clr,
+        )
+
+        self._draw_sector_bars()
+
+        lines = [
+            f"KONDISI PASAR: {cond} ({data.get('as_of_label') or '-'})",
+            f"Catatan Delay: {data.get('delay_note') or '-'}",
+            "",
+        ]
+        for n in data.get("condition_notes") or []:
+            lines.append(f"• {_strip_html(n)}")
+        lines.append("")
+        if news and news.get("n"):
+            npct = _safe_float(news.get("pct"), 0.0) or 0.0
+            lines.append(
+                f"SENTIMEN BERITA PASAR: {news.get('label', '-')} "
+                f"(skor {npct:+.0f}%, {news.get('n', 0)} berita)"
+            )
+            for item in (news.get("details") or [])[:8]:
+                title = _strip_html(item.get("title"))
+                st = _news_item_tag(item)
+                lines.append(f"  - [{st}] {title}")
+        else:
+            lines.append("SENTIMEN BERITA PASAR: tidak tersedia / RSS berita tidak terjangkau.")
+
+        self._set_text(self.txt_market, "\n".join(lines))
+        self.var_status.set(
+            f"Pasar diperbarui ({datetime.now().strftime('%H:%M:%S')} WIB) · Rezim {reg_label}"
+        )
+
+    def _draw_sector_bars(self) -> None:
+        cv = self.canvas_sectors
+        cv.delete("all")
+        w = max(360, cv.winfo_width())
+        h = max(260, cv.winfo_height())
+
+        sec_info = (self._last_market_pulse or {}).get("sectors") or {}
+        if not sec_info.get("ok"):
+            msg = sec_info.get("reason") or "Data indeks sektor BEI tidak tersedia (atau diblokir IP)."
+            cv.create_text(
+                w // 2, h // 2, text=msg, fill=THEME["muted"], font=FONT_SMALL, width=w - 40,
+            )
+            return
+
+        rows = list(sec_info.get("sectors") or [])
+        if not rows:
+            cv.create_text(
+                w // 2, h // 2, text="Tidak ada baris sektor IDX-IC.", fill=THEME["muted"],
+                font=FONT_SMALL,
+            )
+            return
+
+        max_abs = max(max(abs(float(r.get("pct") or 0.0)) for r in rows), 0.5)
+        n = len(rows)
+        top_pad = 14
+        row_h = min(30, max(20, (h - top_pad * 2) // max(n, 1)))
+        label_w = 158
+        pct_w = 68
+        chart_left = label_w + 10
+        chart_right = w - pct_w - 14
+        center_x = (chart_left + chart_right) / 2.0
+        half_span = max(30.0, (chart_right - chart_left) / 2.0 - 4.0)
+
+        cv.create_line(center_x, top_pad - 4, center_x, top_pad + n * row_h, fill=THEME["border"], width=1)
+        for i, row in enumerate(rows):
+            y0 = top_pad + i * row_h
+            ym = y0 + row_h / 2.0
+            pct = float(row.get("pct") or 0.0)
+            name = str(row.get("name") or row.get("code") or "-")[:22]
+            clr = THEME["green"] if pct > 0 else (THEME["red"] if pct < 0 else THEME["muted"])
+
+            cv.create_text(8, ym, text=name, anchor="w", fill=THEME["fg"], font=FONT_SMALL)
+            bar_len = (abs(pct) / max_abs) * half_span
+            if pct >= 0:
+                x0, x1 = center_x, center_x + max(2.0, bar_len)
+            else:
+                x0, x1 = center_x - max(2.0, bar_len), center_x
+            cv.create_rectangle(x0, y0 + 5, x1, y0 + row_h - 5, fill=clr, outline="")
+            cv.create_text(
+                w - 10, ym, text=f"{pct:+.2f}%", anchor="e", fill=clr, font=FONT_MONO_BOLD,
+            )
+
+    def _apply_watch(self, rows: list[dict[str, Any]]) -> None:
+        self._last_watch_rows = rows or []
+        self._render_watch_table()
+        self._rebuild_quick_chips()
+        for r in self._last_watch_rows:
+            sym = r.get("ticker", "")
+            for trig in r.get("triggers") or []:
+                lbl = _strip_html(alertsmod.KIND_LABEL.get(trig, trig))
+                self._push_alert("Sinyal / Alert", sym, lbl)
+            for zn in r.get("zones") or []:
+                lbl = _strip_html(alertsmod.ZONE_LABEL.get(zn, zn))
+                self._push_alert("Zona Beli", sym, lbl)
+        for al in dm.detect_action_alerts(self._prev_alert_state, self._last_watch_rows, self._last_port_rows):
+            cat = "Exit / Tesis" if "TESIS" in al.get("kind", "") else "Sinyal / Alert"
+            self._push_alert(cat, al.get("ticker", ""), f"{al.get('title', '')}: {al.get('message', '')}")
+
+    def _render_watch_table(self) -> None:
+        rows = self._last_watch_rows
+        q = self.var_watch_search.get().strip().upper()
+        filtered = [
+            r for r in rows
+            if not q or q in str(r.get("ticker", "")).upper() or q in str(r.get("sector", "")).upper()
+        ]
+        beli_n = sum(1 for r in filtered if (r.get("signal") or r.get("action")) == "BELI")
+        zona_n = sum(1 for r in filtered if r.get("zones"))
+        alert_n = sum(1 for r in filtered if r.get("triggers") or r.get("stale"))
+
+        _set_kpi(
+            self.wk_total,
+            str(len(filtered)),
+            f"dari {len(rows)} emiten" if rows else "ketik Ticker + Tambah di kiri atas",
+            color=THEME["fg"],
+        )
+        _set_kpi(self.wk_beli, str(beli_n), "berstatus BELI", color=THEME["green"] if beli_n else THEME["muted"])
+        _set_kpi(self.wk_zona, str(zona_n), "support/RSI/breakout", color=THEME["accent"] if zona_n else THEME["muted"])
+        _set_kpi(self.wk_alert, str(alert_n), "alert aktif / data stale", color=THEME["amber"] if alert_n else THEME["muted"])
+
+        table_rows: list[tuple[tuple[Any, ...], str | None]] = []
+        for r in filtered:
+            sig = r.get("signal") or r.get("action") or "-"
+            tone: str | None = None
+            if r.get("triggers") or r.get("zones"):
+                tone = "info"
+            elif sig == "BELI":
+                tone = "buy"
+            elif sig == "JUAL":
+                tone = "sell"
+            elif r.get("stale"):
+                tone = "warn"
+
+            alert_kinds = ",".join(sorted(r.get("alerts") or [])) or "-"
+            notes = [
+                _strip_html(alertsmod.ZONE_LABEL.get(z, z)) for z in (r.get("zones") or [])
+            ] + [
+                _strip_html(alertsmod.KIND_LABEL.get(t, t)) for t in (r.get("triggers") or [])
+            ]
+            if not notes:
+                notes = list(r.get("reasons") or ([r["reason"]] if r.get("reason") else []))
+            if r.get("stale"):
+                notes.insert(0, "[STALE]")
+            table_rows.append((
+                (
+                    r.get("ticker", "-"),
+                    r.get("sector") or "-",
+                    "ISSI" if r.get("syariah") else "-",
+                    _fmt_num(r.get("price"), 0),
+                    _fmt_arrow_pct(r.get("ret1d")),
+                    f"{r['score_pct']:.0f}" if r.get("score_pct") is not None else "-",
+                    sig,
+                    _fmt_num(r.get("entry"), 0),
+                    _fmt_num(r.get("sl"), 0),
+                    _fmt_num(r.get("tp"), 0),
+                    alert_kinds,
+                    " · ".join(notes[:2]) or "-",
+                ),
+                tone,
+            ))
+        _populate_tree(self.tree_watch, table_rows)
+
+    def _apply_sinyal(self, data: dict[str, Any]) -> None:
+        rows = data.get("rows") or []
+        self._last_sinyal_rows = rows
+        counts = data.get("counts") or {}
+        meta = data.get("meta") or {}
+        sectors = ["Semua Sektor"] + list(data.get("sectors") or [])
+        self.cb_sinyal_sector.configure(values=sectors)
+
+        tot_scan = sum(int(v or 0) for v in counts.values()) or len(rows)
+        _set_kpi(
+            self.sk_scan_date,
+            str(meta.get("trade_date") or "-"),
+            f"total {tot_scan} emiten tersimpan",
+        )
+        _set_kpi(
+            self.sk_matched,
+            str(len(rows)),
+            f"cocok: {data.get('total_matched', len(rows))}",
+            color=THEME["accent"],
+        )
+        _set_kpi(self.sk_beli, str(counts.get("BELI", 0)), "sinyal BELI", color=THEME["green"])
+        _set_kpi(self.sk_tahan, str(counts.get("TAHAN", 0)), "sinyal TAHAN", color=THEME["amber"])
+        _set_kpi(self.sk_jual, str(counts.get("JUAL", 0)), "sinyal JUAL", color=THEME["red"])
+
+        table_rows: list[tuple[tuple[Any, ...], str | None]] = []
+        for r in rows:
+            sig = str(r.get("signal") or "-")
+            tone = "buy" if sig == "BELI" else ("sell" if sig == "JUAL" else None)
+            score_v = _safe_float(r.get("rel_pct"))
+            if score_v is None:
+                score_v = _safe_float(r.get("score_pct"))
+            rsi_v = _safe_float(r.get("rsi"))
+            if rsi_v is None:
+                rsi_v = _safe_float(r.get("rsi14"))
+            vr = _safe_float(r.get("vol_ratio"))
+            val20 = _safe_float(r.get("value_avg20"))
+            liq_txt = f"{vr:.1f}x" if vr is not None else (f"{val20 / 1e9:.1f}M" if val20 else "-")
+            q_mark = str(r.get("quality_mark") or "").strip()
+            reason_txt = str(r.get("reason") or "-")
+            if q_mark and q_mark != "❔":
+                reason_txt = f"{q_mark} {reason_txt}"
+            table_rows.append((
+                (
+                    r.get("ticker", "-"),
+                    (r.get("name") or "-")[:24],
+                    r.get("sector") or "-",
+                    "ISSI" if r.get("syariah") else "-",
+                    _fmt_num(r.get("price"), 0),
+                    _fmt_arrow_pct(r.get("ret1d")),
+                    f"{score_v:.1f}" if score_v is not None else "-",
+                    sig,
+                    f"{rsi_v:.1f}" if rsi_v is not None else "-",
+                    liq_txt,
+                    reason_txt,
+                ),
+                tone,
+            ))
+        _populate_tree(self.tree_sinyal, table_rows)
+        self.var_status.set(f"Sinyal pasar dimuat: {len(rows)} baris ditampilkan.")
+
+    def _apply_paket(self, data: dict[str, Any]) -> None:
+        self._last_paket_res = data
+        plans = data.get("plans") or []
+        scale = float(data.get("scale") or 1.0)
+        modal = float(data.get("modal") or 0.0)
+        alloc = float(data.get("total_alloc_rp") or 0.0)
+        cash_left = float(data.get("cash_left_rp") or 0.0)
+        tot_risk = float(data.get("total_risk_rp") or 0.0)
+
+        _set_kpi(
+            self.pk_modal,
+            _fmt_rp(modal),
+            f"skala eksposur rezim: {scale:.1f}x",
+            color=THEME["accent"],
+        )
+        _set_kpi(
+            self.pk_alloc,
+            _fmt_rp(alloc),
+            f"{len(plans)} emiten · {(alloc / modal * 100.0):.1f}% modal" if modal > 0 else "-",
+            color=THEME["green"] if plans else THEME["muted"],
+        )
+        _set_kpi(self.pk_cash, _fmt_rp(cash_left), "cadangan kas tersisa")
+        _set_kpi(
+            self.pk_risk,
+            _fmt_rp(tot_risk),
+            f"{(tot_risk / modal * 100.0):.2f}% risiko SL portofolio" if modal > 0 else "-",
+            color=THEME["amber"] if tot_risk > 0 else THEME["muted"],
+        )
+
+        table_rows: list[tuple[tuple[Any, ...], str | None]] = []
+        for p in plans:
+            grade = str(p.get("grade") or "-")
+            tone = "buy" if grade in ("A", "B") else ("warn" if p.get("warnings") else None)
+            warns = "; ".join(p.get("warnings") or []) or str(p.get("reason") or "siap manual Stockbit")
+            table_rows.append((
+                (
+                    grade,
+                    p.get("ticker", "-"),
+                    p.get("sector") or "-",
+                    "ISSI" if p.get("syariah") else "-",
+                    _fmt_num(p.get("entry"), 0),
+                    _fmt_num(p.get("entry_pullback"), 0) if p.get("entry_pullback") else "-",
+                    _fmt_num(p.get("sl"), 0),
+                    _fmt_num(p.get("tp"), 0),
+                    str(p.get("lots", 0)),
+                    _fmt_rp(p.get("buy_cost")),
+                    f"{_fmt_rp(p.get('real_risk'))} ({_fmt_pct(p.get('risk_pct'), signed=False)})",
+                    warns,
+                ),
+                tone,
+            ))
+        _populate_tree(self.tree_paket, table_rows)
+
+        rej = data.get("rejected") or {}
+        if not data.get("ok"):
+            self.lbl_paket_footer.configure(
+                text=f"Info: {data.get('reason') or 'Paket belum tersedia — jalankan /scan dulu.'}",
+                fg=THEME["amber"],
+            )
+        elif rej:
+            rej_txt = ", ".join(f"{k}: {v}" for k, v in rej.items())
+            self.lbl_paket_footer.configure(
+                text=f"Kandidat gugur seleksi kualitas/likuiditas/batas: {rej_txt}",
+                fg=THEME["muted"],
+            )
+        else:
+            self.lbl_paket_footer.configure(
+                text="Semua kandidat lolos veto kualitas & batas risiko. Gunakan 'Salin Order Stockbit' untuk panduan manual.",
+                fg=THEME["green"],
+            )
+
+    def _apply_port(self, data: dict[str, Any]) -> None:
+        rows = data.get("rows") or []
+        summary = data.get("summary") or {}
+        self._last_port_rows = rows
+        self._last_port_summary = summary
+
+        n_pos = int(summary.get("n_positions") or 0)
+        priced_cnt = int(summary.get("priced_count") or 0)
+        tot_val = summary.get("total_value_rp")
+        tot_cost = float(summary.get("total_cost_rp") or 0.0)
+        tot_pnl = summary.get("total_pnl_rp")
+        pnl_pct = summary.get("total_pnl_pct")
+        risk_rp = float(summary.get("risk_to_sl_rp") or 0.0)
+        risk_pct = summary.get("risk_to_sl_pct")
+        var95 = summary.get("var95_rp")
+        es95 = summary.get("es95_rp")
+        pos_lim = float(
+            summary.get("max_pos_limit_pct")
+            or ((summary.get("max_pos_pct") or 0.2) * 100.0)
+        )
+        sec_lim = float(
+            summary.get("max_sec_limit_pct")
+            or ((summary.get("max_sector_pct") or 0.4) * 100.0)
+        )
+
+        val_txt = "tidak tersedia" if (n_pos > 0 and priced_cnt == 0) else _fmt_rp(tot_val)
+        _set_kpi(
+            self.pt_val,
+            val_txt,
+            f"Cost: {_fmt_rp(tot_cost)} ({n_pos} posisi)",
+        )
+        if tot_pnl is None:
+            _set_kpi(self.pt_pnl, "tidak tersedia" if n_pos > 0 else "-", "harga pasar belum tersedia", color=THEME["muted"])
+        else:
+            pnl_v = float(tot_pnl)
+            pnl_clr = THEME["green"] if pnl_v > 0 else (THEME["red"] if pnl_v < 0 else THEME["fg"])
+            _set_kpi(self.pt_pnl, _fmt_rp(pnl_v), f"{_fmt_arrow_pct(pnl_pct)}", color=pnl_clr)
+        _set_kpi(
+            self.pt_sl,
+            _fmt_rp(risk_rp),
+            f"{_fmt_pct(risk_pct, signed=False)} dari nilai/modal",
+            color=THEME["amber"] if risk_rp > 0 else THEME["muted"],
+        )
+        var_txt = _fmt_rp(var95) if var95 is not None else "butuh >=120 bar"
+        es_sub = f"ES95: {_fmt_rp(es95)} · Batas {pos_lim:.0f}%/{sec_lim:.0f}%" if es95 is not None else (
+            f"Batas pos {pos_lim:.0f}% · sektor {sec_lim:.0f}%"
+        )
+        _set_kpi(self.pt_var, var_txt, es_sub, color=THEME["accent"] if var95 is not None else THEME["muted"])
+
+        warns = list(summary.get("warnings") or [])
+        if warns:
+            self.lbl_port_warn.configure(text="⚠ " + " | ".join(warns[:3]))
+            self.lbl_port_warn.pack(fill="x", padx=8, pady=(0, 6), before=self.tree_port.master)
+        else:
+            self.lbl_port_warn.pack_forget()
+
+        table_rows: list[tuple[tuple[Any, ...], str | None]] = []
+        for r in rows:
+            thesis = str(r.get("thesis") or "TETAP").upper()
+            pnl_v = _safe_float(r.get("pnl_net_pct"), 0.0) or 0.0
+            tone = None
+            if "GUGUR" in thesis:
+                tone = "sell"
+            elif "MELEMAH" in thesis or r.get("arb_warning"):
+                tone = "warn"
+            elif "MENGUAT" in thesis or pnl_v > 0:
+                tone = "buy"
+
+            eff_sl = r.get("effective_sl")
+            sl_txt = f"{_fmt_num(eff_sl, 0)} ({r.get('sl_source') or 'ATR'})" if eff_sl else "-"
+            tp_txt = (
+                f"{_fmt_num(r.get('scale_out_tp1'), 0)}/{_fmt_num(r.get('tp'), 0)}"
+                if r.get("scale_out_tp1") else _fmt_num(r.get("tp"), 0)
+            )
+            thesis_disp = (
+                f"▼ {thesis}" if "GUGUR" in thesis else (f"▲ {thesis}" if "MENGUAT" in thesis else thesis)
+            )
+            reasons_txt = " · ".join(r.get("reasons") or []) or "-"
+            table_rows.append((
+                (
+                    r.get("ticker", "-"),
+                    r.get("sector") or "-",
+                    str(r.get("lots", 0)),
+                    _fmt_num(r.get("avg_price"), 0),
+                    _fmt_num(r.get("price"), 0),
+                    _fmt_arrow_pct(r.get("ret1d")),
+                    _fmt_rp(r.get("value_rp")),
+                    _fmt_rp(r.get("pnl_rp")),
+                    _fmt_arrow_pct(r.get("pnl_net_pct")),
+                    sl_txt,
+                    tp_txt,
+                    str(r.get("days_held") if r.get("days_held") is not None else "-"),
+                    thesis_disp,
+                    reasons_txt,
+                ),
+                tone,
+            ))
+            if "GUGUR" in thesis or "MELEMAH" in thesis:
+                self._push_alert("Exit / Tesis", str(r.get("ticker", "")), f"Tesis {thesis}: {reasons_txt}")
+
+        _populate_tree(self.tree_port, table_rows)
+        self._rebuild_quick_chips()
+
+    def _apply_jurnal(self, data: dict[str, Any]) -> None:
+        self._last_jurnal_res = data
+        kpis = data.get("kpis") or {}
+        diag = data.get("diag") or {}
+
+        n_exec = kpis.get("n_exec", 0)
+        _set_kpi(
+            self.jk_execs,
+            str(n_exec),
+            f"BELI {kpis.get('n_buys', 0)} · JUAL {kpis.get('n_sells', 0)}",
+        )
+        wr = kpis.get("win_rate_pct")
+        _set_kpi(
+            self.jk_wr,
+            f"{wr:.1f}%" if wr is not None else "-",
+            f"{kpis.get('n_closed', 0)} trade tertutup",
+            color=THEME["green"] if (wr or 0) >= 50 else THEME["amber"],
+        )
+        pf = kpis.get("profit_factor")
+        _set_kpi(
+            self.jk_pf,
+            f"{pf:.2f}" if pf is not None else "-",
+            "rasio profit/rugi bersih",
+            color=THEME["green"] if (pf or 0) >= 1.2 else THEME["fg"],
+        )
+        net_rp = _safe_float(kpis.get("total_net_pnl_rp"), 0.0) or 0.0
+        _set_kpi(
+            self.jk_pnl,
+            _fmt_rp(net_rp),
+            "total realisasi bersih",
+            color=THEME["green"] if net_rp > 0 else (THEME["red"] if net_rp < 0 else THEME["fg"]),
+        )
+        avg_r = kpis.get("avg_r_multiple")
+        alpha = kpis.get("mean_alpha_pct")
+        mae = kpis.get("avg_mae_pct")
+        _set_kpi(
+            self.jk_alpha,
+            f"{avg_r:+.2f}R" if avg_r is not None else "-",
+            f"Alpha vs IHSG: {_fmt_pct(alpha)} · MAE: {_fmt_pct(mae)}",
+            color=THEME["green"] if (alpha or 0) > 0 else THEME["muted"],
+        )
+
+        sections = [str(data.get("summary_text") or "")]
+        if diag and diag.get("n_trades"):
+            avg_r_diag = diag.get("avg_r_multiple")
+            cap_ratio = diag.get("avg_capture_ratio")
+            win_bench = diag.get("win_vs_bench_pct")
+            r_str = f"{avg_r_diag:+.2f}R" if avg_r_diag is not None else "-"
+            cap_str = f"{cap_ratio:.2f}" if cap_ratio is not None else "-"
+            bench_str = f"{win_bench:.1f}%" if win_bench is not None else "-"
+            sections.append(
+                "\n--- DIAGNOSTIK MAE/MFE, R-MULTIPLE & ALPHA VS IHSG ---\n"
+                f"Trade dianalisis : {diag.get('n_trades', 0)} "
+                f"(OHLCV: {diag.get('n_with_ohlcv', 0)}, R: {diag.get('n_with_r', 0)})\n"
+                f"Rata-rata R      : {r_str}\n"
+                f"Rata MAE / MFE   : {_fmt_pct(diag.get('avg_mae_pct'))} / "
+                f"{_fmt_pct(diag.get('avg_mfe_pct'))}\n"
+                f"Capture Ratio    : {cap_str}\n"
+                f"Alpha vs IHSG    : {_fmt_pct(diag.get('mean_alpha_pct'))} "
+                f"(menang {bench_str})"
+            )
+            for note in diag.get("notes") or []:
+                sections.append(f"  • {_strip_html(note)}")
+        sections.append("\n--- RIWAYAT EKSEKUSI TERAKHIR ---")
+        sections.append(str(data.get("history_text") or "Belum ada eksekusi tercatat."))
+        self._set_text(self.txt_jurnal, _strip_html("\n".join(sections)))
+
+    def _apply_cek(self, data: dict[str, Any]) -> None:
+        self._last_cek_detail = data
+        if not data.get("ok"):
+            msg = data.get("reason") or "Data emiten tidak tersedia."
+            self.lbl_cek_header.configure(text=msg, fg=THEME["red"])
+            self._set_text(self.txt_cek, msg)
+            self._chart_photo = None
+            self.lbl_chart.configure(image="", text=msg)
+            return
+
+        sym = data.get("ticker", "")
+        name = data.get("name") or "-"
+        sec = data.get("sector") or "-"
+        board = data.get("board") or "-"
+        sy_tag = "SYARIAH (ISSI)" if data.get("syariah") else "Non-ISSI"
+        res = data.get("res") or {}
+        snap = res.get("snap") or {}
+        cek = data.get("cek") or {}
+        raw_ps = data.get("powerscore")
+        ps = raw_ps if isinstance(raw_ps, dict) else {"rating": str(raw_ps or "-"), "pct": 0}
+        power_text = _strip_html(data.get("power_text") or "")
+        fund = data.get("fund")
+        news = data.get("news") or {}
+        plan = data.get("plan") or {}
+        sc = data.get("scale_out") or {}
+        arb = data.get("arb_risk") or {}
+
+        verdict = str(cek.get("verdict") or "TUNGGU").upper()
+        v_icon = "▲" if verdict == "LAYAK" else ("▼" if verdict == "HINDARI" else "●")
+        v_clr = THEME["green"] if verdict == "LAYAK" else (THEME["red"] if verdict == "HINDARI" else THEME["amber"])
+
+        ps_pct = _safe_float(ps.get("pct"), 0.0) or 0.0
+        pts = cek.get("points")
+        pts_txt = f" ({pts} poin)" if pts is not None else ""
+        header_txt = (
+            f"{sym} — {name}   |   {sec} ({board})   |   {sy_tag}   |   "
+            f"Harga {_fmt_num(snap.get('close'), 0)} ({_fmt_arrow_pct(snap.get('ret1d'))})   |   "
+            f"Verdict: {v_icon} {verdict}{pts_txt}   |   "
+            f"PowerScore: {ps.get('rating', '-')} ({ps_pct:.0f}%)"
+        )
+        self.lbl_cek_header.configure(text=header_txt, fg=v_clr)
+        self._resize_chart_preview()
+
+        lines: list[str] = []
+        if data.get("quality_note"):
+            lines.append(f"⚠ KUALITAS DATA: {data['quality_note']}")
+        for v in cek.get("vetoes") or []:
+            lines.append(f"⛔ VETO VERDICT: {_strip_html(v)}")
+        for rsn in cek.get("reasons") or []:
+            lines.append(f"ℹ RINGKASAN VERDICT: {_strip_html(rsn)}")
+        lines.append(
+            f"=== RENCANA MANUAL STOCKBIT (Modal {_fmt_rp(self._get_modal_rp())} · Periode {data.get('period')}) ==="
+        )
+        if plan.get("ok"):
+            lines.append(
+                f"Entry: {_fmt_num(plan.get('entry'), 0)} "
+                f"(Pullback MA20: {_fmt_num(plan.get('entry_pullback'), 0)})  |  "
+                f"Jangan Kejar > {_fmt_num(plan.get('chase_above'), 0)}"
+            )
+            lines.append(
+                f"Stop-Loss: {_fmt_num(plan.get('sl'), 0)} ({_fmt_pct(plan.get('sl_dist_pct'))})  |  "
+                f"Target TP: {_fmt_num(plan.get('tp'), 0)} (RR {plan.get('rr', 0):.2f}x)"
+            )
+            lines.append(
+                f"Ukuran: {plan.get('lots', 0)} lot ({_fmt_rp(plan.get('buy_cost'))})  |  "
+                f"Risiko SL: {_fmt_rp(plan.get('max_loss'))} "
+                f"({_fmt_pct(plan.get('max_loss_pct'), signed=False)})  |  "
+                f"Potensi TP: {_fmt_rp(plan.get('profit_tp'))}"
+            )
+            if sc.get("note"):
+                lines.append(f"Scale-Out TP1: {sc['note']}")
+        else:
+            lines.append(f"Tidak bisa hitung sizing: {plan.get('skip_reason') or 'anggaran/harga belum memenuhi'}")
+
+        for w in arb.get("warnings") or []:
+            lines.append(f"⚠ {w}")
+        for w in plan.get("warnings") or []:
+            lines.append(f"⚠ {w}")
+
+        lines.append("\n=== CEKLIST 6 BAGIAN BEI ===")
+        for it in cek.get("items") or []:
+            lines.append(f"• {it.get('label')}: [{it.get('status')}] {it.get('headline')} — {it.get('detail')}")
+
+        if cek.get("bull_points"):
+            lines.append("\nPRO / PENDUKUNG:")
+            lines.extend(f"  + {_strip_html(p)}" for p in cek["bull_points"])
+        if cek.get("bear_points"):
+            lines.append("RISIKO / CATATAN KRITIS:")
+            lines.extend(f"  - {_strip_html(p)}" for p in cek["bear_points"])
+
+        if power_text:
+            lines.append("\n=== PENILAIAN 3 PIN (POWERSCORE) ===")
+            lines.append(power_text)
+
+        lines.append("\n=== FUNDAMENTAL & FORENSIK ARUS KAS ===")
+        if fund:
+            fpct = _safe_float(fund.get("pct"), 0.0) or 0.0
+            lines.append(
+                f"Skor Fundamental: {fund.get('label', '-')} ({fpct:+.0f}% · "
+                f"Mata uang laporan: {fund.get('currency', 'tidak diketahui')})"
+            )
+            for note in fund.get("notes") or []:
+                lines.append(f"  • {_strip_html(note)}")
+        else:
+            lines.append("Fundamental tidak tersedia dari Yahoo Finance.")
+
+        lines.append("\n=== BERITA EMITEN ===")
+        if news.get("n"):
+            npct = _safe_float(news.get("pct"), 0.0) or 0.0
+            lines.append(f"Sentimen {news.get('n')} berita: {news.get('label')} ({npct:+.0f}%)")
+            for item in (news.get("details") or [])[:6]:
+                lines.append(f"  - [{_news_item_tag(item)}] {_strip_html(item.get('title'))}")
+        else:
+            lines.append("Tidak ada berita terbaru / gagal memuat RSS.")
+
+        self._set_text(self.txt_cek, _strip_html("\n".join(lines)))
+        self.var_status.set(f"Analisis {sym} selesai · {verdict} ({ps.get('rating', '-')})")
+
+    def _resize_chart_preview(self) -> None:
+        detail = self._last_cek_detail or {}
+        path = detail.get("chart_path")
+        if not path or not os.path.isfile(path) or ImageTk is None:
+            return
+        w = self.lbl_chart.winfo_width()
+        h = self.lbl_chart.winfo_height()
+        unmeasured = w < 120 or h < 120
+        target_w = 540 if unmeasured else (w - 12)
+        target_h = 390 if unmeasured else (h - 12)
+        try:
+            with Image.open(path) as im:
+                ratio = min(target_w / im.width, target_h / im.height)
+                if ratio <= 0:
+                    return
+                tw = max(120, int(im.width * ratio))
+                th = max(120, int(im.height * ratio))
+                resized = im.resize((tw, th), Image.Resampling.LANCZOS)
+                self._chart_photo = ImageTk.PhotoImage(resized)
+                self.lbl_chart.configure(image=self._chart_photo, text="")
+        except Exception:
+            pass
+        if unmeasured and not self._closing:
+            if self._chart_after_id:
+                try:
+                    self.root.after_cancel(self._chart_after_id)
+                except Exception:
+                    pass
+            self._chart_after_id = self.root.after(120, self._resize_chart_preview)
+
+    # ------------------------------------------------------------------
+    # Interaksi Pengguna & Dialog
+    # ------------------------------------------------------------------
+
+    def _selected_ticker(self, tree: ttk.Treeview, col_index: int = 0) -> str | None:
+        sel = tree.selection()
+        if not sel:
+            return None
+        vals = tree.item(sel[0], "values")
+        if not vals or len(vals) <= col_index:
+            return None
+        sym = str(vals[col_index]).strip().upper()
+        return sym if sym and sym != "-" else None
+
+    def _open_cek_ticker(self, sym: str | None) -> None:
+        if not sym:
+            return
+        self.var_cek_ticker.set(sym.upper())
+        # Isi penanda sementara agar <<NotebookTabChanged>> tidak memicu refresh ganda
+        if not self._last_cek_detail:
+            self._last_cek_detail = {"ticker": sym.upper(), "pending": True}
+        self.notebook.select(6)
+        self.refresh_cek()
+
+    def _focus_cek_ticker(self) -> None:
+        self.notebook.select(6)
+        self.ent_cek.focus_set()
+        self.ent_cek.select_range(0, "end")
+
+    def _focus_active_search(self) -> None:
+        idx = self.notebook.index(self.notebook.select())
+        if idx == 1:
+            self.ent_watch_search.focus_set()
+        elif idx == 2:
+            self.ent_sinyal_search.focus_set()
+        else:
+            self._focus_cek_ticker()
+
+    def _watch_open_cek(self) -> None:
+        self._open_cek_ticker(self._selected_ticker(self.tree_watch, 0))
+
+    def _sinyal_open_cek(self) -> None:
+        self._open_cek_ticker(self._selected_ticker(self.tree_sinyal, 0))
+
+    def _paket_open_cek(self) -> None:
+        self._open_cek_ticker(self._selected_ticker(self.tree_paket, 1))
+
+    def _port_open_cek(self) -> None:
+        self._open_cek_ticker(self._selected_ticker(self.tree_port, 0))
+
+    def _alert_open_cek(self) -> None:
+        self._open_cek_ticker(self._selected_ticker(self.tree_alerts, 2))
+
+    def _add_watchlist(self, sym: str | None = None) -> None:
+        code = (sym or self.var_watch_add.get()).strip().upper().replace(".JK", "")
+        if not code:
+            return
+        cid = self._current_chat_id()
+        ok, items = store_watchlist.watchlist_add(cid, code)
+        self.var_watch_add.set("")
+        self.var_status.set(
+            f"{code} ditambahkan ke watchlist ({len(items)} emiten)"
+            if ok else f"{code} sudah ada atau batas watchlist tercapai"
+        )
+        self.refresh_watch()
+
+    def _remove_watchlist(self) -> None:
+        sym = self._selected_ticker(self.tree_watch, 0)
+        if not sym:
+            return
+        cid = self._current_chat_id()
+        store_watchlist.watchlist_remove(cid, sym)
+        store_watchlist.remove_alert(cid, sym)
+        self.var_status.set(f"{sym} dihapus dari watchlist.")
+        self.refresh_watch()
+
+    def _watch_prefill_buy(self) -> None:
+        sym = self._selected_ticker(self.tree_watch, 0)
+        if not sym:
+            return
+        row = next((r for r in self._last_watch_rows if r.get("ticker") == sym), None)
+        self._prefill_order_form(sym, "BELI", (row or {}).get("entry") or (row or {}).get("price"), 1)
+
+    def _paket_prefill_buy(self) -> None:
+        sym = self._selected_ticker(self.tree_paket, 1)
+        if not sym:
+            return
+        plans = (self._last_paket_res or {}).get("plans") or []
+        plan = next((p for p in plans if p.get("ticker") == sym), None)
+        if plan:
+            self._prefill_order_form(sym, "BELI", plan.get("entry"), plan.get("lots") or 1)
+
+    def _port_prefill_sell(self) -> None:
+        sym = self._selected_ticker(self.tree_port, 0)
+        if not sym:
+            return
+        row = next((r for r in self._last_port_rows if r.get("ticker") == sym), None)
+        if row:
+            self._prefill_order_form(sym, "JUAL", row.get("price") or row.get("avg_price"), row.get("lots") or 1)
+
+    def _prefill_order_form(self, sym: str, side: str, price: Any, lots: Any) -> None:
+        self.var_port_ticker.set(sym)
+        self.var_port_side.set(side)
+        px = _safe_float(price)
+        self.var_port_price.set(str(int(round(px))) if px else "")
+        self.var_port_lots.set(str(max(1, int(_safe_float(lots, 1) or 1))))
+        self.notebook.select(4)
+
+    def _watch_edit_alerts(self) -> None:
+        sym = self._selected_ticker(self.tree_watch, 0)
+        if not sym:
+            messagebox.showinfo("Atur Alert", "Pilih emiten di tabel Watchlist terlebih dahulu.")
+            return
+        cid = self._current_chat_id()
+        current = set((store_watchlist.get_alerts(cid) or {}).get(sym) or ())
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Atur Kondisi Alert · {sym}")
+        dlg.configure(bg=THEME["bg"])
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        _enable_dark_titlebar(dlg)
+
+        tk.Label(
+            dlg, text=f"Aktifkan trigger alert otomatis untuk {sym}:",
+            bg=THEME["bg"], fg=THEME["accent"], font=FONT_UI_BOLD, padx=14, pady=10,
+        ).pack(anchor="w")
+
+        vars_map: dict[str, tk.BooleanVar] = {}
+        body = tk.Frame(dlg, bg=THEME["card"], padx=14, pady=10)
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        for k in ALERT_KIND_ORDER:
+            if k not in alertsmod.ALL_KINDS:
+                continue
+            v = tk.BooleanVar(value=k in current)
+            vars_map[k] = v
+            lbl = alertsmod.KIND_LABEL.get(k, k)
+            ex = alertsmod.KIND_EXAMPLES.get(k, "")
+            tk.Checkbutton(
+                body,
+                text=f"{lbl} ({ex})" if ex else lbl,
+                variable=v,
+                bg=THEME["card"],
+                fg=THEME["fg"],
+                selectcolor=THEME["bg_elev"],
+                activebackground=THEME["card"],
+                activeforeground=THEME["fg"],
+                font=FONT_SMALL,
+                anchor="w",
+            ).pack(fill="x", pady=2)
+
+        btns = tk.Frame(dlg, bg=THEME["bg"], padx=12, pady=8)
+        btns.pack(fill="x")
+
+        def _save() -> None:
+            chosen = {k for k, var in vars_map.items() if var.get()}
+            if chosen:
+                store_watchlist.set_alert(cid, sym, chosen)
+            else:
+                store_watchlist.remove_alert(cid, sym)
+            dlg.destroy()
+            self.refresh_watch()
+
+        ttk.Button(btns, text="Simpan", style="Accent.TButton", command=_save).pack(side="right", padx=(6, 0))
+        ttk.Button(btns, text="Batal", style="Ghost.TButton", command=dlg.destroy).pack(side="right")
+
+    def _open_risk_limit_dialog(self) -> None:
+        cid = self._current_chat_id()
+        cur_pos, cur_sec = store_portfolio.get_risk_limits(cid)
+        pos_in = simpledialog.askfloat(
+            "Batas Risiko Posisi",
+            "Maksimum satu posisi (% dari modal acuan, rentang 5 - 50):",
+            initialvalue=round(cur_pos * 100, 1),
+            minvalue=5.0,
+            maxvalue=50.0,
+            parent=self.root,
+        )
+        if pos_in is None:
+            return
+        sec_in = simpledialog.askfloat(
+            "Batas Risiko Sektor",
+            "Maksimum satu sektor (% dari modal acuan, rentang 10 - 80):",
+            initialvalue=round(cur_sec * 100, 1),
+            minvalue=10.0,
+            maxvalue=80.0,
+            parent=self.root,
+        )
+        if sec_in is None:
+            return
+        try:
+            p_clean, s_clean = riskmod.validate_limits(pos_in / 100.0, sec_in / 100.0)
+            store_portfolio.set_risk_limits(cid, p_clean, s_clean)
+            self.var_status.set(f"Batas risiko disimpan: Posisi {p_clean*100:.1f}%, Sektor {s_clean*100:.1f}%")
+            self.refresh_port()
+            self.refresh_paket()
+        except ValueError as exc:
+            messagebox.showerror("Batas Risiko Tidak Valid", str(exc), parent=self.root)
+
+    def _submit_execution(self) -> None:
+        sym = self.var_port_ticker.get().strip().upper().replace(".JK", "")
+        side = self.var_port_side.get().strip().upper()
+        raw_px = self.var_port_price.get().strip()
+        px = textutil.parse_rupiah(raw_px)
+        if px is None:
+            px = _safe_float(raw_px.replace(".", "").replace(",", ""))
+        lots = _safe_float(self.var_port_lots.get().strip())
+        notes = self.var_port_notes.get().strip()
+
+        if not sym or px is None or px <= 0 or lots is None or int(lots) <= 0:
+            messagebox.showerror("Input Tidak Lengkap", "Isi kode ticker, harga valid > 0, dan lot >= 1.")
+            return
+        n_lots = int(lots)
+        cid = self._current_chat_id()
+
+        if side == "JUAL":
+            val = n_lots * 100 * px
+            if not messagebox.askyesno(
+                "Konfirmasi Catat Jual Manual",
+                f"Catat JUAL {sym} {n_lots} lot @ {_fmt_num(px, 0)} (nilai bruto {_fmt_rp(val)})?\n\n"
+                "Catatan ini hanya memperbarui jurnal & posisi lokal — eksekusi order tetap di Stockbit.",
+                parent=self.root,
+            ):
+                return
+        try:
+            record_desktop_execution(
+                cid,
+                sym,
+                side,
+                n_lots,
+                px,
+                note=notes,
+            )
+        except Exception as exc:
+            messagebox.showerror(f"Gagal Catat {side}", str(exc), parent=self.root)
+            return
+
+        self.var_port_notes.set("")
+        self.var_status.set(f"Eksekusi {side} {sym} {n_lots} lot @ {_fmt_num(px, 0)} tercatat.")
+        self.refresh_port()
+        self.refresh_jurnal()
+
+    # ------------------------------------------------------------------
+    # Context Menu & Clipboard / Export
+    # ------------------------------------------------------------------
+
+    def _show_popup(self, event: tk.Event, items: list[tuple[str, Callable[[], None]]]) -> None:
+        menu = tk.Menu(self.root, tearoff=0, bg=THEME["card"], fg=THEME["fg"],
+                       activebackground=THEME["accent_soft"], activeforeground=THEME["accent"])
+        for label, cb in items:
+            menu.add_command(label=label, command=cb)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _watch_context_menu(self, event: tk.Event) -> None:
+        iid = self.tree_watch.identify_row(event.y)
+        if not iid:
+            return
+        self.tree_watch.selection_set(iid)
+        self._show_popup(event, [
+            ("🔍 Cek Emiten Lengkap", self._watch_open_cek),
+            ("🔔 Atur Alert Harga/Indikator", self._watch_edit_alerts),
+            ("💼 Siapkan Catat BELI di Portofolio", self._watch_prefill_buy),
+            ("🗑 Hapus dari Watchlist", self._remove_watchlist),
+        ])
+
+    def _sinyal_context_menu(self, event: tk.Event) -> None:
+        iid = self.tree_sinyal.identify_row(event.y)
+        if not iid:
+            return
+        self.tree_sinyal.selection_set(iid)
+        sym = self._selected_ticker(self.tree_sinyal, 0)
+        self._show_popup(event, [
+            ("🔍 Cek Emiten Lengkap", self._sinyal_open_cek),
+            ("⭐ Tambah ke Watchlist", lambda: self._add_watchlist(sym)),
+        ])
+
+    def _paket_context_menu(self, event: tk.Event) -> None:
+        iid = self.tree_paket.identify_row(event.y)
+        if not iid:
+            return
+        self.tree_paket.selection_set(iid)
+        self._show_popup(event, [
+            ("🔍 Cek Emiten Lengkap", self._paket_open_cek),
+            ("💼 Siapkan Catat BELI di Portofolio", self._paket_prefill_buy),
+            ("📋 Salin Semua Order Stockbit", self._copy_paket_orders),
+        ])
+
+    def _port_context_menu(self, event: tk.Event) -> None:
+        iid = self.tree_port.identify_row(event.y)
+        if not iid:
+            return
+        self.tree_port.selection_set(iid)
+        self._show_popup(event, [
+            ("🔍 Cek Emiten Lengkap", self._port_open_cek),
+            ("💰 Siapkan Form JUAL", self._port_prefill_sell),
+        ])
+
+    def _copy_text(self, text: str, status_msg: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.var_status.set(status_msg)
+
+    def _copy_paket_orders(self) -> None:
+        plans = (self._last_paket_res or {}).get("plans") or []
+        txt = dm.format_order_ticket_text(plans)
+        self._copy_text(txt, f"Tiket order Stockbit ({len(plans)} emiten) disalin ke clipboard.")
+
+    def _copy_cek_order(self) -> None:
+        plan = (self._last_cek_detail or {}).get("plan") or {}
+        if not plan.get("ok"):
+            messagebox.showinfo("Salin Order", "Rencana beli belum valid untuk emiten ini.")
+            return
+        txt = dm.format_order_ticket_text([plan])
+        self._copy_text(txt, f"Tiket order {plan.get('ticker')} disalin ke clipboard.")
+
+    def _cek_add_watchlist(self) -> None:
+        sym = (self._last_cek_detail or {}).get("ticker") or self.var_cek_ticker.get()
+        self._add_watchlist(sym)
+
+    def _save_cek_chart_png(self) -> None:
+        src = (self._last_cek_detail or {}).get("chart_path")
+        if not src or not os.path.isfile(src):
+            messagebox.showinfo("Simpan Chart", "Jalankan Cek Lengkap terlebih dahulu.")
+            return
+        sym = (self._last_cek_detail or {}).get("ticker") or "CHART"
+        dest = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Simpan Chart PNG",
+            defaultextension=".png",
+            initialfile=f"SahamBot_{sym}.png",
+            filetypes=[("PNG Image", "*.png")],
+        )
+        if dest:
+            shutil.copy2(src, dest)
+            self.var_status.set(f"Chart disimpan ke {dest}")
+
+    def _export_tree_csv(self, default_name: str, headers: list[str], rows: list[list[Any]]) -> None:
+        if not rows:
+            messagebox.showinfo("Ekspor CSV", "Belum ada baris data untuk diekspor.")
+            return
+        dest = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Ekspor ke CSV",
+            defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("CSV File", "*.csv")],
+        )
+        if dest:
+            dm.export_rows_to_csv(dest, headers, rows)
+            self.var_status.set(f"Diekspor ke CSV: {dest}")
+
+    def _export_watch_csv(self) -> None:
+        rows = [list(self.tree_watch.item(i, "values")) for i in self.tree_watch.get_children("")]
+        hdr = [self.tree_watch.heading(c, "text") for c in self.tree_watch["columns"]]
+        self._export_tree_csv("sahambot_watchlist.csv", hdr, rows)
+
+    def _export_sinyal_csv(self) -> None:
+        rows = [list(self.tree_sinyal.item(i, "values")) for i in self.tree_sinyal.get_children("")]
+        hdr = [self.tree_sinyal.heading(c, "text") for c in self.tree_sinyal["columns"]]
+        self._export_tree_csv("sahambot_sinyal.csv", hdr, rows)
+
+    def _export_paket_csv(self) -> None:
+        rows = [list(self.tree_paket.item(i, "values")) for i in self.tree_paket.get_children("")]
+        hdr = [self.tree_paket.heading(c, "text") for c in self.tree_paket["columns"]]
+        self._export_tree_csv("sahambot_paket.csv", hdr, rows)
+
+    def _export_port_csv(self) -> None:
+        rows = [list(self.tree_port.item(i, "values")) for i in self.tree_port.get_children("")]
+        hdr = [self.tree_port.heading(c, "text") for c in self.tree_port["columns"]]
+        self._export_tree_csv("sahambot_portofolio.csv", hdr, rows)
+
+    def _export_jurnal_csv(self) -> None:
+        execs = (self._last_jurnal_res or {}).get("execs") or []
+        headers = [
+            "Tanggal",
+            "Ticker",
+            "Sisi",
+            "Lot",
+            "Harga Eksekusi",
+            "Harga Sinyal",
+            "Slippage %",
+            "PnL Bersih Rp",
+            "PnL %",
+            "Sumber",
+        ]
+        rows = [
+            [
+                e.get("trade_date") or e.get("created_at") or "",
+                e.get("ticker", ""),
+                e.get("side", ""),
+                e.get("lots", 0),
+                e.get("exec_price", 0),
+                e.get("signal_price", ""),
+                e.get("slippage_pct", ""),
+                e.get("net_pnl", ""),
+                e.get("net_pnl_pct", ""),
+                e.get("source", ""),
+            ]
+            for e in execs
+        ]
+        self._export_tree_csv("sahambot_jurnal.csv", headers, rows)
+
+    # ------------------------------------------------------------------
+    # Quick Chips, Alerts Tab & Tray
+    # ------------------------------------------------------------------
+
+    def _rebuild_quick_chips(self) -> None:
+        for child in self.frm_cek_chips.winfo_children():
+            child.destroy()
+        tickers: list[str] = []
+        for r in self._last_port_rows + self._last_watch_rows:
+            t = str(r.get("ticker") or "").upper()
+            if t and t not in tickers:
+                tickers.append(t)
+        if not tickers:
+            tickers = ["BBCA", "BBRI", "TLKM", "ASII"]
+        tk.Label(
+            self.frm_cek_chips, text="Akses Cepat:", bg=THEME["bg"], fg=THEME["dim"],
+            font=FONT_SMALL,
+        ).pack(side="left", padx=(0, 6))
+        for sym in tickers[:10]:
+            tk.Button(
+                self.frm_cek_chips,
+                text=sym,
+                bg=THEME["card"],
+                fg=THEME["fg"],
+                activebackground=THEME["accent_soft"],
+                activeforeground=THEME["accent"],
+                relief="flat",
+                bd=0,
+                padx=8,
+                pady=2,
+                font=FONT_SMALL_BOLD,
+                cursor="hand2",
+                command=lambda s=sym: self._open_cek_ticker(s),
+            ).pack(side="left", padx=(0, 4))
+
+    def _push_alert(self, category: str, ticker: str, message: str) -> None:
+        key = f"{category}|{ticker}|{message}"
+        if key in self._seen_alert_keys:
+            return
+        self._seen_alert_keys.add(key)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self._alert_history.insert(0, {
+            "time": ts, "kind": category, "ticker": ticker, "message": message,
+        })
+        self._alert_history = self._alert_history[:250]
+        self._render_alerts_table()
+        if not hasattr(self, "var_toast") or self.var_toast.get():
+            send_windows_toast(f"{category}: {ticker}", message)
+
+    def _render_alerts_table(self) -> None:
+        filt = self.var_alert_filter.get()
+        rows = [
+            a for a in self._alert_history
+            if filt == "Semua" or a.get("kind") == filt
+        ]
+        self.notebook.tab(7, text=f"🔔 Alert ({len(self._alert_history)})")
+        table_rows: list[tuple[tuple[Any, ...], str | None]] = []
+        for a in rows:
+            cat = str(a.get("kind") or "")
+            tone = "sell" if "Exit" in cat else ("info" if "Zona" in cat else "warn")
+            table_rows.append((
+                (a.get("time", ""), cat, a.get("ticker", ""), a.get("message", "")),
+                tone,
+            ))
+        _populate_tree(self.tree_alerts, table_rows)
+
+    def _copy_alerts_text(self) -> None:
+        lines = [
+            f"[{a['time']}] {a['kind']} {a['ticker']}: {a['message']}"
+            for a in self._alert_history
+        ]
+        self._copy_text("\n".join(lines) or "Belum ada riwayat alert.", "Riwayat alert disalin.")
+
+    def _clear_alerts(self) -> None:
+        self._alert_history.clear()
+        self._seen_alert_keys.clear()
+        self._render_alerts_table()
+
+    def _set_text(self, widget: scrolledtext.ScrolledText, content: str) -> None:
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", content)
+        widget.configure(state="disabled")
+
+    def _setup_tray(self) -> None:
+        if pystray is None:
+            return
+        try:
+            menu = pystray.Menu(
+                pystray.MenuItem("Buka SahamBot Desktop", lambda *_: self._ui_queue.put(("_tray_show", None)), default=True),
+                pystray.MenuItem("Refresh Semua Data", lambda *_: self._ui_queue.put(("_tray_refresh", None))),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Keluar", lambda *_: self._ui_queue.put(("_tray_quit", None))),
+            )
+            self._tray_icon = pystray.Icon(
+                "SahamBotDesktop", create_tray_icon_image(64), "SahamBot Desktop", menu,
+            )
+            threading.Thread(target=self._tray_icon.run, name="desktop-tray", daemon=True).start()
+        except Exception:
+            self._tray_icon = None
+
+    def _restore_window(self) -> None:
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
 
+    def _on_close_or_tray(self) -> None:
+        if self._tray_icon is not None:
+            self.root.withdraw()
+            if not hasattr(self, "var_toast") or self.var_toast.get():
+                send_windows_toast("SahamBot Desktop", "Berjalan di latar belakang (System Tray).")
+        else:
+            self._quit_app()
+
     def _quit_app(self) -> None:
-        if self._after_id is not None:
-            try:
-                self.root.after_cancel(self._after_id)
-            except Exception:
-                pass
+        self._closing = True
+        for attr in ("_pump_after_id", "_auto_after_id", "_chart_after_id"):
+            aid = getattr(self, attr, None)
+            if aid:
+                try:
+                    self.root.after_cancel(aid)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
         if self._tray_icon is not None:
             try:
                 self._tray_icon.stop()
             except Exception:
                 pass
-        self.root.destroy()
-
-    # ------------------------------------------------------------- aksi kecil
-    def _get_profile_and_modal(self) -> tuple[str, int]:
-        cid = self.profile_var.get().strip() or dm.DEFAULT_PROFILE_ID
         try:
-            modal = textutil.parse_rupiah(self.modal_var.get()) or 10_000_000
+            self.root.destroy()
         except Exception:
-            modal = 10_000_000
-        return cid, max(0, int(modal))
-
-    def _load_initial_profile(self) -> None:
-        cid, _ = self._get_profile_and_modal()
-        saved_modal = store_watchlist.get_modal(cid)
-        if saved_modal and saved_modal > 0:
-            self.modal_var.set(str(saved_modal))
-        if not store_watchlist.get_watchlist(cid):
-            for default_t in ("BBCA", "BBRI", "BMRI", "TLKM"):
-                store_watchlist.watchlist_add(cid, default_t)
-
-    def _save_profile(self) -> None:
-        cid, modal = self._get_profile_and_modal()
-        store_watchlist.set_modal(cid, modal)
-        self.status_var.set(f"Profil '{cid}' & modal {_fmt_rp(modal)} disimpan.")
-        self.trigger_refresh_all()
-
-    def _add_watch(self) -> None:
-        sym = self.add_watch_var.get().strip().upper().removesuffix(".JK")
-        if not sym:
-            return
-        cid, _ = self._get_profile_and_modal()
-        ok, _ = store_watchlist.watchlist_add(cid, sym)
-        self.add_watch_var.set("")
-        if ok:
-            self.status_var.set(f"{sym} ditambahkan ke watchlist '{cid}'.")
-            self.trigger_refresh_all()
-        else:
-            messagebox.showinfo("Watchlist", f"{sym} sudah ada atau batas watchlist penuh.")
-
-    def _remove_watch(self) -> None:
-        sel = self.watch_tree.selection()
-        if not sel:
-            return
-        sym = self.watch_tree.item(sel[0], "values")[0]
-        cid, _ = self._get_profile_and_modal()
-        store_watchlist.watchlist_remove(cid, sym)
-        self.trigger_refresh_all()
-
-    def _inspect_selected_tree(self, tree: ttk.Treeview) -> None:
-        sel = tree.selection()
-        if not sel:
-            return
-        sym = tree.item(sel[0], "values")[0]
-        self.cek_ticker_var.set(sym)
-        self._select_tab("cek")
-        self.trigger_inspect_ticker()
-
-    def _inspect_selected_watch(self) -> None:
-        self._inspect_selected_tree(self.watch_tree)
-
-    def _record_tx(self, side: str) -> None:
-        sym = self.tx_ticker.get().strip().upper().removesuffix(".JK")
-        try:
-            lots = int(self.tx_lots.get().strip())
-            px = float(self.tx_price.get().strip())
-        except ValueError:
-            messagebox.showerror("Input Tidak Valid", "Kode, lot (angka bulat), dan harga wajib diisi.")
-            return
-        if not sym or lots <= 0 or px <= 0:
-            messagebox.showerror("Input Tidak Valid", "Lot dan harga harus > 0.")
-            return
-        cid, _ = self._get_profile_and_modal()
-        trade_date = dm.start_of_day_tag()
-        try:
-            if side == "buy":
-                store_portfolio.record_execution_buy(cid, sym, lots, px, trade_date=trade_date, source="desktop")
-                self.status_var.set(f"Catat BELI {sym} {lots} lot @ {_fmt_rp(px)}")
-            else:
-                store_portfolio.record_execution_sell(cid, sym, lots, px, trade_date=trade_date, source="desktop")
-                self.status_var.set(f"Catat JUAL {sym} {lots} lot @ {_fmt_rp(px)}")
-        except Exception as exc:
-            messagebox.showerror("Gagal Mencatat", str(exc))
-            return
-        self.tx_ticker.set("")
-        self.tx_lots.set("")
-        self.tx_price.set("")
-        self.trigger_refresh_all()
-
-    def _alert_insert(self, al: dict) -> None:
-        line = f"[{al['time']}] [{al['kind']}] {al['title']} — {al['message']}\n"
-        kind = (al.get("kind") or "").upper()
-        tag = "green" if kind == "BELI" else "red" if kind == "JUAL" else "amber" if kind else "gray"
-        self.alert_list.configure(state="normal")
-        self.alert_list.insert("1.0", line, tag)
-        self.alert_list.configure(state="disabled")
-        self._hide_empty(self.alert_empty)
-
-    def _clear_alerts(self) -> None:
-        self.alert_list.configure(state="normal")
-        self.alert_list.delete("1.0", tk.END)
-        self.alert_list.configure(state="disabled")
-        self._show_empty(self.alert_empty)
-
-    def _reschedule_timer(self) -> None:
-        if self._after_id is not None:
-            self.root.after_cancel(self._after_id)
-            self._after_id = None
-        on = self.auto_var.get()
-        try:
-            sec = max(15, int(self.interval_var.get()))
-        except ValueError:
-            sec = 60
-        self.auto_chip_var.set(f"AUTO-PANTAU {'ON' if on else 'OFF'} · {sec} DTK")
-        chip = "green" if on else "gray"
-        self.auto_chip.configure(style=f"Chip.{chip}.TLabel")
-        self.auto_chip_bar.configure(style=f"Chip.{chip}.TLabel")
-        self.status_dot.configure(fg=GREEN if on else MUTED)
-        if on:
-            self._after_id = self.root.after(sec * 1000, self.trigger_refresh_all)
-
-    # ------------------------------------------------------------- worker triggers
-    def trigger_refresh_all(self) -> None:
-        if self._refresh_busy:
-            self._reschedule_timer()
-            return
-        self._refresh_busy = True
-        self.status_var.set("Memperbarui data pasar, watchlist, portofolio, & jurnal...")
-        cid, modal = self._get_profile_and_modal()
-        sig_f = self.sinyal_filter_var.get()
-        q_only = self.sinyal_quality_var.get()
-
-        def _worker():
-            try:
-                pulse = dm.fetch_market_pulse(include_idx=True, include_news=True)
-                reg = pulse.get("ihsg", {}).get("regime")
-                tickers = store_watchlist.get_watchlist(cid)
-                watch_rows = dm.evaluate_watchlist_rows(tickers, modal, market_regime=reg)
-                port_rows = dm.evaluate_portfolio_rows(cid, market_regime=reg)
-                sinyal_data = dm.load_sinyal_rows(sig_f, quality_only=q_only)
-                jurnal_data = dm.build_journal_summary(cid)
-                self.ui_queue.put(("refresh_ok", {
-                    "pulse": pulse,
-                    "watch_rows": watch_rows,
-                    "port_rows": port_rows,
-                    "sinyal_data": sinyal_data,
-                    "jurnal_data": jurnal_data,
-                }))
-            except Exception as exc:
-                self.ui_queue.put(("refresh_err", str(exc)))
-
-        threading.Thread(target=_worker, daemon=True).start()
-        self._reschedule_timer()
-
-    def trigger_load_sinyal(self) -> None:
-        sig_f = self.sinyal_filter_var.get()
-        q_only = self.sinyal_quality_var.get()
-        self.status_var.set("Memuat snapshot sinyal BEI...")
-
-        def _worker():
-            try:
-                data_s = dm.load_sinyal_rows(sig_f, quality_only=q_only)
-                self.ui_queue.put(("sinyal_ok", data_s))
-            except Exception as exc:
-                self.ui_queue.put(("refresh_err", str(exc)))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def trigger_full_scan(self) -> None:
-        if self._scan_busy:
-            messagebox.showinfo("Scan BEI", "Scan penuh 944 emiten sedang berjalan di background.")
-            return
-        self._scan_busy = True
-        self.status_var.set("Menjalankan scan penuh ~944 emiten BEI (±2-5 menit)...")
-
-        def _worker():
-            try:
-                res = dm.run_full_market_scan(force=True)
-                self.ui_queue.put(("scan_ok", res))
-            except Exception as exc:
-                self.ui_queue.put(("scan_err", str(exc)))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def trigger_build_paket(self) -> None:
-        cid, modal = self._get_profile_and_modal()
-        self.status_var.set("Menyusun paket beli Stockbit...")
-
-        def _worker():
-            try:
-                res = dm.build_paket_picks(modal, chat_id=cid, market_regime=self._last_regime)
-                self.ui_queue.put(("paket_ok", res))
-            except Exception as exc:
-                self.ui_queue.put(("refresh_err", str(exc)))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def trigger_load_jurnal(self) -> None:
-        cid, _ = self._get_profile_and_modal()
-
-        def _worker():
-            try:
-                res = dm.build_journal_summary(cid)
-                self.ui_queue.put(("jurnal_ok", res))
-            except Exception as exc:
-                self.ui_queue.put(("refresh_err", str(exc)))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def trigger_inspect_ticker(self) -> None:
-        sym = self.cek_ticker_var.get().strip().upper().removesuffix(".JK")
-        if not sym:
-            return
-        cid, modal = self._get_profile_and_modal()
-        self.status_var.set(f"Menganalisis {sym}...")
-
-        def _worker():
-            try:
-                detail = dm.inspect_ticker_detail(sym, modal, chat_id=cid)
-                png_path = None
-                try:
-                    res = detail["res"]
-                    png_path = chartmod.render_chart(res["ind"], sym, res["sr"], res["score"])
-                except Exception:
-                    png_path = None
-                detail["chart_path"] = png_path
-                self.ui_queue.put(("cek_ok", detail))
-            except Exception as exc:
-                self.ui_queue.put(("cek_err", str(exc)))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    # ------------------------------------------------------------- queue & render
-    def _poll_queue(self) -> None:
-        try:
-            while True:
-                kind, payload = self.ui_queue.get_nowait()
-                if kind == "tray_show":
-                    self._show_from_tray()
-                elif kind == "tray_refresh":
-                    self.trigger_refresh_all()
-                elif kind == "tray_quit":
-                    self._quit_app()
-                    return
-                elif kind == "refresh_ok":
-                    self._refresh_busy = False
-                    self._apply_refresh(payload)
-                elif kind == "refresh_err":
-                    self._refresh_busy = False
-                    self.status_var.set(f"Gagal memperbarui: {payload}")
-                elif kind == "sinyal_ok":
-                    self._render_sinyal(payload)
-                    self.status_var.set("Snapshot sinyal diperbarui.")
-                elif kind == "scan_ok":
-                    self._scan_busy = False
-                    self.status_var.set("Scan 944 emiten selesai!")
-                    self.trigger_load_sinyal()
-                    if self.toast_var.get():
-                        send_windows_toast("Scan BEI Selesai", "Snapshot pasar terbaru sudah siap di tab Sinyal & Paket.")
-                elif kind == "scan_err":
-                    self._scan_busy = False
-                    self.status_var.set(f"Scan gagal: {payload}")
-                    messagebox.showwarning("Scan BEI", str(payload))
-                elif kind == "paket_ok":
-                    self._render_paket(payload)
-                elif kind == "jurnal_ok":
-                    self._render_jurnal(payload)
-                elif kind == "cek_ok":
-                    self._apply_cek(payload)
-                elif kind == "cek_err":
-                    self.status_var.set(f"Gagal cek emiten: {payload}")
-                    messagebox.showwarning("Cek Emiten", str(payload))
-        except queue.Empty:
             pass
-        self.root.after(150, self._poll_queue)
 
-    def _apply_refresh(self, data_bundle: dict) -> None:
-        pulse = data_bundle["pulse"]
-        ihsg = pulse.get("ihsg") or {}
-        reg = ihsg.get("regime") or {}
-        self._last_regime = reg
-        cond = pulse.get("condition") or "-"
-        notes = "; ".join(pulse.get("condition_notes") or [])
 
-        close = ihsg.get("close")
-        ret1d = ihsg.get("ret1d")
-        self.ihsg_close_var.set(f"{close:,.2f}" if close is not None else "tidak tersedia")
-        if ret1d is not None:
-            self.ihsg_chg_var.set(f"{'▲' if ret1d >= 0 else '▼'} {ret1d:+.2f}%")
-            self.ihsg_chip.configure(style=f"Chip.{'green' if ret1d >= 0 else 'red'}.TLabel")
-        else:
-            self.ihsg_chg_var.set("—")
-            self.ihsg_chip.configure(style="Chip.gray.TLabel")
+# ---------------------------------------------------------------------------
+# Entrypoint Aplikasi & Kunci Single-Instance Windows
+# ---------------------------------------------------------------------------
 
-        reg_status = reg.get("status", "NA")
-        self.regime_var.set(reg_status)
-        reg_color = GREEN if reg_status == "BULL" else RED if reg_status == "BEAR" else AMBER if reg_status == "DEFENSIVE" else MUTED
-        self.regime_val.configure(fg=reg_color)
-        self.regime_sub_var.set(reg.get("label", "-"))
-
-        self.cond_var.set(cond)
-        cond_colors = {"green": GREEN, "red": RED, "amber": AMBER, "blue": BLUE, "gray": MUTED, "accent": BLUE}
-        self.cond_val.configure(fg=cond_colors[_chip_for(cond)])
-        self.cond_sub_var.set((notes[:80] + "…") if len(notes) > 80 else notes)
-
-        self.update_var.set(pulse.get("as_of_label", "-"))
-        self.status_var.set(f"Update terakhir: {pulse.get('as_of_label', '-')}")
-
-        self._render_market_text(pulse)
-        self._render_watch_rows(data_bundle["watch_rows"])
-        self._render_port_rows(data_bundle["port_rows"])
-        self._render_sinyal(data_bundle["sinyal_data"])
-        self._render_jurnal(data_bundle["jurnal_data"])
-
-        alerts = dm.detect_action_alerts(
-            self.prev_alert_state, data_bundle["watch_rows"], data_bundle["port_rows"]
+def record_desktop_execution(
+    chat_id: int | str,
+    ticker: str,
+    side: str,
+    lots: int,
+    price: float,
+    *,
+    trade_date: str | None = None,
+    sl: float | None = None,
+    tp: float | None = None,
+    note: str = "",
+) -> dict[str, Any]:
+    """Catat eksekusi BELI/JUAL manual Stockbit ke SQLite sesuai kontrak `store_portfolio`."""
+    sym = str(ticker or "").strip().upper().replace(".JK", "")
+    sd = str(side or "").strip().upper()
+    tdate = trade_date or datetime.now().strftime("%Y-%m-%d")
+    src = f"desktop:{note.strip()[:40]}" if note and note.strip() else "desktop"
+    if sd == "JUAL":
+        return store_portfolio.record_execution_sell(
+            chat_id, sym, int(lots), float(price), tdate, source=src,
         )
-        for al in alerts:
-            self._alert_insert(al)
-            if self.toast_var.get():
-                send_windows_toast(al["title"], al["message"])
-
-    def _render_market_text(self, pulse: dict) -> None:
-        ihsg = pulse.get("ihsg") or {}
-        reg = ihsg.get("regime") or {}
-        br = pulse.get("breadth") or {}
-        sec = pulse.get("sectors") or {}
-        news_d = pulse.get("news") or {}
-        cond = pulse.get("condition") or "-"
-        notes = "; ".join(pulse.get("condition_notes") or [])
-
-        lines = [
-            f"=== LAPORAN KONDISI PASAR BEI ({pulse.get('as_of_label', '-')}) ===",
-            f"Status Bursa : {'BUKA' if pulse.get('market_open') else 'TUTUP / DI LUAR JAM BURSA'}",
-            f"Kondisi      : {cond}" + (f" — {notes}" if notes else ""),
-            f"Rezim IHSG   : {reg.get('status', 'NA')} ({reg.get('label', '-')})",
-            "",
-        ]
-        if br.get("ok"):
-            lines.append(f"Breadth & penggerak (/scan {br.get('trade_date', '-')}): panel kanan →")
-        else:
-            lines.append(f"Breadth (/scan): {br.get('reason') or 'belum ada snapshot lokal.'}")
-
-        lines.append("")
-        if sec.get("ok"):
-            all_secs = sec.get("sectors") or []
-            top_s = ", ".join(f"{s['name']} ({s['pct']:+.2f}%)" for s in all_secs[:3])
-            bot_s = ", ".join(f"{s['name']} ({s['pct']:+.2f}%)" for s in all_secs[-3:]) if len(all_secs) > 3 else "-"
-            lines.append(f"Sektor Terkuat : {top_s or '-'}")
-            lines.append(f"Sektor Terlemah: {bot_s or '-'}")
-        else:
-            lines.append(f"Sektor BEI     : {sec.get('reason') or 'tidak tersedia'}")
-
-        lines.append("")
-        if news_d:
-            lines.append(f"Sentimen & berita pasar: panel kanan →  (skor {news_d.get('pct', 0):+.1f}%)")
-        else:
-            lines.append("Berita Pasar   : tidak tersedia")
-
-        self._rich_lines(self.market_text, lines)
-        self._render_market_side(pulse)
-
-    def _render_market_side(self, pulse: dict) -> None:
-        """Panel kanan tab Kondisi Pasar: bar breadth, penggerak, & kartu sentimen berita."""
-        br = pulse.get("breadth") or {}
-        news_d = pulse.get("news") or {}
-
-        self.breadth_canvas.delete("all")
-        w = max(self.breadth_canvas.winfo_width(), 360)
-        adv, dec, flat = br.get("adv", 0) or 0, br.get("dec", 0) or 0, br.get("flat", 0) or 0
-        total = adv + dec + flat
-        if br.get("ok") and total > 0:
-            x = 0
-            for val, color in ((adv, GREEN), (dec, RED), (flat, MUTED)):
-                seg = int(w * val / total) if val else 0
-                if seg:
-                    self.breadth_canvas.create_rectangle(x, 0, x + seg, 16, fill=color, outline="")
-                x += seg
-            self.breadth_counts_var.set(f"Naik {adv} · Turun {dec} · Datar {flat}  (n={br.get('n_usable', total)})")
-            self.breadth_ma_var.set(
-                f">MA50: {br.get('pct_above_sma50') or 0:.1f}% · >MA200: {br.get('pct_above_sma200') or 0:.1f}% · {br.get('trade_date', '-')}"
-            )
-            g = ", ".join(f"{m['ticker']} {m['ret1d']:+.1f}%" for m in (br.get("top_gainers") or [])[:5]) or "-"
-            l = ", ".join(f"{m['ticker']} {m['ret1d']:+.1f}%" for m in (br.get("top_losers") or [])[:5]) or "-"
-        else:
-            self.breadth_canvas.create_rectangle(0, 0, w, 16, fill=BORDER, outline="")
-            self.breadth_counts_var.set(br.get("reason") or "belum ada snapshot lokal")
-            self.breadth_ma_var.set("")
-            g = l = "-"
-        self.market_gainers.configure(text=f"▲ {g}")
-        self.market_losers.configure(text=f"▼ {l}")
-
-        if news_d:
-            label = news_d.get("label", "-")
-            self.news_chip.configure(text=label, style=f"Chip.{_chip_for(label)}.TLabel")
-            self.news_score_var.set(f"skor {news_d.get('pct', 0):+.1f}%")
-            heads = "\n".join(f"• {h.get('title', '')}" for h in (news_d.get("details") or [])[:6]) or "—"
-        else:
-            self.news_chip.configure(text="—", style="Chip.gray.TLabel")
-            self.news_score_var.set("berita tidak tersedia")
-            heads = "—"
-        self.news_headlines.configure(text=heads)
-
-    def _render_watch_rows(self, rows: list[dict]) -> None:
-        self.watch_tree.delete(*self.watch_tree.get_children())
-        counts: dict[str, int] = {}
-        for i, r in enumerate(rows):
-            act = r.get("action") or "TIDAK TERSEDIA"
-            counts[act] = counts.get(act, 0) + 1
-            tags = (act, "odd") if i % 2 else (act,)
-            self.watch_tree.insert(
-                "", tk.END,
-                values=(
-                    r["ticker"], _fmt_rp(r.get("price")), _fmt_pct(r.get("ret1d")), act,
-                    f"{r['score_pct']:+.0f}%" if r.get("score_pct") is not None else "-",
-                    _fmt_rp(r.get("entry")), _fmt_rp(r.get("sl")), _fmt_rp(r.get("tp")),
-                    r.get("lots") or 0, r.get("reason") or "",
-                ),
-                tags=tags,
-            )
-        if rows:
-            self._hide_empty(self.watch_empty)
-        else:
-            self._show_empty(self.watch_empty)
-        self.watch_foot_var.set(f"{len(rows)} emiten di watchlist")
-        self._chip_row(self.watch_chips, counts, ("BELI", "SIAP BELI", "TAHAN", "JUAL", "TIDAK TERSEDIA"))
-
-    def _render_sinyal(self, data_s: dict) -> None:
-        meta = data_s.get("meta") or {}
-        counts = data_s.get("counts") or {}
-        self.sinyal_meta_var.set(f"Snapshot {meta.get('trade_date', '-')} · filter: {self.sinyal_filter_var.get()}"
-                                 + (" · hanya BELI berkualitas" if self.sinyal_quality_var.get() else ""))
-        self.sinyal_tree.delete(*self.sinyal_tree.get_children())
-        rows = data_s.get("rows") or []
-        for i, r in enumerate(rows):
-            sig = r.get("signal") or "TAHAN"
-            rp = r.get("rel_pct")
-            tags = (sig, "odd") if i % 2 else (sig,)
-            self.sinyal_tree.insert(
-                "", tk.END,
-                values=(
-                    r["ticker"], (r.get("name") or "")[:24], _fmt_rp(r.get("price")),
-                    _fmt_pct(r.get("ret1d")), sig,
-                    f"{rp:.0f}" if rp is not None else "-",
-                    _fmt_rp(r.get("entry")), _fmt_rp(r.get("sl")), _fmt_rp(r.get("tp")),
-                    r.get("quality_mark", "❔"), r.get("reason") or "",
-                ),
-                tags=tags,
-            )
-        if rows:
-            self._hide_empty(self.sinyal_empty)
-        else:
-            self._show_empty(self.sinyal_empty)
-        self._chip_row(self.sinyal_chips, counts, ("BELI", "JUAL", "TAHAN"))
-
-    def _render_paket(self, res: dict) -> None:
-        self.paket_tree.delete(*self.paket_tree.get_children())
-        if not res.get("ok"):
-            self.paket_info_var.set(res.get("reason") or "Tidak ada kandidat paket yang lolos saringan.")
-            self.status_var.set("Paket Beli: kosong.")
-            self._show_empty(self.paket_empty)
-            return
-        plans = res.get("plans") or []
-        if not plans:
-            self.paket_info_var.set("Tidak ada kandidat paket yang lolos saringan.")
-            self._show_empty(self.paket_empty)
-            return
-        self._hide_empty(self.paket_empty)
-        self.paket_info_var.set(f"{len(plans)} kandidat paket beli siap Stockbit PC (klik ganda baris untuk cek detail).")
-        for i, p in enumerate(plans):
-            self.paket_tree.insert(
-                "", tk.END,
-                values=(
-                    p["ticker"], p.get("grade", "-"), _fmt_rp(p.get("entry")),
-                    _fmt_rp(p.get("sl")), _fmt_rp(p.get("tp")), p.get("lots", 0),
-                    _fmt_rp(p.get("value")), _fmt_rp(p.get("real_risk")),
-                    f"{p.get('rr', 0):.1f}" if p.get("rr") is not None else "-",
-                    "; ".join(p.get("warnings") or []) or "Lolos saringan kualitas & risiko",
-                ),
-                tags=("odd",) if i % 2 else (),
-            )
-        self.status_var.set(f"Paket Beli disusun ({len(plans)} emiten).")
-
-    def _render_port_rows(self, rows: list[dict]) -> None:
-        self.port_tree.delete(*self.port_tree.get_children())
-        for i, p in enumerate(rows):
-            st = p.get("thesis") or "TETAP"
-            tags = (st, "odd") if i % 2 else (st,)
-            self.port_tree.insert(
-                "", tk.END,
-                values=(
-                    p["ticker"], p["lots"], _fmt_rp(p.get("avg_price")), _fmt_rp(p.get("price")),
-                    _fmt_pct(p.get("pnl_net_pct")), _fmt_rp(p.get("effective_sl")),
-                    _fmt_rp(p.get("trailing_sl")), _fmt_rp(p.get("tp")), st,
-                    "; ".join((p.get("reasons") or [])[:2]),
-                ),
-                tags=tags,
-            )
-        if rows:
-            self._hide_empty(self.port_empty)
-        else:
-            self._show_empty(self.port_empty)
-        self.port_foot_var.set(f"{len(rows)} posisi terbuka" if rows else "")
-
-    def _render_jurnal(self, data_j: dict) -> None:
-        body = _strip_html(data_j.get("summary_text") or "")
-        hist = _strip_html(data_j.get("history_text") or "")
-        full = body + ("\n\n" + hist if hist else "")
-        self._rich_lines(self.jurnal_text, (full or "Belum ada catatan jurnal.").splitlines())
-
-    def _apply_cek(self, detail: dict) -> None:
-        sym = detail["ticker"]
-        res = detail["res"]
-        snap = res["snap"]
-        sc = res["score"]
-        cek_r = detail["cek"]
-        plan = detail.get("plan")
-        held = detail.get("held")
-
-        lines = [
-            f"=== CEK EMITEN: {sym} ({detail.get('generated_at', '-')}) ===",
-            f"Harga Terakhir : {_fmt_rp(snap.get('close'))} (as of {res.get('as_of')})",
-            f"Skor Teknikal  : {sc.get('pct', 0):+.1f}% ({sc.get('trend_label') or sc.get('rating')})",
-            f"VERDICT        : {cek_r.get('verdict', '-')} — {cek_r.get('summary', '')}",
-            "",
-            "--- Sudut Pandang Pro (Bull) ---",
-        ]
-        for b in cek_r.get("pro") or ["(belum ada poin kuat)"]:
-            lines.append(f"  + {b}")
-        lines.append("")
-        lines.append("--- Risiko / Pertimbangan (Bear) ---")
-        for r in cek_r.get("risks") or ["(tidak ada catatan risiko utama)"]:
-            lines.append(f"  - {r}")
-        if plan:
-            lines += [
-                "",
-                "--- Rencana Ukuran & Level (Stockbit PC) ---",
-                f"  Entry Limit : {_fmt_rp(plan.get('entry'))} | SL: {_fmt_rp(plan.get('sl'))} | TP: {_fmt_rp(plan.get('tp'))}",
-                f"  Saran Lot   : {plan.get('lots', 0)} lot (Total {reports.fmt_rp(plan.get('cost') or 0)})",
-            ]
-        if held:
-            lines += ["", f"Posisi Anda saat ini: {held.get('lots')} lot @ {_fmt_rp(held.get('avg_price'))}"]
-
-        self._rich_lines(self.cek_text, lines)
-
-        png_path = detail.get("chart_path")
-        if png_path and os.path.exists(png_path):
-            try:
-                img = tk.PhotoImage(file=png_path)
-                if img.width() > 620:
-                    factor = max(1, img.width() // 580)
-                    img = img.subsample(factor, factor)
-                self._chart_img = img
-                self.chart_label.configure(image=img, text="")
-            except Exception:
-                self.chart_label.configure(image="", text="Gagal memuat gambar grafik.")
-        else:
-            self.chart_label.configure(image="", text="Grafik tidak tersedia.")
-        self.status_var.set(f"Cek {sym} selesai ({cek_r.get('verdict', '-')}).")
+    return store_portfolio.record_execution_buy(
+        chat_id, sym, int(lots), float(price), tdate, sl=sl, tp=tp, source=src,
+    )
 
 
-def main() -> None:
+def _acquire_single_instance_lock() -> Any:
+    """Cegah dua instance SahamBot Desktop berjalan bersamaan di Windows."""
+    if sys.platform != "win32":
+        return None
+    try:
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\SahamBotDesktopTerminalMutex")
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        return mutex
+    except Exception:
+        return None
+
+
+def main() -> int:
+    """Jalankan SahamBot Desktop UI."""
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            pass
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        except Exception:
+            pass
+    lock = _acquire_single_instance_lock()
+    if lock is False:
+        messagebox.showinfo("SahamBot Desktop", "Aplikasi SahamBot Desktop sudah berjalan.")
+        return 0
+
     root = tk.Tk()
     SahamBotDesktopApp(root)
     root.mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

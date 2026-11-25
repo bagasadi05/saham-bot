@@ -118,6 +118,15 @@ Windows (PowerShell):
 .\run.ps1         # padanan run.sh: muat .env, pakai .venv, cek token
 ```
 
+### Aplikasi Desktop Windows (`desktop.py`)
+
+Untuk terminal pemantauan lokal Windows (8 tab: Pasar & Rezim + Rotasi Sektor IDX-IC, Watchlist + Alert cepat, Sinyal Pasar + filter kualitas/ISSI, Paket Beli + salin tiket Stockbit, Portofolio Asli + VaR95/ES95 + batas risiko, Jurnal MAE/MFE & Alpha IHSG, Cek Emiten + grafik PNG, Alert & Riwayat + Windows toast, semua tanpa auto-trading):
+
+```powershell
+.\.venv\Scripts\python.exe desktop.py           # jalankan GUI + System Tray lokal
+.\.venv\Scripts\python.exe tools\build_desktop.py  # opsional: paketkan menjadi dist\SahamBot\SahamBot.exe
+```
+
 `bot.py` juga memuat `.env` sendiri (tanpa dependensi tambahan), jadi ini tetap jalan:
 
 ```bash
