@@ -110,6 +110,30 @@ def test_classify_shows_sector_percentile_when_available():
     assert sig_low == "TAHAN"
 
 
+def test_classify_death_cross_downgrades_beli_to_tahan():
+    """Anti falling-knife: MA50 < MA200 (death cross) → BELI jadi TAHAN."""
+    # tren pendek naik (close>sma50, sma20>sma50, macd+) tapi death cross
+    sig, reason = screener.classify(
+        120, 115, 110, 60, 0.5, 5, 90, 5, True, 50, sma200=130)
+    assert sig == "TAHAN"
+    assert "Death cross" in reason
+    # tanpa death cross (sma200=None atau sma50>=sma200) → tetap BELI
+    sig_ok, _ = screener.classify(
+        120, 115, 110, 60, 0.5, 5, 90, 5, True, 50, sma200=100)
+    assert sig_ok == "BELI"
+    sig_none, _ = screener.classify(
+        120, 115, 110, 60, 0.5, 5, 90, 5, True, 50)  # sma200 default None
+    assert sig_none == "BELI"
+
+
+def test_classify_death_cross_fallback_technical_score():
+    """Fallback skor teknikal juga cek death cross."""
+    sig, reason = screener.classify(
+        120, 115, 110, 60, 0.5, 5, None, None, False, 50, sma200=130)
+    assert sig == "TAHAN"
+    assert "Death cross" in reason
+
+
 # --------------------------------------------------------------- evaluate
 def test_evaluate_skips_short_history_and_attaches_names():
     frames = {

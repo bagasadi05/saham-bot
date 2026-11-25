@@ -178,13 +178,17 @@ def _round_buy_levels(close: float, atr: float | None) -> tuple[float, float | N
 
 def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
              rel_pct, rel_quintil, rel_ok, tech_pct,
-             rel_pct_sector=None, rel_sector_ok=False) -> tuple[str, str]:
+             rel_pct_sector=None, rel_sector_ok=False, sma200=None) -> tuple[str, str]:
     """Tentukan BELI / JUAL / TAHAN + alasan singkat (tanpa klaim berlebihan).
 
     Bila peringkat di dalam sektor tersedia (rel_sector_ok), persentil sektor
     ikut ditampilkan — saham bisa biasa saja secara global tapi terbaik di
     sektornya, atau sebaliknya. Peringkat sektor TIDAK mengubah sinyal:
     ambang BELI/JUAL tetap memakai persentil global yang tervalidasi OOS.
+
+    Filter anti falling-knife: bila `sma200` tersedia dan `sma50 < sma200`
+    (death cross), BELI diturunkan jadi TAHAN — tren panjang masih turun,
+    meski tren pendek (MA20>MA50) sesaat membaik.
     """
     if sma50 is None or close is None:
         return "TAHAN", "Riwayat harga terlalu pendek — tren belum terbentuk"
@@ -194,6 +198,8 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
     down = (close < sma50
             and (sma20 is None or sma20 < sma50)
             and (macd_hist is None or macd_hist < 0))
+    death_cross = (sma200 is not None and sma50 is not None
+                   and sma50 < sma200)
     rsi_show = 50.0 if rsi_v is None else rsi_v
     chase = ret20d is not None and ret20d > MAX_CHASE
     sec_txt = ""
@@ -204,6 +210,10 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
         pct = f"{rel_pct:.0f}"
         q = f" (kuintil {rel_quintil})" if rel_quintil else ""
         if up and rel_pct >= BUY_PCT and 40 <= rsi_show <= 75 and not chase:
+            if death_cross:
+                return ("TAHAN",
+                        f"Death cross (MA50 < MA200) — tren panjang masih turun, "
+                        f"meski tren pendek naik; persentil {pct}{q}{sec_txt}")
             return ("BELI",
                     f"Tren naik (MA20 > MA50, MACD+), RSI {rsi_show:.0f}, "
                     f"persentil {pct}{q}{sec_txt}")
@@ -218,6 +228,10 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
     if tech_pct is None:
         return "TAHAN", "Data indikator belum cukup"
     if up and tech_pct >= 40 and 40 <= rsi_show <= 75 and not chase:
+        if death_cross:
+            return ("TAHAN",
+                    f"Death cross (MA50 < MA200) — tren panjang masih turun; "
+                    f"skor teknikal {tech_pct:+.0f}")
         return "BELI", f"Tren naik, skor teknikal {tech_pct:+.0f}"
     if down and tech_pct <= -40:
         return "JUAL", f"Tren turun, skor teknikal {tech_pct:+.0f}"
@@ -334,7 +348,8 @@ def _evaluate_detailed(
         signal, reason = classify(close, sma20, sma50, rsi_v, hist, ret20d,
                                   rel_pct, rel_quintil, rel_ok, tech_pct,
                                   rel_pct_sector=rel_pct_sector,
-                                  rel_sector_ok=bool(it.get("rel_sector_ok")))
+                                  rel_sector_ok=bool(it.get("rel_sector_ok")),
+                                  sma200=sma200)
 
         dormant = recent_zero_vol >= MAX_ZERO_VOL_RECENT or q_flags.get("volume_nol", 0) >= 10
         if signal == "BELI" and dormant:

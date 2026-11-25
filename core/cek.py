@@ -558,6 +558,8 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         vetoes.append("laba negatif")
     elif roe is not None and 0 <= roe < 2:
         vetoes.append("ROE < 2% (laba nyaris nol)")
+    if pbv is not None and pbv <= 0:
+        vetoes.append("PBV ≤ 0 (ekuitas negatif)")
 
     if vetoes:
         verdict = "HINDARI"

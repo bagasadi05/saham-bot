@@ -111,6 +111,19 @@ def test_laba_negatif_jadi_veto():
     assert "laba negatif" in out["vetoes"]
 
 
+def test_pbv_nol_atau_negatif_jadi_veto():
+    """PBV <= 0 = ekuitas negatif → HINDARI (selaras idx-equity-research)."""
+    fund, fund_raw = _fund(per=10.0, pbv=0.0, roe=5.0)
+    out = _build(fund=fund, fund_raw=fund_raw)
+    assert out["verdict"] == "HINDARI"
+    assert any("PBV" in v and "ekuitas negatif" in v for v in out["vetoes"])
+
+    fund2, fund_raw2 = _fund(per=10.0, pbv=-1.5, roe=5.0)
+    out2 = _build(fund=fund2, fund_raw=fund_raw2)
+    assert out2["verdict"] == "HINDARI"
+    assert any("PBV" in v for v in out2["vetoes"])
+
+
 def test_data_kurang_tidak_disebut_hindari():
     """>= 3 bagian tanpa data -> TIDAK CUKUP DATA, bukan verdict karangan."""
     out = _build(res=None, fund=None, fund_raw=None, nsent=None,
