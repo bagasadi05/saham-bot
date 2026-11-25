@@ -673,11 +673,19 @@ def main():
     ap.add_argument("--min-ic", type=float, default=None,
                     help="keluar dengan kode 2 bila IC rata-rata < nilai ini "
                          "(dipakai CI riset mingguan sebagai alarm)")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="jumlah thread paralel unduh data (0 = auto: 2x jumlah core CPU, "
+                         "bisa juga via env SAHAMBOT_WORKERS; berguna saat overclock di Colab/VPS)")
     args = ap.parse_args()
 
     tickers = list(dict.fromkeys(saran.LQ45))
     if args.limit:
         tickers = tickers[: args.limit]
+
+    workers = args.workers or int(os.getenv("SAHAMBOT_WORKERS", "0") or 0)
+    if workers <= 0:
+        workers = max(8, (os.cpu_count() or 4) * 2)  # I/O-bound: 2x core
+    print(f"workers download: {workers} (cpu_count={os.cpu_count()})")
 
     os.makedirs(args.out, exist_ok=True)
     cache = os.path.join(args.out, f"dataset_{args.period}_{len(tickers)}.pkl")
@@ -687,7 +695,7 @@ def main():
     else:
         print(f"Mengambil data {len(tickers)} emiten ({args.period})...")
         t0 = time.time()
-        df = build_dataset(tickers, args.period, args.horizon)
+        df = build_dataset(tickers, args.period, args.horizon, max_workers=workers)
         df.to_pickle(cache)
         print(f"dataset: {len(df):,} baris, {df['ticker'].nunique()} emiten, "
               f"{df['date'].nunique()} tanggal ({time.time() - t0:.0f}s)")

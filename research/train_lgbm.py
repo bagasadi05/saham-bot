@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -114,14 +115,29 @@ def walk_forward_compare(
     horizon: int = 20,
     embargo_days: int = 20,
     min_train_years: int = 4,
+    use_gpu: bool = False,
 ) -> dict:
-    """Jalankan walk-forward purged CV: Ridge vs LightGBM vs Blend 50/50."""
+    """Jalankan walk-forward purged CV: Ridge vs LightGBM vs Blend 50/50.
+
+    `use_gpu=True` memakai LightGBM GPU (`device_type='gpu'`) bila CUDA tersedia —
+    jauh lebih cepat di Colab T4/A100 untuk dataset besar.
+    """
     try:
         import lightgbm as lgb
     except ImportError as exc:
         raise RuntimeError(
             "lightgbm belum terpasang. Jalankan `pip install lightgbm` (otomatis di Colab)."
         ) from exc
+
+    gpu_ok = False
+    if use_gpu:
+        try:
+            _ = lgb.__version__  # pastikan lightgbm terimport
+            gpu_ok = True
+            print("[train_lgbm] use_gpu=True — LightGBM akan pakai device_type='gpu'")
+        except Exception as e:
+            print(f"[train_lgbm] GPU tidak tersedia ({e}); fallback ke CPU")
+            gpu_ok = False
 
     all_feats = [f for f in (BASE_FEATS + ENRICHED_EXTRA) if f in df.columns]
     base_feats = [f for f in BASE_FEATS if f in df.columns]
@@ -165,6 +181,7 @@ def walk_forward_compare(
             random_state=42 + int(yr),
             n_jobs=-1,
             verbose=-1,
+            **({"device_type": "gpu"} if gpu_ok else {}),
         )
         model.fit(tr_all_z[all_feats].fillna(0.0), y_tr_rank)
         pred_lgb = model.predict(te_all_z[all_feats].fillna(0.0))
@@ -261,17 +278,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-tickers", type=int, default=85)
     ap.add_argument("--out", default="temp/research/lgbm_report.json")
     ap.add_argument("--save-model", default="", help="Opsional: path simpan model LightGBM (.txt)")
+    ap.add_argument("--gpu", action="store_true",
+                    help="Pakai LightGBM GPU (device_type='gpu') — aktifkan Runtime GPU di Colab")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="Thread paralel unduh data (0 = auto 2x CPU core, env SAHAMBOT_WORKERS)")
     args = ap.parse_args(argv)
 
     tickers = select_universe(args.universe, max_tickers=args.max_tickers)
-    print(f"[train_lgbm] universe={args.universe} ({len(tickers)} emiten), horizon={args.horizon}h, embargo={args.embargo}h")
-    raw_df = ev.build_dataset(tickers, args.period, args.horizon)
+    print(f"[train_lgbm] universe={args.universe} ({len(tickers)} emiten), horizon={args.horizon}h, embargo={args.embargo}h, gpu={args.gpu}")
+    workers = args.workers or int(os.getenv("SAHAMBOT_WORKERS", "0") or 0) or max(8, (os.cpu_count() or 4) * 2)
+    print(f"[train_lgbm] workers download: {workers}")
+    raw_df = ev.build_dataset(tickers, args.period, args.horizon, max_workers=workers)
     if raw_df is None or raw_df.empty:
         print("ERROR: dataset kosong.", file=sys.stderr)
         return 1
 
     df = add_enriched_features(raw_df)
-    res = walk_forward_compare(df, horizon=args.horizon, embargo_days=args.embargo)
+    res = walk_forward_compare(df, horizon=args.horizon, embargo_days=args.embargo,
+                               use_gpu=args.gpu)
     model = res.pop("_last_model", None)
 
     out_path = ROOT / args.out

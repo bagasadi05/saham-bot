@@ -34,8 +34,12 @@ python tools/check_sync.py
 
 # 6) Google Colab — jalankan seluruh pipeline riset di cloud (GPU opsional):
 #    - colab_research.ipynb          : pipeline lengkap (walk-forward, bias PIT, LGBM, Kronos, sentimen)
-#    - colab_improve_analysis.ipynb  : eksperimen improve analisis (death cross filter, horizon 60d,
-#                                      blend anti-RSI 5d+trend, vol-target regime) dengan gate DSR>=0.95
+#    - colab_improve_analysis.ipynb  : eksperimen improve analisis + section OVERCLOCK (CPU/GPU)
+#
+#    Overclock manual via CLI/env:
+#      SAHAMBOT_WORKERS=32 python research/evaluate.py --period 10y   # download paralel 2x core
+#      python research/train_lgbm.py --gpu --workers 32              # LightGBM di GPU (Colab T4/A100)
+#      OMP_NUM_THREADS=$(nproc) MKL_NUM_THREADS=$(nproc) ...         # semua core untuk numpy/pandas
 ```
 
 ## Hasil empiris (`data/validation.json`, 45 emiten `LQ45_2026`, 2017-09-07 s/d 2026-10-09, horizon 20 hari, 91.395 observasi)

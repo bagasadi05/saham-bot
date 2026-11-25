@@ -10,6 +10,10 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ## [Unreleased] — 2026-11-25
 
+- **Overclock CPU & GPU untuk analisis riset**:
+  - `research/evaluate.py` kini punya `--workers N` (default auto `2× cpu_count`, bisa juga via env `SAHAMBOT_WORKERS`) untuk unduh data paralel maksimal.
+  - `research/train_lgbm.py` kini punya `--gpu` (LightGBM `device_type='gpu'`, aktif di Colab T4/A100) dan `--workers`.
+  - Notebook `research/colab_improve_analysis.ipynb` tambah section **0b. OVERCLOCK**: deteksi hardware (CPU cores, GPU name/VRAM, LightGBM GPU), set `OMP/MKL/NUMEXPR_NUM_THREADS`, TF32 untuk Ampere+, dan ringkas perintah overclock siap pakai.
 - **Ringkasan rencana beli (Entry/SL/TP) langsung terlihat di tab Cek Emiten** (`desktop.py`, 1 tes baru → total **969 tes**):
   - Enam kartu KPI baru di bawah header Cek Emiten: **🎯 Entry** (plus pullback), **🛡️ Stop-Loss** (plus % jarak), **🏁 Target TP** (plus RR), **Lot**, **Est. Biaya**, **Risiko ke SL** — terisi saat analisis sukses, dan bernilai `-` (jujur, bukan angka karang) saat data tidak tersedia.
   - Teks panduan di header Cek Emiten kini menyebut lokasi rekomendasi beli: **tab 📦 Paket Beli**.
