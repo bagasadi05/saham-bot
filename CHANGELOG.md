@@ -10,6 +10,22 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ## [Unreleased] — 2026-11-25
 
+- **Fix 3 temuan Sunfire security review** (review `0295539..788d62f`, 43 file, 3 findings):
+  - **CWE-367 (medium)** `core/guards.py`: `cooldown_ok` kini check-and-set di dalam `asyncio.Lock` — atomik meski `concurrent_updates(4)`, tidak bisa di-bypass dengan burst command konkuren.
+  - **CWE-862 (low)** `core/guards.py` + `handlers/jurnal.py`: `_pending_set` untuk `exec_buy:`/`exec_sell:` kini menerima `user_id` dari `update.effective_user.id`, sehingga di group chat hanya owner yang bisa mengonsumsi pending action (gate `_pending_owner` di `handlers/menu.py` kini efektif untuk flow ini).
+  - **CWE-79 (low)** `core/reports.py`: `_norm_cur` kini menolak kode mata uang non-alfanumerik (mis. `<script>` dari `financialCurrency` yfinance) → `"TIDAK TERSEDIA"`, sehingga tidak pernah masuk pesan HTML Telegram tanpa escaping.
+  - 5 tes regresi baru (`tests/test_pending_ttl.py`, `tests/test_quality_report.py`) — total **953 tes**.
+
+- **Improve analisis saham via skill `idx-quant-research` + `idx-equity-research`** (audit 2026-11-25):
+  - **Death cross filter di screener** (`core/screener.py:classify()`): parameter `sma200` baru; bila `MA50 < MA200` (death cross), sinyal BELI diturunkan jadi **TAHAN** dengan alasan eksplisit — dari data live 2026-11-24, 2 dari 11 BELI (PWON, BTPS) ternyata masih dalam death cross dan kini akan ditahan.
+  - **PBV ≤ 0 veto di `/cek`** (`core/cek.py`): ekuitas negatif kini langsung **HINDARI** (sebelumnya hanya ada di `/rencana`), selaras dengan mandat idx-equity-research.
+  - **Multi-horizon IC check** (`research/horizons.py`, 45 emiten LQ45, 89.634 baris): skor utama paling kuat di horizon 60d (IC 0,0242) vs 20d (0,0105); `anti_rsi` kuat di 5d–10d (0,019–0,013) tapi negatif di 60d. Bobot model tetap beku (DSR 0,86 < 0,95, belum boleh re-tune).
+  - 3 tes baru (`tests/test_screener.py` ×2, `tests/test_cek.py` ×1) — total **956 tes**.
+
+---
+
+## [Unreleased] — 2026-11-25
+
 - **Desktop App (`desktop.py`, `core/desktop_monitor.py`) — Perbaikan bug produksi & peningkatan UI/UX 8 tab:**
   - Memperbaiki rendering grafik Cek Emiten yang sebelumnya memanggil `chartmod.render_chart` yang tidak ada menjadi `chartmod.build_chart` dengan penanda level `entry`/`sl`/`tp`, pratinjau `PIL.ImageTk` responsif, pemilih rentang `3mo/6mo/1y/2y`, dan ekspor PNG.
   - Memperbaiki pemanggilan modul fundamental menjadi `fetch_fundamentals`/`score_fundamentals` (dengan fallback kompatibel untuk mock uji lama), meneruskan `"price"` & `"sector"` yang benar ke `rencana.budget_plan`, membaca `buy_cost`/`value` yang valid, menambahkan `bandar.call_with_stale` + aliran asing BEI pada panel Pasar, serta menyambungkan `bars_by_ticker` & `bench_close` untuk statistik MAE/MFE & Alpha vs IHSG di tab Jurnal.

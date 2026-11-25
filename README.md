@@ -272,7 +272,7 @@ Konsekuensinya di kode:
 ```bash
 pip install -r requirements-dev.txt
 ruff check .                             # lint
-pytest -q                                # 921 tes offline (0 skipped, gerbang coverage 86%; tanpa Yahoo/Google News/HF/EODHD/AV)
+pytest -q                                # 956 tes offline (0 skipped, gerbang coverage 86%; tanpa Yahoo/Google News/HF/EODHD/AV)
 python research/evaluate_sentiment.py    # audit offline akurasi & macro-F1 sentimen berita pada dataset emas
 python tools/check_sync.py               # audit sinkronisasi relatif.py <-> validation.json, LQ45, umur data & backup DB
 python tools/record_fixtures.py --verify # audit struktur fixture offline

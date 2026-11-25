@@ -23,7 +23,7 @@ tes wiring `main()`; lihat `git log`).
 python -m venv .venv
 .venv\Scripts\activate            # Windows; Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest -q                         # harus 921 passed (0 skipped, coverage 87% / 87.37%, gerbang CI 86%), offline
+pytest -q                         # harus 956 passed (0 skipped, coverage 87% / 87.37%, gerbang CI 86%), offline
 ruff check .                      # harus bersih
 python research/evaluate_sentiment.py  # audit offline akurasi & macro-F1 sentimen berita
 python tools/check_sync.py        # audit sinkronisasi riset, LQ45, umur data & backup DB
@@ -97,7 +97,7 @@ handlers/               13 modul handler Telegram, pola `deps`
   sinyal, trading, watchlist
 research/               harness riset (evaluate, evaluate_sentiment, experiments, portfolio,
                         publish, horizons, evaluate_kronos, bias)
-tests/                  921 tes offline (0 skipped, coverage 87% / 87.37%, gerbang CI 86%) + fixtures/
+tests/                  956 tes offline (0 skipped, coverage 87% / 87.37%, gerbang CI 86%) + fixtures/
 tools/                  skrip utilitas (backup_db, build_universe, check_sync, record_fixtures)
 ```
 
@@ -152,7 +152,7 @@ dipanggil via `to_thread`.
 | P28 (jurnal eksekusi Stockbit & slippage) | selesai (tanpa auto-trading / kredensial; + MAE/MFE, R-multiple & alpha vs IHSG) |
 | Audit forensik kas + Pro/Risiko (`/cek`, `/fundamental`) | selesai (`.agents/skills/idx-equity-research/`, penalti skor & mata uang non-IDR) |
 | Mode Pemula vs Expert, panduan linear 5-tahap & tombol tindak lanjut lintas handler | selesai (`user_mode` & `onboard_state` di `chat_settings`, `/mode`, `onboard:s1..s5`, tindak lanjut semua handler) |
-| Gelombang W0–W4 (skill housekeeping, sentimen berita gold/`CAMPURAN`, `/pasar` + job 16:15 WIB & brief pagi, pelacak tesis posisi `core/tesis.py`) | selesai (**921 passed** offline, `0 skipped`, `0 failed`, coverage CI **87.37%** ≥ 86%, `ruff check .` bersih, `tools/check_sync.py` PASS) |
+| Gelombang W0–W4 (skill housekeeping, sentimen berita gold/`CAMPURAN`, `/pasar` + job 16:15 WIB & brief pagi, pelacak tesis posisi `core/tesis.py`) | selesai (**956 passed** offline, `0 skipped`, `0 failed`, coverage CI **87.37%** ≥ 86%, `ruff check .` bersih, `tools/check_sync.py` PASS) |
 
 Angka riset terbaru (`data/validation.json`, konfigurasi `--hold 0.6 --min-hold 2 --regime sma50_200_half --offline`, biaya BEI `0,40%` pulang-pergi):
 turnover satu arah **21,7%** (dua arah **43,4%**); eksposur **79,8%**; MDD **−20,0%**;
