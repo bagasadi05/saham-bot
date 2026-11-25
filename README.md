@@ -120,7 +120,7 @@ Windows (PowerShell):
 
 ### Aplikasi Desktop Windows (`desktop.py`)
 
-Untuk terminal pemantauan lokal Windows (8 tab: Pasar & Rezim + Rotasi Sektor IDX-IC, Watchlist + Alert cepat, Sinyal Pasar + filter kualitas/ISSI, Paket Beli + salin tiket Stockbit, Portofolio Asli + VaR95/ES95 + batas risiko, Jurnal MAE/MFE & Alpha IHSG, Cek Emiten + grafik PNG, Alert & Riwayat + Windows toast, semua tanpa auto-trading):
+Untuk terminal pemantauan lokal Windows (8 tab: Pasar & Rezim + Rotasi Sektor IDX-IC, Watchlist + Alert cepat, Sinyal Pasar + filter kualitas/ISSI, Paket Beli + salin tiket Stockbit, Portofolio Asli + VaR95/ES95 + batas risiko, Jurnal MAE/MFE & Alpha IHSG, Cek Emiten + grafik PNG, Alert & Riwayat + Windows toast, semua tanpa auto-trading). UI/UX: jam WIB + status bursa hidup di top bar, badge counter per tab, status bar dengan spinner & countdown auto-refresh, riwayat ticker Cek Emiten, zoom font `Ctrl +/-`, dan sesi (geometri jendela, tab aktif, pengaturan) diingat antar menjalankan aplikasi:
 
 ```powershell
 .\.venv\Scripts\python.exe desktop.py           # jalankan GUI + System Tray lokal

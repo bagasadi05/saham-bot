@@ -10,6 +10,15 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ## [Unreleased] — 2026-11-25
 
+- **Peningkatan fitur & UI/UX aplikasi Desktop** (`desktop.py` + `core/store_profile.py`, 7 tes baru → total **963 tes**):
+  - **Jam WIB + status bursa hidup** di top bar (BUKA/TUTUP, hijau saat buka) via `marketcal`, plus tombol **🗗 Ke Tray** eksplisit saat ikon system tray aktif.
+  - **Status bar hidup**: spinner animasi saat ada proses berjalan, countdown auto-refresh berikutnya, dan jam update data terakhir.
+  - **Badge counter tab** Watchlist & Sinyal (jumlah baris terakhir) melengkapi badge Alert yang sudah ada.
+  - **Persistensi sesi antar menjalankan aplikasi** (`chat_settings` key `desktop_ui_state`): geometri jendela, tab aktif terakhir, interval auto-refresh, toggle toast, skala font, dan **riwayat ticker Cek Emiten** (maks 12, combobox editable).
+  - **Zoom font global** `Ctrl +` / `Ctrl -` / `Ctrl 0` (skala 0,8–1,5 via `tk scaling`).
+  - **Konfirmasi dialog** sebelum "Bersihkan Riwayat" alert.
+  - Helper murni teruji offline: `market_clock_text`, `spinner_frame`, `countdown_text`, `tab_label`, `clamp_font_scale`, `normalize_recent_tickers`, `encode/decode_ui_state` di `tests/test_desktop_ui_ux.py`.
+
 - **Fix 3 temuan Sunfire security review** (review `0295539..788d62f`, 43 file, 3 findings):
   - **CWE-367 (medium)** `core/guards.py`: `cooldown_ok` kini check-and-set di dalam `asyncio.Lock` — atomik meski `concurrent_updates(4)`, tidak bisa di-bypass dengan burst command konkuren.
   - **CWE-862 (low)** `core/guards.py` + `handlers/jurnal.py`: `_pending_set` untuk `exec_buy:`/`exec_sell:` kini menerima `user_id` dari `update.effective_user.id`, sehingga di group chat hanya owner yang bisa mengonsumsi pending action (gate `_pending_owner` di `handlers/menu.py` kini efektif untuk flow ini).

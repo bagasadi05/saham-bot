@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from typing import Any, Callable
 
@@ -52,7 +53,7 @@ log = logging.getLogger(__name__)
 DESKTOP_CHAT_ID = dm.DEFAULT_PROFILE_ID
 APP_ID = "SahamBot.Desktop.Terminal.2"
 DEFAULT_MODAL_RP = 10_000_000
-VALID_REFRESH_MIN = {"Manual": 0, "5m": 5, "15m": 15, "30m": 30}
+VALID_REFRESH_MIN = dict(store_profile.DESKTOP_REFRESH_OPTIONS)
 
 # Palet UI/UX Financial Trading Terminal Dark (Slate + Tabular Mono)
 THEME = {
@@ -182,6 +183,41 @@ def _safe_float(value: Any, default: float | None = None) -> float | None:
         return num if num == num else default
     except (TypeError, ValueError):
         return default
+
+
+# ---------------------------------------------------------------------------
+# Helper tampilan murni (UI/UX): jam bursa, spinner, countdown, badge tab
+# ---------------------------------------------------------------------------
+
+SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+
+def spinner_frame(i: int) -> str:
+    """Frame animasi spinner untuk indikator proses berjalan di status bar."""
+    return SPINNER_FRAMES[int(i) % len(SPINNER_FRAMES)]
+
+
+def countdown_text(seconds: float) -> str:
+    """Format sisa waktu auto-refresh ``MM:SS`` (atau ``H:MM:SS`` bila > 1 jam)."""
+    s = max(0, int(seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{sec:02d}"
+    return f"{m:02d}:{sec:02d}"
+
+
+def tab_label(base: str, count: int | None) -> str:
+    """Label tab dengan badge counter, mis. ``⭐ Watchlist (5)``."""
+    return f"{base} ({count})" if count is not None else base
+
+
+def market_clock_text(now: datetime | None = None) -> tuple[str, str]:
+    """Teks jam WIB + status bursa; status ``open``/``closed`` untuk pewarnaan UI."""
+    n = now or marketcal.now_wib()
+    status = "open" if marketcal.market_open(n) else "closed"
+    label = "BURSA BUKA" if status == "open" else "BURSA TUTUP"
+    return f"{n:%H:%M:%S} WIB · {label}", status
 
 
 def create_tray_icon_image(size: int = 64) -> Image.Image:
@@ -614,17 +650,29 @@ class SahamBotDesktopApp:
         self._pump_after_id: str | None = None
         self._auto_after_id: str | None = None
         self._chart_after_id: str | None = None
+        self._clock_after_id: str | None = None
+        self._status_after_id: str | None = None
+        self._status_tick = 0
+        self._last_update_ts = ""
+        self._next_auto_ts: float | None = None
+        self._ui_state: dict[str, Any] = {}
+        self._recent_tickers: list[str] = []
 
         # Variabel UI persisten (mendukung profil "desktop" maupun chat_id Telegram)
         self.var_profile = tk.StringVar(value=str(DESKTOP_CHAT_ID))
         cid = self._current_chat_id()
         self._active_profile = cid
+        # State sesi UI terakhir (geometri, tab aktif, auto-refresh, toast, zoom, riwayat cek)
+        self._ui_state = store_profile.get_desktop_ui_state(cid)
+        self._recent_tickers = list(self._ui_state.get("recent_tickers") or [])
         saved_modal = store_watchlist.get_modal(cid) or DEFAULT_MODAL_RP
         saved_syariah = bool(store_profile.get_syariah_mode(cid))
         self.var_modal = tk.StringVar(value=str(int(saved_modal)))
         self.var_syariah = tk.BooleanVar(value=saved_syariah)
-        self.var_toast = tk.BooleanVar(value=True)
-        self.var_refresh_interval = tk.StringVar(value="15m")
+        self.var_toast = tk.BooleanVar(value=bool(self._ui_state.get("toast", True)))
+        self.var_refresh_interval = tk.StringVar(
+            value=str(self._ui_state.get("refresh") or "15m")
+        )
         self.var_status = tk.StringVar(value="Menyiapkan data pasar BEI...")
         self.var_regime_badge = tk.StringVar(value="IHSG: memuat...")
 
@@ -652,8 +700,23 @@ class SahamBotDesktopApp:
         self._bind_shortcuts()
         _enable_dark_titlebar(self.root)
 
+        # Pulihkan state sesi terakhir: geometri jendela, tab aktif, skala font
+        geo = str(self._ui_state.get("geometry") or "")
+        if geo:
+            try:
+                self.root.geometry(geo)
+            except Exception:
+                pass
+        try:
+            self.notebook.select(int(self._ui_state.get("tab_index") or 0))
+        except Exception:
+            pass
+        self._apply_font_scale(self._ui_state.get("font_scale", 1.0), persist=False)
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close_or_tray)
         self._pump_after_id = self.root.after(120, self._pump_queue)
+        self._clock_after_id = self.root.after(500, self._tick_clock)
+        self._status_after_id = self.root.after(600, self._tick_statusbar)
         self.root.after(200, self.refresh_all)
         self._schedule_auto_refresh()
         self._setup_tray()
@@ -838,6 +901,20 @@ class SahamBotDesktopApp:
         )
         self.lbl_regime.pack(side="left", padx=(0, 12))
 
+        # Jam WIB live + status bursa (BUKA/TUTUP)
+        self.lbl_clock = tk.Label(
+            topbar,
+            text="--:--:-- WIB",
+            bg=THEME["card"],
+            fg=THEME["dim"],
+            padx=10,
+            pady=4,
+            font=FONT_MONO_BOLD,
+            highlightbackground=THEME["border"],
+            highlightthickness=1,
+        )
+        self.lbl_clock.pack(side="left", padx=(0, 12))
+
         # Kontrol kanan topbar
         right_bar = tk.Frame(topbar, bg=THEME["bg_elev"])
         right_bar.pack(side="right")
@@ -873,6 +950,7 @@ class SahamBotDesktopApp:
             right_bar,
             text="Toast",
             variable=self.var_toast,
+            command=lambda: self._save_ui_state(),
             on_color=THEME["accent"],
             bg=THEME["bg_elev"],
         )
@@ -890,7 +968,10 @@ class SahamBotDesktopApp:
             style="Dark.TCombobox",
         )
         cb_auto.pack(side="left", padx=(0, 8))
-        cb_auto.bind("<<ComboboxSelected>>", lambda _e: self._schedule_auto_refresh())
+        cb_auto.bind(
+            "<<ComboboxSelected>>",
+            lambda _e: (self._schedule_auto_refresh(), self._save_ui_state()),
+        )
 
         ttk.Button(
             right_bar, text="↻ Refresh", style="Accent.TButton", command=self.refresh_active_tab,
@@ -898,6 +979,11 @@ class SahamBotDesktopApp:
         ttk.Button(
             right_bar, text="Semua Tab", style="Ghost.TButton", command=self.refresh_all,
         ).pack(side="left")
+        if pystray is not None:
+            ttk.Button(
+                right_bar, text="🗗 Ke Tray", style="Ghost.TButton",
+                command=self._on_close_or_tray,
+            ).pack(side="left", padx=(4, 0))
 
         # ---- Main Notebook (8 Tab) ----
         self.notebook = ttk.Notebook(self.root)
@@ -949,12 +1035,23 @@ class SahamBotDesktopApp:
             font=FONT_SMALL,
             anchor="w",
         ).pack(side="left")
+        # Indikator proses berjalan + countdown auto-refresh + jam update terakhir
+        self.lbl_status_extra = tk.Label(
+            footer,
+            text="",
+            bg=THEME["bg_elev"],
+            fg=THEME["dim"],
+            font=FONT_SMALL,
+            anchor="w",
+        )
+        self.lbl_status_extra.pack(side="left", padx=(14, 0))
         tk.Label(
             footer,
             text=(
                 "Data ±15 menit delay · Tidak ada janji untung · "
                 "Eksekusi manual di Stockbit (tanpa auto-trading) · "
-                "Pintasan: F5/Ctrl+R Refresh | Ctrl+F Cari | Ctrl+K Cek Emiten | Ctrl+1..8 Tab"
+                "Pintasan: F5/Ctrl+R Refresh | Ctrl+F Cari | Ctrl+K Cek Emiten | "
+                "Ctrl+1..8 Tab | Ctrl +/- Zoom | Ctrl+0 Reset"
             ),
             bg=THEME["bg_elev"],
             fg=THEME["dim"],
@@ -972,6 +1069,108 @@ class SahamBotDesktopApp:
         self.root.bind("<Control-F>", lambda _e: self._focus_active_search())
         for idx in range(1, 9):
             self.root.bind(f"<Control-Key-{idx}>", lambda _e, i=idx - 1: self.notebook.select(i))
+        # Zoom ukuran font seluruh UI (Ctrl + / - / 0)
+        self.root.bind("<Control-equal>", lambda _e: self._zoom(0.1))
+        self.root.bind("<Control-plus>", lambda _e: self._zoom(0.1))
+        self.root.bind("<Control-minus>", lambda _e: self._zoom(-0.1))
+        self.root.bind("<Control-Key-0>", lambda _e: self._zoom(None))
+
+    # ------------------------------------------------------------------
+    # UI/UX: jam bursa, status bar hidup, zoom font, persistensi sesi
+    # ------------------------------------------------------------------
+
+    def _tick_clock(self) -> None:
+        """Perbarui label jam WIB + status bursa setiap 1 detik."""
+        if self._closing:
+            return
+        try:
+            text, status = market_clock_text()
+            self.lbl_clock.configure(
+                text=text, fg=THEME["green"] if status == "open" else THEME["dim"],
+            )
+        except Exception:
+            pass
+        self._clock_after_id = self.root.after(1000, self._tick_clock)
+
+    def _tick_statusbar(self) -> None:
+        """Status bar hidup: spinner proses aktif, countdown auto-refresh, jam update."""
+        if self._closing:
+            return
+        self._status_tick += 1
+        parts: list[str] = []
+        busy = sum(1 for v in self._busy_flags.values() if v)
+        if busy:
+            parts.append(f"{spinner_frame(self._status_tick)} {busy} proses berjalan")
+        if self._next_auto_ts is not None:
+            parts.append(f"auto-refresh {countdown_text(self._next_auto_ts - time.time())}")
+        if self._last_update_ts:
+            parts.append(f"update {self._last_update_ts}")
+        try:
+            self.lbl_status_extra.configure(text="   ".join(parts))
+        except Exception:
+            pass
+        self._status_after_id = self.root.after(500, self._tick_statusbar)
+
+    def _zoom(self, delta: float | None) -> None:
+        """Ubah skala font seluruh UI; ``delta=None`` untuk reset ke 1.0x."""
+        cur = store_profile.clamp_font_scale(self._ui_state.get("font_scale", 1.0))
+        new = 1.0 if delta is None else store_profile.clamp_font_scale(cur + delta)
+        self._apply_font_scale(new, persist=True)
+
+    def _apply_font_scale(self, scale: Any, *, persist: bool = True) -> None:
+        s = store_profile.clamp_font_scale(scale)
+        self._ui_state["font_scale"] = s
+        try:
+            self.root.tk.call("tk", "scaling", s)
+        except Exception:
+            pass
+        if persist:
+            self._save_ui_state()
+            self.var_status.set(f"Skala font UI: {s:.2f}x (Ctrl+0 untuk reset).")
+
+    def _save_ui_state(self, **overrides: Any) -> None:
+        """Simpan state sesi UI (geometri, tab, auto-refresh, toast, zoom, riwayat) ke SQLite."""
+        try:
+            cid = self._current_chat_id()
+            state = dict(self._ui_state)
+            if hasattr(self, "var_refresh_interval"):
+                state["refresh"] = self.var_refresh_interval.get()
+            if hasattr(self, "var_toast"):
+                state["toast"] = bool(self.var_toast.get())
+            if self.root.wm_state() == "normal":
+                state["geometry"] = self.root.wm_geometry()
+            try:
+                state["tab_index"] = self.notebook.index(self.notebook.select())
+            except Exception:
+                pass
+            state["recent_tickers"] = list(self._recent_tickers)
+            state.update(overrides)
+            self._ui_state = store_profile.set_desktop_ui_state(cid, **state)
+        except Exception:
+            log.exception("Gagal menyimpan state UI desktop")
+
+    def _update_tab_badges(self) -> None:
+        """Badge counter pada tab Watchlist & Sinyal sesuai jumlah baris terakhir."""
+        try:
+            self.notebook.tab(1, text=tab_label("⭐ Watchlist", len(self._last_watch_rows)))
+            self.notebook.tab(2, text=tab_label("🎯 Sinyal Pasar", len(self._last_sinyal_rows)))
+        except Exception:
+            pass
+
+    def _add_recent_ticker(self, sym: str) -> None:
+        """Catat ticker yang berhasil dicek ke riwayat (combobox Cek Emiten)."""
+        t = str(sym or "").strip().upper().removesuffix(".JK")
+        if not t:
+            return
+        if t in self._recent_tickers:
+            self._recent_tickers.remove(t)
+        self._recent_tickers.insert(0, t)
+        self._recent_tickers = self._recent_tickers[: store_profile.RECENT_TICKERS_MAX]
+        try:
+            self.ent_cek.configure(values=list(self._recent_tickers))
+        except Exception:
+            pass
+        self._save_ui_state()
 
     # ------------------------------------------------------------------
     # Tab 1: Pasar & Rezim + Rotasi Sektor
@@ -1459,7 +1658,14 @@ class SahamBotDesktopApp:
         tk.Label(bar, text="Ticker:", bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL).pack(
             side="left", padx=(0, 4),
         )
-        self.ent_cek = self._entry(bar, self.var_cek_ticker, width=10)
+        # Combobox editable: riwayat ticker yang pernah dicek + input bebas
+        self.ent_cek = ttk.Combobox(
+            bar,
+            textvariable=self.var_cek_ticker,
+            values=list(self._recent_tickers),
+            width=10,
+            style="Dark.TCombobox",
+        )
         self.ent_cek.pack(side="left", padx=(0, 6))
         self.ent_cek.bind("<Return>", lambda _e: self.refresh_cek())
 
@@ -1632,6 +1838,7 @@ class SahamBotDesktopApp:
                     if key == "scan":
                         messagebox.showwarning("Scan BEI", f"Scan gagal: {data}", parent=self.root)
                 else:
+                    self._last_update_ts = datetime.now().strftime("%H:%M:%S")
                     handler = {
                         "market": self._apply_market,
                         "watch": self._apply_watch,
@@ -1666,6 +1873,9 @@ class SahamBotDesktopApp:
             self._auto_after_id = None
         if mins > 0 and not self._closing:
             self._auto_after_id = self.root.after(mins * 60_000, self._auto_tick)
+            self._next_auto_ts = time.time() + mins * 60
+        else:
+            self._next_auto_ts = None
 
     def _auto_tick(self) -> None:
         self._auto_after_id = None
@@ -1709,6 +1919,7 @@ class SahamBotDesktopApp:
 
     def _on_tab_changed(self, _event: tk.Event) -> None:
         idx = self.notebook.index(self.notebook.select())
+        self._save_ui_state(tab_index=idx)
         if idx == 6:
             if not self._last_cek_detail:
                 self.refresh_cek()
@@ -2082,6 +2293,7 @@ class SahamBotDesktopApp:
     def _apply_watch(self, rows: list[dict[str, Any]]) -> None:
         self._last_watch_rows = rows or []
         self._render_watch_table()
+        self._update_tab_badges()
         self._rebuild_quick_chips()
         for r in self._last_watch_rows:
             sym = r.get("ticker", "")
@@ -2161,6 +2373,7 @@ class SahamBotDesktopApp:
     def _apply_sinyal(self, data: dict[str, Any]) -> None:
         rows = data.get("rows") or []
         self._last_sinyal_rows = rows
+        self._update_tab_badges()
         counts = data.get("counts") or {}
         meta = data.get("meta") or {}
         sectors = ["Semua Sektor"] + list(data.get("sectors") or [])
@@ -2470,6 +2683,7 @@ class SahamBotDesktopApp:
             return
 
         sym = data.get("ticker", "")
+        self._add_recent_ticker(sym)
         name = data.get("name") or "-"
         sec = data.get("sector") or "-"
         board = data.get("board") or "-"
@@ -3085,9 +3299,19 @@ class SahamBotDesktopApp:
         self._copy_text("\n".join(lines) or "Belum ada riwayat alert.", "Riwayat alert disalin.")
 
     def _clear_alerts(self) -> None:
+        if not self._alert_history:
+            self.var_status.set("Riwayat alert sudah kosong.")
+            return
+        if not messagebox.askyesno(
+            "Bersihkan Riwayat",
+            f"Hapus {len(self._alert_history)} entri riwayat alert? Tindakan ini tidak bisa dibatalkan.",
+            parent=self.root,
+        ):
+            return
         self._alert_history.clear()
         self._seen_alert_keys.clear()
         self._render_alerts_table()
+        self.var_status.set("Riwayat alert dibersihkan.")
 
     def _set_text(self, widget: scrolledtext.ScrolledText, content: str) -> None:
         widget.configure(state="normal")
@@ -3127,7 +3351,14 @@ class SahamBotDesktopApp:
 
     def _quit_app(self) -> None:
         self._closing = True
-        for attr in ("_pump_after_id", "_auto_after_id", "_chart_after_id"):
+        self._save_ui_state()
+        for attr in (
+            "_pump_after_id",
+            "_auto_after_id",
+            "_chart_after_id",
+            "_clock_after_id",
+            "_status_after_id",
+        ):
             aid = getattr(self, attr, None)
             if aid:
                 try:
