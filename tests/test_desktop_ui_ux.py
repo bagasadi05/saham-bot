@@ -4,7 +4,9 @@ Semua tes berjalan tanpa display (tidak membuat Tk) dan tanpa jaringan.
 """
 from __future__ import annotations
 
+import ast
 import datetime as dt
+from pathlib import Path
 
 import desktop
 from core import marketcal
@@ -40,3 +42,63 @@ def test_market_clock_text_open_closed_and_weekend():
     assert sunday.weekday() == 6
     _, status3 = desktop.market_clock_text(dt.datetime(2026, 11, 29, 10, 0, tzinfo=marketcal.WIB))
     assert status3 == "closed"
+
+
+# ---------------------------------------------------------------------------
+# Audit statis: semua tombol di desktop.py wajib punya command yang valid
+# ---------------------------------------------------------------------------
+
+def test_semua_tombol_terhubung_command_yang_ada():
+    """Parse AST desktop.py: setiap ttk.Button/tk.Button wajib punya ``command=``
+    yang merujuk ke method/attr/fungsi yang benar-benar ada (anti tombol mati)."""
+    src = Path(desktop.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    all_funcs: set[str] = set()
+    app_methods: set[str] = set()
+    app_attrs: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            all_funcs.add(node.name)
+        if isinstance(node, ast.ClassDef) and node.name == "SahamBotDesktopApp":
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    app_methods.add(item.name)
+                if isinstance(item, ast.Assign):
+                    for tgt in item.targets:
+                        if (
+                            isinstance(tgt, ast.Attribute)
+                            and isinstance(tgt.value, ast.Name)
+                            and tgt.value.id == "self"
+                        ):
+                            app_attrs.add(tgt.attr)
+
+    known = all_funcs | app_methods | app_attrs
+    button_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Button"
+    ]
+    assert len(button_calls) >= 30, "audit harus mencakup semua tombol utama"
+
+    for call in button_calls:
+        cmd_kw = next((k for k in call.keywords if k.arg == "command"), None)
+        assert cmd_kw is not None, f"tombol tanpa command di baris {call.lineno}"
+        # setiap self.X yang dirujuk di dalam command harus ada
+        for sub in ast.walk(cmd_kw.value):
+            if (
+                isinstance(sub, ast.Attribute)
+                and isinstance(sub.value, ast.Name)
+                and sub.value.id == "self"
+            ):
+                assert sub.attr in known, (
+                    f"command merujuk self.{sub.attr} yang tidak ada (baris {call.lineno})"
+                )
+        # Name langsung sebagai command (mis. fungsi lokal _save) harus terdefinisi;
+        # Name lain (mis. variabel lokal dlg pada dlg.destroy) wajar diabaikan.
+        if isinstance(cmd_kw.value, ast.Name):
+            name = cmd_kw.value.id
+            assert name in known or name in dir(desktop), (
+                f"command merujuk {name} yang tidak ada (baris {call.lineno})"
+            )
