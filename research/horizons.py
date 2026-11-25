@@ -75,7 +75,7 @@ def table(df: pd.DataFrame) -> dict:
                                 ("rsi", "rsi", 1), ("anti_rsi", "rsi", -1)]:
             d["_sig"] = sign * d[src]
             ic = xs_ic(d, "_sig", ret=col, min_n=8)
-            s = ic_summary(ic)
+            s = ic_summary(ic, nlags=max(1, h // 2))
             per_year = {}
             for y, g in d.groupby("year"):
                 iy = xs_ic(g, "_sig", ret=col, min_n=8)

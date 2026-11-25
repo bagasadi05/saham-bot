@@ -252,6 +252,8 @@ async def do_berita(update: Update, ticker: str, deps):
     except ValueError as e:
         await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=deps.home_markup())
         return
+    if not await deps.cooldown_ok(update, "berita"):
+        return
     await update.effective_chat.send_action(ChatAction.TYPING)
     try:
         items = await asyncio.to_thread(news.fetch_news, t)
@@ -319,6 +321,8 @@ async def do_fundamental(update: Update, ticker: str, deps):
     except ValueError as e:
         await msg.reply_text(f"❌ {esc(e)}", parse_mode=ParseMode.HTML, reply_markup=deps.home_markup())
         return
+    if not await deps.cooldown_ok(update, "fundamental"):
+        return
     await update.effective_chat.send_action(ChatAction.TYPING)
     try:
         fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
@@ -371,7 +375,7 @@ async def do_fundamental(update: Update, ticker: str, deps):
     else:
         eps_txt = f"{ccy_upper} {eps_v:.2f}" if abs(float(eps_v)) < 100 else f"{ccy_upper} {eps_v:.0f}"
     rows.append(f"  EPS: {eps_txt}   DER: {der_txt}")
-    roe = fundamental.normalize_roe(fund.get("roe"))
+    roe = fundamental.normalize_roe(fund.get("roe"), unit=fund.get("roe_unit"))
     margin = fundamental.normalize_margin(fund.get("margin"))
     roe_parts = []
     if roe is not None:
@@ -462,6 +466,8 @@ async def cmd_agenda(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         await update.effective_message.reply_text(
             "Contoh: <code>/agenda BBCA</code>", parse_mode=ParseMode.HTML)
         return
+    if not await deps.cooldown_ok(update, "agenda"):
+        return
     t = args[0].upper()
     await update.effective_chat.send_action(ChatAction.TYPING)
 
@@ -536,6 +542,8 @@ async def cmd_agenda(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
 async def cmd_jejak(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps,
                     *, from_menu: bool = False):
     """Jejak sinyal: hasil nyata BELI/JUAL setelah horizon hari bursa."""
+    if not await deps.cooldown_ok(update, "jejak"):
+        return
     rm = deps.home_markup() if from_menu else None
     since = (marketcal.now_wib().date() - timedelta(days=365)).isoformat()
     rows = await asyncio.to_thread(store.closed_scan_history, since)

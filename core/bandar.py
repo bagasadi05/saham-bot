@@ -24,6 +24,7 @@ CACHE_DIR = os.getenv(
     os.path.join(_DEFAULT_CACHE_BASE, "bandar") if _DEFAULT_CACHE_BASE else "",
 )
 _STALE_MAX_AGE = float(os.getenv("BANDAR_STALE_MAX_AGE", str(48 * 3600)) or 0)
+_CACHE_MAX = 128
 _cache: dict[tuple, tuple[float, object]] = {}
 _cache_lock = threading.Lock()
 _stale_local = threading.local()
@@ -47,6 +48,12 @@ def cache_stats() -> dict:
 def last_stale_age() -> float | None:
     """Umur cache disk (detik) bila panggilan terakhir memakai fallback basi, else None."""
     return getattr(_stale_local, "age", None)
+
+
+def call_with_stale(fn, *args, **kwargs):
+    """Jalankan `fn` lalu kembalikan `(hasil, last_stale_age())` di thread yang sama."""
+    res = fn(*args, **kwargs)
+    return res, last_stale_age()
 
 
 def _disk_path(key: tuple) -> str | None:
@@ -114,6 +121,8 @@ def _cached(key: tuple, producer, ttl: float | None = None):
         raise
     if ttl > 0:
         with _cache_lock:
+            if len(_cache) >= _CACHE_MAX and key not in _cache:
+                _cache.pop(next(iter(_cache)))
             _cache[key] = (time.time(), copy.deepcopy(value))
     _disk_save(key, value)
     return value

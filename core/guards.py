@@ -21,7 +21,8 @@ _COOLDOWN_SECONDS = {
     "scan": 30, "sinyal": 5, "rencana": 20, "cek": 10,
     "portofolio": 5, "sektor": 20, "pasar": 10,
     "berita": 10, "fundamental": 10, "skor": 5,
-    "beli": 10, "jual": 10, "agenda": 10, "jejak": 10,
+    "beli": 10, "jual": 10, "tanya": 5, "watch": 5,
+    "agenda": 10, "jejak": 10,
 }
 GLOBAL_MAX_HEAVY = max(1, int(os.getenv("GLOBAL_MAX_HEAVY", "4") or 4))
 _global_heavy_sem: asyncio.Semaphore | None = None
@@ -41,14 +42,16 @@ async def cooldown_ok(update, name: str) -> bool:
     wait = _COOLDOWN_SECONDS.get(name)
     if not wait:
         return True
-    user = update.effective_user
+    user = getattr(update, "effective_user", None)
     key = (user.id if user else 0, name)
     now = time.monotonic()
     remaining = wait - (now - _last_used.get(key, 0.0))
     if remaining > 0:
-        await update.effective_message.reply_text(
-            f"⏳ Tenang sebentar — /{name} bisa dipakai lagi dalam "
-            f"{int(remaining) + 1} detik.")
+        msg = getattr(update, "effective_message", None)
+        if msg is not None:
+            await msg.reply_text(
+                f"⏳ Tenang sebentar — /{name} bisa dipakai lagi dalam "
+                f"{int(remaining) + 1} detik.")
         return False
     _last_used[key] = now
     if len(_last_used) > 256:   # pengguna x perintah; buang yang sudah basi
@@ -62,12 +65,21 @@ async def cooldown_ok(update, name: str) -> bool:
 PENDING: dict[int, str] = {}
 PENDING_TTL = 3600.0          # 1 jam: pilihan menu yang ditinggal jangan menumpuk
 _pending_ts: dict[int, float] = {}
+_pending_owners: dict[int, int] = {}
 
 
-def _pending_set(chat_id: int, action: str) -> None:
+def _pending_set(chat_id: int, action: str, user_id: int | None = None) -> None:
     _pending_prune()
     PENDING[chat_id] = action
     _pending_ts[chat_id] = time.monotonic()
+    if user_id is not None:
+        _pending_owners[chat_id] = int(user_id)
+    else:
+        _pending_owners.pop(chat_id, None)
+
+
+def _pending_owner(chat_id: int) -> int | None:
+    return _pending_owners.get(chat_id)
 
 
 def _pending_get(chat_id: int) -> str | None:
@@ -84,6 +96,7 @@ def _pending_get(chat_id: int) -> str | None:
 def _pending_clear(chat_id: int) -> None:
     PENDING.pop(chat_id, None)
     _pending_ts.pop(chat_id, None)
+    _pending_owners.pop(chat_id, None)
 
 
 def _pending_prune() -> None:

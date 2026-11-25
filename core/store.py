@@ -379,14 +379,19 @@ def _ensure_ready(conn):
     with _init_lock:
         if _ready_for == STORE_DB:
             return
-        conn.executescript(_SCHEMA)
-        _migrate_scan_columns(conn)
-        _migrate_signal_context_columns(conn)
-        _migrate_json(conn)
-        current = _user_version(conn)
-        if current < SCHEMA_VERSION:
-            _run_migrations(conn, current)
-            log.info("skema store: v%s -> v%s", current, SCHEMA_VERSION)
+        migrated_legacy = None
+        with conn:
+            conn.executescript(_SCHEMA)
+            _migrate_scan_columns(conn)
+            _migrate_signal_context_columns(conn)
+            migrated_legacy = _migrate_json(conn)
+            current = _user_version(conn)
+            if current < SCHEMA_VERSION:
+                _run_migrations(conn, current)
+                log.info("skema store: v%s -> v%s", current, SCHEMA_VERSION)
+        if migrated_legacy:
+            os.replace(migrated_legacy, migrated_legacy + ".migrated")
+            log.info("migrasi store.json -> SQLite selesai")
         _ready_for = STORE_DB
 
 
@@ -417,21 +422,21 @@ def _ensure_chat(conn, chat_id, modal: int | None = None, auto: bool | None = No
         conn.execute("UPDATE chats SET auto=? WHERE chat_id=?", (int(bool(auto)), cid))
 
 
-def _migrate_json(conn):
-    """Impor store.json lama sekali, lalu ganti nama file agar tak diulang."""
+def _migrate_json(conn) -> str | None:
+    """Impor store.json lama sekali; kembalikan path-nya untuk di-rename pasca-commit."""
     legacy = STORE_FILE
     if not legacy or not os.path.exists(legacy):
-        return
+        return None
     if conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0]:
-        return
+        return None
     try:
         with open(legacy, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         log.exception("migrasi: %s tidak bisa dibaca — dilewati", legacy)
-        return
+        return None
     if not isinstance(data, dict):
-        return
+        return None
     for chat_id, c in data.items():
         if not isinstance(c, dict):
             continue
@@ -450,8 +455,8 @@ def _migrate_json(conn):
             conn.execute(
                 "INSERT OR REPLACE INTO paper(chat_id, symbol, rec) VALUES (?, ?, ?)",
                 (str(chat_id), symbol, json.dumps(rec, ensure_ascii=False, default=str)))
-    os.replace(legacy, legacy + ".migrated")
-    log.info("migrasi store.json -> SQLite selesai (%d chat)", len(data))
+    log.info("migrasi store.json -> SQLite siap commit (%d chat)", len(data))
+    return legacy
 
 
 

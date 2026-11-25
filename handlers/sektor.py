@@ -77,7 +77,9 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
     rm = deps.home_markup() if from_menu else None
     await update.effective_chat.send_action(ChatAction.TYPING)
     try:
-        rows = await asyncio.to_thread(bandar.get_index_summary)
+        rows, stale_age = await asyncio.to_thread(
+            bandar.call_with_stale, bandar.get_index_summary,
+        )
     except bandar.IDXTidakTersedia as e:
         log.warning("indeks BEI diblokir: %s", e)
         await deps.reply_long(msg, "\n".join([
@@ -100,5 +102,11 @@ async def do(update, args: list[str], deps, *, from_menu: bool = False):
             deps._SINYAL_DISCLAIMER,
         ]), reply_markup=rm)
         return
-    await deps.reply_long(msg, _sektor_text(sektormod.summarize(rows), deps),
-                          reply_markup=rm)
+    txt = _sektor_text(sektormod.summarize(rows), deps)
+    if stale_age is not None:
+        jam = max(1, int(round(stale_age / 3600)))
+        txt = (
+            f"⚠️ <i>idx.co.id sedang diblokir Cloudflare — menampilkan cache terakhir (±{jam} jam lalu).</i>\n\n"
+            + txt
+        )
+    await deps.reply_long(msg, txt, reply_markup=rm)

@@ -9,6 +9,8 @@ pembaca diberi tahu — bukan dihilangkan tanpa jejak.
 from __future__ import annotations
 
 import datetime as dt
+import html
+import re
 
 import pandas as pd
 
@@ -104,6 +106,17 @@ def summary_line(quality: dict | None) -> str:
         else:
             parts.append(f"{value} {label}")
     return "🧪 <i>Kualitas data: " + ", ".join(parts) + ".</i>\n"
+
+
+def plain_note(note: object) -> str:
+    """Hilangkan tag HTML & ikon pembuka pada catatan kualitas data."""
+    if not note:
+        return ""
+    s = html.unescape(re.sub(r"<[^>]+>", " ", str(note)))
+    s = re.sub(r"\s+", " ", s).strip()
+    while s and s[0] in ("🧪", "⚠", "️"):
+        s = s[1:].lstrip()
+    return s
 
 
 def _fmt_wib_timestamp(raw: str) -> str:

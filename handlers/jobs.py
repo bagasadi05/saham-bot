@@ -21,13 +21,29 @@ from core import (alerts, analysis, data, fundamental, jurnal as jurnalmod,
                   saran as saranmod, store, tesis as tesismod)
 from core.reports import esc, fmt_rp
 from core.textutil import split_message
-from handlers import pasar as pasar_handler
+from handlers import jurnal as jurnal_handler, pasar as pasar_handler
 
 log = logging.getLogger("sahambuddy")
 
 _ORIG_FETCH_REGIME = regime.fetch_ihsg_regime
 _ORIG_FETCH_HISTORY = data.fetch_history
 _TARGET_RE = re.compile(r"^target(>=|<=|>|<|:)(\d+(?:\.\d+)?)$", re.IGNORECASE)
+
+
+async def _auto_chats(deps) -> list[int | str]:
+    """Ambil chat `/auto on`, tersaring terhadap `ALLOWED_IDS` bila allowlist aktif."""
+    chats = await asyncio.to_thread(store.get_auto_chats)
+    allowed = getattr(deps, "ALLOWED_IDS", None) or set()
+    if not allowed:
+        return list(chats)
+    out: list[int | str] = []
+    for cid in chats:
+        try:
+            if int(cid) in allowed:
+                out.append(cid)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 async def _fetch_regime_safe(deps) -> dict | None:
@@ -160,7 +176,7 @@ async def morning_scan(app: Application, deps):
     now = marketcal.now_wib()
     if not marketcal.is_trading_day(now.date()):
         return  # Sabtu/Minggu & libur bursa tidak jalan
-    chats = await asyncio.to_thread(store.get_auto_chats)
+    chats = await _auto_chats(deps)
     market_brief = ""
     if chats:
         try:
@@ -203,7 +219,7 @@ async def closing_market_report(
     now = marketcal.now_wib()
     if not force and not marketcal.is_trading_day(now.date()):
         return 0
-    chats = await asyncio.to_thread(store.get_auto_chats)
+    chats = await _auto_chats(deps)
     if not chats:
         return 0
     ph = getattr(deps, "pasar_handler", pasar_handler)
@@ -235,7 +251,7 @@ async def closing_market_report(
 
 async def check_band_alerts(app: Application, bars_fn, deps) -> int:
     """[P10] Kabari chat /auto on bila band PowerScore saham watchlist berubah."""
-    auto_chats = await asyncio.to_thread(store.get_auto_chats)
+    auto_chats = await _auto_chats(deps)
     if not auto_chats:
         return 0
     sent = 0
@@ -339,7 +355,7 @@ async def check_zone_alerts(app: Application, bars, deps) -> None:
     selama masih di zona yang sama, scan berikutnya diam. Ikut saklar
     `/auto on/off` karena sumbernya `store.get_auto_chats()`.
     """
-    for chat_id in await asyncio.to_thread(store.get_auto_chats):
+    for chat_id in await _auto_chats(deps):
         wl = await asyncio.to_thread(store.get_watchlist, chat_id)
         if not wl:
             continue
@@ -729,12 +745,9 @@ async def scan_alerts(app: Application, deps):
 
 async def backup_job(app: Application, deps):
     """Salin SQLite harian (WAL-safe) + rotasi. Diam saja kalau sukses."""
-    try:
-        path = await asyncio.to_thread(
-            store.backup_to, deps.config.BACKUP_DIR, deps.config.BACKUP_KEEP)
-        log.info("backup store: %s", path)
-    except Exception:
-        log.exception("backup store gagal")
+    path = await asyncio.to_thread(
+        store.backup_to, deps.config.BACKUP_DIR, deps.config.BACKUP_KEEP)
+    log.info("backup store: %s", path)
 
 
 async def full_market_scan_job(app: Application, deps):
@@ -752,7 +765,7 @@ async def full_market_scan_job(app: Application, deps):
             "❌ <b>Screener harian gagal</b>\n"
             f"<code>{esc(str(exc)[:300])}</code>\n"
             "Snapshot hari ini tidak diperbarui. Cek log VPS.")
-        return
+        raise
     if res is None:
         log.info("screener harian dilewati — scan lain sedang berjalan")
         return
@@ -769,7 +782,7 @@ async def full_market_scan_job(app: Application, deps):
             f"{res['meta'].get('failed')} kode gagal dari "
             f"{res['meta'].get('universe', '?')}. Kemungkinan rate-limit "
             "Yahoo — cek /status.")
-    chats = await asyncio.to_thread(store.get_auto_chats)
+    chats = await _auto_chats(deps)
     if not chats:
         return
     txt = await deps._scan_summary_text(res, "📡 <b>SCREENER HARIAN SELURUH PASAR</b>")
@@ -790,7 +803,7 @@ async def weekly_journal_report(app: Application, deps, *, force: bool = False):
     if not force:
         if now.weekday() != 4 or not marketcal.is_trading_day(now.date()):
             return
-    auto_chats = set(await asyncio.to_thread(store.get_auto_chats))
+    auto_chats = set(await _auto_chats(deps))
     exec_chats = set(await asyncio.to_thread(store.execution_chats))
     targets = sorted(auto_chats & exec_chats)
     title = f"📒 <b>LAPORAN BERKALA JURNAL — {now:%d %b %Y}</b>"
@@ -801,7 +814,12 @@ async def weekly_journal_report(app: Application, deps, *, force: bool = False):
                 continue
             paper = await asyncio.to_thread(store.get_paper, cid)
             positions = await asyncio.to_thread(store.real_positions, cid)
-            diag = jurnalmod.jurnal_diagnostics(execs)
+            bars_by_ticker, bench_close = await jurnal_handler.fetch_diag_context(
+                execs, allow_network=True,
+            )
+            diag = jurnalmod.jurnal_diagnostics(
+                execs, bars_by_ticker=bars_by_ticker, bench_close=bench_close,
+            )
             txt = jurnalmod.format_journal_report(
                 jurnalmod.summarize_executions(execs),
                 jurnalmod.summarize_paper_realized(paper),

@@ -170,7 +170,10 @@ def score_universe(items: list[dict]) -> list[dict]:
         rel_sector      nama sektor yang dipakai (atau None)
         rel_sector_n    jumlah emiten usable dalam kelompok sektor itu
     """
-    usable = [it for it in items if hasattr(it.get("ind"), "iloc")]
+    usable = [
+        it for it in items
+        if hasattr(it.get("ind"), "iloc") and not it["ind"].empty
+    ]
     if len(usable) < MIN_UNIVERSE:
         for it in items:
             sec = it.get("sector")

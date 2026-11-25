@@ -17,7 +17,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ChatAction, ParseMode
 
 from core import syariah
-from core import (bandar, marketcal, regime, rencana, reports,
+from core import (bandar, data_quality, marketcal, regime, rencana, reports,
                   risk as riskmod, saran as saranmod, screener, store, universe)
 from core.reports import esc
 from core.textutil import parse_rupiah, split_message
@@ -558,8 +558,9 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
         date_bit = f"Data per {esc(str(as_of))} WIB" if as_of else "Data harga"
         stale_bit = " · ⚠️ cache lama" if stale_flag else ""
         out.append(f"🔎 <i>{date_bit}{stale_bit}</i>")
-    if c.get("quality_note"):
-        out.append(f"⚠️ <i>{esc(str(c['quality_note']))}</i>")
+    qn = data_quality.plain_note(c.get("quality_note"))
+    if qn:
+        out.append(f"⚠️ <i>{esc(qn)}</i>")
     reg = plan.get("regime")
     if isinstance(reg, dict) and reg.get("status") == "DEFENSIVE":
         out.append(reports.regime_banner(reg))

@@ -437,6 +437,10 @@ def test_do_analisis_negatif_atau_allow_buy_false_tidak_simpan_context_dan_tanpa
 
 
 def test_do_skor_panggil_result_markup_dan_hormati_skor_negatif(isolated_env, monkeypatch):
+    async def _always_ok(*_a, **_kw):
+        return True
+
+    monkeypatch.setattr(bot, "cooldown_ok", _always_ok)
     calls: list[tuple[str, str, bool]] = []
     orig_rm = bot.result_markup
 

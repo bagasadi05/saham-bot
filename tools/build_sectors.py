@@ -74,7 +74,7 @@ def validate_sectors(sectors: dict[str, str], min_count: int = MIN_COUNT) -> tup
 def fetch_tweenvest(timeout: int = 30) -> dict[str, str]:
     req = urllib.request.Request(
         TWEENVEST_URL,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; Google-Agent; +https://developers.google.com/crawling/docs/crawlers-fetchers/google-agent)"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; SahamBuddy-SectorSync/1.0)"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         html_text = resp.read().decode("utf-8", errors="replace")

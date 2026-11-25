@@ -244,6 +244,7 @@ def test_p8_verdict_beli_uses_cache_and_fast_fallback(monkeypatch, uptrend_df):
     assert "/backtest BBCA" in msg1
 
     # Dengan cache: tampilkan rekam jejak
+    bot._last_used.clear()
     btcache.save_summary(bot.TMP_DIR, {
         "ticker": "BBCA", "as_of": "2026-11-06", "trades": 14,
         "win_rate": 42.9, "profit_factor": 1.15, "ret_ann": 4.2, "bh_ann": 7.5,

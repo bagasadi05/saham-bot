@@ -60,17 +60,20 @@ async def gather_market_data(
 
     async def _get_idx():
         if not include_idx:
-            return None, "tidak diambil pada ringkasan pagi"
+            return None, "tidak diambil pada ringkasan pagi", None
         idx_exc = getattr(bandar_mod, "IDXTidakTersedia", bandar.IDXTidakTersedia)
         try:
-            rows = await asyncio.to_thread(bandar_mod.get_index_summary)
-            return rows, None
+            call_fn = getattr(bandar_mod, "call_with_stale", bandar.call_with_stale)
+            rows, stale_age = await asyncio.to_thread(
+                call_fn, bandar_mod.get_index_summary,
+            )
+            return rows, None, stale_age
         except idx_exc as exc:
             log.warning("indeks sektor BEI diblokir pada /pasar: %s", exc)
-            return None, "data BEI (idx.co.id) sedang diblokir Cloudflare"
+            return None, "data BEI (idx.co.id) sedang diblokir Cloudflare", None
         except Exception as exc:
             log.warning("gagal ambil indeks sektor BEI pada /pasar: %s", exc)
-            return None, "gagal membaca data indeks sektor BEI"
+            return None, "gagal membaca data indeks sektor BEI", None
 
     async def _get_news():
         if not include_news:
@@ -89,9 +92,9 @@ async def gather_market_data(
         scan_rows, scan_meta = scan_res
 
     if isinstance(idx_res, Exception):
-        index_rows, index_error = None, "gagal membaca data indeks sektor BEI"
+        index_rows, index_error, index_stale_age = None, "gagal membaca data indeks sektor BEI", None
     else:
-        index_rows, index_error = idx_res
+        index_rows, index_error, index_stale_age = idx_res
 
     news_items = None if isinstance(news_res, Exception) else news_res
     news_sent = None
@@ -102,7 +105,7 @@ async def gather_market_data(
             news_sent = None
 
     now = marketcal.now_wib()
-    return pasarmod.build_market_report(
+    report = pasarmod.build_market_report(
         ihsg_df=ihsg_df,
         scan_rows=scan_rows,
         scan_meta=scan_meta,
@@ -112,6 +115,9 @@ async def gather_market_data(
         news_sent=news_sent,
         as_of_label=f"{now:%d %b %Y %H:%M} WIB",
     )
+    if index_stale_age is not None:
+        report["index_stale_age"] = index_stale_age
+    return report
 
 
 async def gather_market_brief(deps) -> str:

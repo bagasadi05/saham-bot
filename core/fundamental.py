@@ -325,7 +325,9 @@ def analyze_cashflow_quality(f: dict | None) -> dict:
         if net_cash is not None:
             if net_cash > 0:
                 strengths.append("Posisi kas bersih positif (kas > utang)")
-            elif total_cash > 0 and total_debt > total_cash * 2.0:
+            elif (total_cash <= 0 and total_debt > 0) or (
+                total_cash > 0 and total_debt > total_cash * 2.0
+            ):
                 flags.append("Utang lebih dari 2× kas yang tersedia")
                 forensic_flags.append("utang_gt_2x_kas")
                 raw_penalty += 15

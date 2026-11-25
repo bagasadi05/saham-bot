@@ -465,8 +465,9 @@ def portfolio_risk(positions: list[dict], quotes: dict[str, dict],
 
             if len(rets) >= 2:
                 corr = frame.corr()
-                pairs = [(corr.iloc[i, j], frame.columns[i], frame.columns[j])
-                         for i in range(len(corr)) for j in range(i + 1, len(corr))]
+                pairs = [(float(corr.iloc[i, j]), frame.columns[i], frame.columns[j])
+                         for i in range(len(corr)) for j in range(i + 1, len(corr))
+                         if pd.notna(corr.iloc[i, j])]
                 if pairs:
                     corr_avg = round(float(sum(p[0] for p in pairs) / len(pairs)), 2)
                     corr_max, a, b = max(pairs, key=lambda p: p[0])

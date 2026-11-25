@@ -57,6 +57,7 @@ PENDING_TTL = core_guards.PENDING_TTL
 _pending_clear = core_guards._pending_clear
 _pending_get = core_guards._pending_get
 _pending_set = core_guards._pending_set
+_pending_owner = core_guards._pending_owner
 _pending_prune = core_guards._pending_prune
 _pending_ts = core_guards._pending_ts
 _last_used = core_guards._last_used
@@ -230,6 +231,16 @@ def timed(fn):
         t0 = time.monotonic()
         STATS["commands"] += 1
         ok = True
+        update = args[0] if args else None
+        msg = getattr(update, "effective_message", None)
+        if (
+            update is not None
+            and getattr(update, "callback_query", None) is None
+            and getattr(msg, "text", None)
+            and str(msg.text).lstrip().startswith("/")
+            and getattr(update, "effective_chat", None) is not None
+        ):
+            _pending_clear(update.effective_chat.id)
         try:
             return await fn(*args, **kwargs)
         except Exception:
@@ -1432,8 +1443,9 @@ def main():
     reg(["belajar", "learn", "apa"], cmd_belajar)
     ALLOWED_IDS.update(user_ids)
     app.add_handler(CallbackQueryHandler(timed(menu_callback)))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
-                                   timed(menu_text_input)))
+    app.add_handler(MessageHandler(
+        filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND,
+        timed(menu_text_input)))
 
     job_queue = app.job_queue
     job_queue.run_repeating(scan_alerts, interval=config.ALERT_SCAN_MINUTES * 60, first=10)

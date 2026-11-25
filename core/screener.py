@@ -441,8 +441,15 @@ def scan(force: bool = False, downloader=None,
     """
     meta_lama = store.market_scan_meta()
     counts = store.market_scan_counts()
-    if (not force and counts and meta_lama.get("scanned_at", "")[:10]
-            == _today_wib()):
+    now_wib = marketcal.now_wib()
+    scanned_at = str(meta_lama.get("scanned_at") or "")
+    same_day_fresh = scanned_at[:10] == _today_wib()
+    if same_day_fresh and now_wib.hour >= 16:
+        try:
+            same_day_fresh = int(scanned_at[11:13]) >= 16
+        except (TypeError, ValueError):
+            same_day_fresh = False
+    if not force and counts and same_day_fresh:
         return {"cached": True, "counts": counts, "meta": meta_lama,
                 "skipped": []}
 

@@ -16,6 +16,7 @@ Glosarium label model: {0: positive, 1: neutral, 2: negative}
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -155,6 +156,14 @@ def get_model():
 
 def _id_to_label(model) -> dict[int, str]:
     raw = getattr(getattr(model, "config", None), "id2label", None)
+    if not (isinstance(raw, dict) and raw):
+        cfg_path = os.path.join(LOCAL_MODEL_DIR, "config.json")
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, encoding="utf-8") as f:
+                    raw = (json.load(f) or {}).get("id2label")
+            except Exception:
+                raw = None
     if isinstance(raw, dict) and raw:
         mapped: dict[int, str] = {}
         for k, v in raw.items():

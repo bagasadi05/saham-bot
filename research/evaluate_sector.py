@@ -50,9 +50,9 @@ def _compute_zscore_column(
     for _dt_val, grp in df.groupby("date"):
         mat = grp[feats].to_numpy(dtype=float)
         g_mu = np.nanmean(mat, axis=0)
-        g_sd = np.nanstd(mat, axis=0)
+        g_sd = np.nanstd(mat, axis=0, ddof=1)
         g_sd = np.where((g_sd > 1e-12) & np.isfinite(g_sd), g_sd, 1.0)
-        z_global = np.nan_to_num((mat - g_mu) / g_sd, nan=0.0) @ w_arr
+        z_global = np.clip(np.nan_to_num((mat - g_mu) / g_sd, nan=0.0), -3.0, 3.0) @ w_arr
 
         if not sector_map:
             out.loc[grp.index] = z_global
@@ -66,9 +66,9 @@ def _compute_zscore_column(
             pos = grp.index.get_indexer(s_idx)
             s_mat = mat[pos]
             s_mu = np.nanmean(s_mat, axis=0)
-            s_sd = np.nanstd(s_mat, axis=0)
+            s_sd = np.nanstd(s_mat, axis=0, ddof=1)
             s_sd = np.where((s_sd > 1e-12) & np.isfinite(s_sd), s_sd, g_sd)
-            z_sec = np.nan_to_num((s_mat - s_mu) / s_sd, nan=0.0) @ w_arr
+            z_sec = np.clip(np.nan_to_num((s_mat - s_mu) / s_sd, nan=0.0), -3.0, 3.0) @ w_arr
             z_final[pos] = z_sec
         out.loc[grp.index] = z_final
     return out

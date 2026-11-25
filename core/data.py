@@ -49,6 +49,7 @@ _PERIOD_DAYS = {
 
 _mem: dict[tuple, tuple[float, pd.DataFrame]] = {}
 _mem_lock = threading.Lock()
+_yf_dl_lock = threading.Lock()
 _stats = {"hit": 0, "miss": 0}
 _fallback_cooldown_until: dict[str, float] = {}
 
@@ -178,10 +179,15 @@ def _mem_get(key: tuple):
     return df.copy()
 
 
+_MEM_MAX = 256
+
+
 def _mem_put(key: tuple, df):
     if _TTL_SECONDS <= 0:
         return
     with _mem_lock:
+        if len(_mem) >= _MEM_MAX and key not in _mem:
+            _mem.pop(next(iter(_mem)))
         _mem[key] = (time.time(), df.copy())
 
 
@@ -606,10 +612,11 @@ def _fetch_bars(ticker: str, period: str = DEFAULT_PERIOD,
     last_exc = None
     for attempt in range(_MAX_RETRIES):
         try:
-            df = download_yf_with_safe_repair(
-                yf.download, symbol, period=period, interval=interval,
-                auto_adjust=True, progress=False,
-            )
+            with _yf_dl_lock:
+                df = download_yf_with_safe_repair(
+                    yf.download, symbol, period=period, interval=interval,
+                    auto_adjust=True, progress=False,
+                )
             if df is not None and not df.empty:
                 last_exc = None
                 break
@@ -668,6 +675,17 @@ def fetch_history(ticker: str, period: str = DEFAULT_PERIOD,
     return _fetch_bars(ticker, period=period, interval="1d", raw_symbol=raw_symbol)
 
 
+def fetch_cached_history(ticker: str, period: str = DEFAULT_PERIOD,
+                         raw_symbol: bool = False):
+    """Ambil OHLCV harian hanya dari cache memori/disk tanpa panggilan jaringan."""
+    symbol = ticker.strip().upper() if raw_symbol else normalize_ticker(ticker)
+    key = (symbol, "1d", period)
+    mem_hit = _mem_get(key)
+    if mem_hit is not None:
+        return mem_hit
+    return _load_cache(symbol, "1d", period=period)
+
+
 def fetch_weekly(ticker: str, period: str = "2y", raw_symbol: bool = False):
     """[P9] Ambil candle mingguan (`interval=1wk`) untuk konfirmasi tren."""
     try:
@@ -676,6 +694,7 @@ def fetch_weekly(ticker: str, period: str = "2y", raw_symbol: bool = False):
         return None
 
 
+_NAME_MAX = 512
 _name_cache: dict[str, str] = {}
 _name_lock = threading.Lock()
 
@@ -737,5 +756,7 @@ def fetch_quote_name(ticker: str) -> str:
     if not name:
         return fallback  # kegagalan tidak dicache: coba lagi lain waktu
     with _name_lock:
+        if len(_name_cache) >= _NAME_MAX and symbol not in _name_cache:
+            _name_cache.pop(next(iter(_name_cache)))
         _name_cache[symbol] = name
     return name

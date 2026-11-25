@@ -153,7 +153,7 @@ def compare_row(ticker: str, res: dict | None, fund: dict | None) -> dict:
     if fund:
         out["per"] = fund.get("per")
         out["pbv"] = fund.get("pbv")
-        out["roe"] = fundamental.normalize_roe(fund.get("roe"))
+        out["roe"] = fundamental.normalize_roe(fund.get("roe"), unit=fund.get("roe_unit"))
         out["dy"] = fundamental.normalize_div_yield(fund.get("div_yield"))
     return out
 

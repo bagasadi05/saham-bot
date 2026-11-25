@@ -46,6 +46,8 @@ def _parse_target_kind(token: str) -> str | None:
 
 
 async def do_watch_list(update: Update, deps):
+    if not await deps.cooldown_ok(update, "watch"):
+        return
     msg = update.effective_message
     chat_id = update.effective_chat.id
     wl = await asyncio.to_thread(store.get_watchlist, chat_id)
@@ -152,9 +154,9 @@ async def do_alert_list(update: Update, deps,
         txt = "\n".join(
             f"  • <b>{deps.esc(s)}</b>: {deps.esc(', '.join(sorted(k)))}" for s, k in al.items()
         )
-        await msg.reply_text(
+        await deps.reply_long(
+            msg,
             f"Alert kamu:\n{txt}",
-            parse_mode=ParseMode.HTML,
             reply_markup=deps.alert_menu_markup() if from_menu else None,
         )
     else:
@@ -204,15 +206,31 @@ async def do_alert_add(update: Update, deps, ticker: str,
             reply_markup=deps.alert_menu_markup() if from_menu else None,
         )
         return
+    al_now = await asyncio.to_thread(store.get_alerts, chat_id)
+    if symbol not in al_now and len(al_now) >= deps.MAX_WATCH:
+        await msg.reply_text(
+            f"⚠️ Alert penuh (maks {deps.MAX_WATCH} emiten). "
+            "Hapus salah satu lewat /alert off KODE.",
+            reply_markup=deps.alert_menu_markup() if from_menu else None,
+        )
+        return
+    existing_kinds = set(al_now.get(symbol) or ())
+    if len(existing_kinds | normalized_kinds) > 20:
+        await msg.reply_text(
+            f"⚠️ Terlalu banyak kondisi alert untuk <b>{deps.esc(symbol)}</b> (maks 20).",
+            parse_mode=ParseMode.HTML,
+            reply_markup=deps.alert_menu_markup() if from_menu else None,
+        )
+        return
     saved = await asyncio.to_thread(store.set_alert, chat_id, symbol, normalized_kinds)
     wl_now = await asyncio.to_thread(store.get_watchlist, chat_id)
     if symbol in wl_now or len(wl_now) < deps.MAX_WATCH:
         await asyncio.to_thread(store.watchlist_add, chat_id, symbol)
     kind_txt = ", ".join(sorted(saved))
-    await msg.reply_text(
+    await deps.reply_long(
+        msg,
         f"🔔 Alert untuk <b>{deps.esc(symbol)}</b> aktif: <code>{deps.esc(kind_txt)}</code>\n"
         "Scanner mengecek tiap 30 menit saat pasar buka.",
-        parse_mode=ParseMode.HTML,
         reply_markup=deps.alert_menu_markup() if from_menu else None,
     )
 

@@ -133,14 +133,16 @@ def _reduce_real_position_conn(conn, chat_id: int | str, t: str, n: int, p: floa
         raise ValueError(f"kamu hanya punya {held} lot {t}")
     left = held - n
     if left:
-        conn.execute(
-            "UPDATE real_positions SET lots=?, updated_at=?"
-            " WHERE chat_id=? AND ticker=?",
-            (left, now, str(chat_id), t))
+        cur = conn.execute(
+            "UPDATE real_positions SET lots = lots - ?, updated_at=?"
+            " WHERE chat_id=? AND ticker=? AND lots >= ?",
+            (n, now, str(chat_id), t, n))
     else:
-        conn.execute(
-            "DELETE FROM real_positions WHERE chat_id=? AND ticker=?",
-            (str(chat_id), t))
+        cur = conn.execute(
+            "DELETE FROM real_positions WHERE chat_id=? AND ticker=? AND lots = ?",
+            (str(chat_id), t, n))
+    if cur.rowcount != 1:
+        raise ValueError(f"posisi {t} berubah bersamaan; coba lagi")
     conn.execute(
         "INSERT INTO real_trades"
         "(chat_id, ticker, side, lots, price, trade_date, created_at)"

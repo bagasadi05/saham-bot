@@ -446,6 +446,12 @@ def format_market_report(
     sec = report.get("sectors") or {}
     lines += ["", "🏭 <b>3. Rotasi Sektor BEI</b>"]
     if sec.get("ok"):
+        stale_age = report.get("index_stale_age")
+        if stale_age is not None:
+            jam = max(1, int(round(float(stale_age) / 3600)))
+            lines.append(
+                f"  ⚠️ <i>idx.co.id diblokir — memakai cache terakhir (±{jam} jam lalu).</i>"
+            )
         all_secs = sec.get("sectors") or []
         lines.append(
             f"  {sec['n']} sektor terbaca: <b>{sec['n_positive']} naik</b> / "

@@ -598,6 +598,9 @@ async def cmd_backtest(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
 
 async def do_tanya(update: Update, deps, ticker: str, focus: str):
     """Jawab 'beli/jual gak?' untuk satu emiten (focus: beli/jual/umum)."""
+    cd_key = "jual" if focus == "jual" else ("beli" if focus == "beli" else "tanya")
+    if not await deps.cooldown_ok(update, cd_key):
+        return
     msg = update.effective_message
     try:
         res = await deps.fetch_and_analyze(ticker)
@@ -656,6 +659,12 @@ async def do_tanya(update: Update, deps, ticker: str, focus: str):
         except Exception:
             snap_row = {}
     rel_pct = snap_row.get("rel_pct") if isinstance(snap_row, dict) else None
+    reg = None
+    try:
+        reg_mod = getattr(deps, "regime", regime)
+        reg = await asyncio.to_thread(reg_mod.fetch_ihsg_regime)
+    except Exception:
+        reg = None
     try:
         verdict_txt = deps.build_verdict(
             res,
@@ -667,14 +676,15 @@ async def do_tanya(update: Update, deps, ticker: str, focus: str):
             positions=positions,
             open_execs=open_execs,
             rel_pct=rel_pct,
+            market_regime=reg,
         )
     except TypeError:
         verdict_txt = deps.build_verdict(res, fsc, nsent, focus, bt_sum, weekly=weekly)
     allow_buy = _tanya_allows_buy(verdict_txt, focus)
     if sig_px and float(sig_px) > 0 and (focus == "jual" or allow_buy):
         px = float(pricing.round_tick(float(sig_px)))
-        sl_lvl = float(saranmod.stop_price(px, atr))
-        tp_lvl = float(saranmod.target_price(px, atr))
+        sl_lvl = float(saranmod.stop_price(px, atr)) if atr else None
+        tp_lvl = float(saranmod.target_price(px, atr)) if atr else None
         intent = "jual" if focus == "jual" else "beli"
         await asyncio.to_thread(
             store.save_signal_context,

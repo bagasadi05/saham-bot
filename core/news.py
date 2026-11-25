@@ -98,6 +98,7 @@ POS_PHRASES: dict[tuple[str, ...], float] = {
     ("lepas", "suspensi"): 1.4,
     ("cabut", "suspensi"): 1.4,
     ("suspensi", "dibuka"): 1.4,
+    ("auto", "reject", "atas"): 2.0,
 }
 
 NEG_PHRASES: dict[tuple[str, ...], float] = {
@@ -202,7 +203,7 @@ _CLAUSE_BREAKERS = {
 }
 _OTHER_METRICS = {
     "pendapatan", "laba", "untung", "keuntungan", "saham", "harga",
-    "margin", "volume", "ihsg", "penjualan", "omzet", "ekuitas",
+    "margin", "volume", "ihsg", "penjualan", "omzet",
     "aset", "dividen", "produksi", "kinerja", "nilai",
 }
 ITEM_SENT_THRESHOLD = 0.25
@@ -211,7 +212,7 @@ POS = {  # kata tunggal: bobot
     "naik": 1.0, "kenaikan": 1.0, "menguat": 1.0, "penguatan": 1.0,
     "melejit": 2.0, "melonjak": 2.0, "melesat": 2.0, "meroket": 2.0,
     "lonjakan": 2.0, "kencang": 1.0, "rebound": 1.5, "bangkit": 1.5,
-    "pulih": 1.2, "pemulihan": 1.2, "ara": 2.0, "cuan": 1.5,
+    "pulih": 1.2, "pemulihan": 1.2, "cuan": 1.5,
     "meningkat": 1.2, "peningkatan": 1.2, "positif": 1.0,
     "untung": 2.0, "keuntungan": 1.5, "laba": 0.2, "surplus": 1.5,
     "tumbuh": 1.5, "pertumbuhan": 1.2, "percepatan": 1.0,
@@ -438,6 +439,13 @@ def score_title(title: str, source: str | None = None) -> tuple[float, list[str]
                 score += delta
                 hits.append(("tidak-" if negated else "") + w)
 
+        # Token sensitif-kapital "ARA" (hindari false-positive nama orang seperti "Menteri Ara")
+        for m in re.finditer(r"\bARA\b", clause):
+            prefix_words = re.findall(r"[a-z]+", _clean_wordbag(clause[:m.start()]))
+            negated, _ = _is_negated(prefix_words + ["ara"], len(prefix_words), _NEGATORS)
+            score += -2.0 if negated else 2.0
+            hits.append("tidak-ARA" if negated else "ARA")
+
     return round(score, 4), hits
 
 
@@ -611,7 +619,8 @@ def news_sentiment(items: list[dict]) -> dict:
             res = next(ml_iter, None)
             if res is not None:
                 # skala ±1 (ML) dipetakan ke skala lexicon-ish ±2
-                s = (res["probs"]["positive"] - res["probs"]["negative"]) * 2.0
+                probs = res.get("probs") or {}
+                s = (float(probs.get("positive", 0.0)) - float(probs.get("negative", 0.0))) * 2.0
                 hits = [f"ML {res['label']}:{res['score']:.0%}"]
                 engine = "ml"
             else:

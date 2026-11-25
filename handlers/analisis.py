@@ -371,6 +371,8 @@ async def do_analisis(update: Update, tickers: list[str], deps):
 
 async def do_skor(update: Update, tickers: list[str], deps,
                         from_menu: bool = False):
+    if not await deps.cooldown_ok(update, "skor"):
+        return
     msg = update.effective_message
     chat_id = update.effective_chat.id if update.effective_chat else None
     wl = (await asyncio.to_thread(store.get_watchlist, chat_id)

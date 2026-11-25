@@ -1189,7 +1189,11 @@ async def menu_callback(update: Update, ctx, deps):
 
     if cb_data.startswith("manual:"):
         action = cb_data.split(":", 1)[1]
-        deps._pending_set(chat_id, action)
+        uid = update.effective_user.id if update.effective_user else None
+        try:
+            deps._pending_set(chat_id, action, user_id=uid)
+        except TypeError:
+            deps._pending_set(chat_id, action)
         if action == "onboard_modal":
             cancel_kb = [[
                 InlineKeyboardButton("⬅️ Kembali Tahap 2", callback_data="onboard:s2"),
@@ -1299,6 +1303,8 @@ def _parse_menu_tokens(action: str, raw_text: str) -> list[str]:
 
 async def menu_text_input(update: Update, ctx, deps):
     """Teks biasa: proses PENDING input emiten/modal, atau pertanyaan bebas."""
+    if not update.effective_chat or not update.effective_user:
+        return
     chat_id = update.effective_chat.id
     action = deps._pending_get(chat_id)
     if not action:
@@ -1320,7 +1326,9 @@ async def menu_text_input(update: Update, ctx, deps):
         return
 
     if deps.ALLOWED_IDS and update.effective_user.id not in deps.ALLOWED_IDS:
-        deps._pending_clear(chat_id)
+        return
+    owner = getattr(deps, "_pending_owner", lambda _c: None)(chat_id)
+    if owner is not None and update.effective_user.id != owner:
         return
 
     raw_text = (update.effective_message.text or "").strip()

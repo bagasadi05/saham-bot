@@ -287,6 +287,43 @@ async def _fetch_ihsg_close():
         return None
 
 
+async def fetch_diag_context(
+    execs: list[dict], *, max_tickers: int = 20, allow_network: bool = False,
+) -> tuple[dict, object]:
+    """Ambil OHLCV emiten tertutup (MAE/MFE) & close IHSG (alpha) secara best-effort."""
+    if not any(str(e.get("side") or "").upper() == "JUAL" for e in execs):
+        return {}, None
+    bench_close = await _fetch_ihsg_close()
+    tickers: list[str] = []
+    seen: set[str] = set()
+    for e in execs:
+        t = str(e.get("ticker") or "").strip().upper().removesuffix(".JK")
+        if t and t not in seen:
+            seen.add(t)
+            tickers.append(t)
+            if len(tickers) >= max_tickers:
+                break
+    bars_by_ticker: dict = {}
+    cached_fn = getattr(data, "fetch_cached_history", None)
+    for t in tickers:
+        df = None
+        if cached_fn is not None:
+            try:
+                df = await asyncio.to_thread(cached_fn, t, "1y")
+            except Exception as exc:
+                log.debug("cache %s untuk MAE/MFE gagal dibaca: %s", t, exc)
+                df = None
+        if (df is None or getattr(df, "empty", True)) and allow_network:
+            try:
+                df = await asyncio.to_thread(data.fetch_history, t, "1y")
+            except Exception as exc:
+                log.debug("riwayat %s untuk MAE/MFE gagal diambil: %s", t, exc)
+                continue
+        if df is not None and not getattr(df, "empty", True):
+            bars_by_ticker[t] = df
+    return bars_by_ticker, bench_close
+
+
 async def do_jurnal(update: Update, args: list[str], deps,
                     *, from_menu: bool = False) -> None:
     """Handler /jurnal [riwayat|beli|jual ...]."""
@@ -387,9 +424,12 @@ async def do_jurnal(update: Update, args: list[str], deps,
     real_sum = jurnalmod.summarize_executions(execs)
     paper_sum = jurnalmod.summarize_paper_realized(paper)
     bench_close = None
+    bars_by_ticker: dict = {}
     if any(str(e.get("side") or "").upper() == "JUAL" for e in execs):
-        bench_close = await _fetch_ihsg_close()
-    diag = jurnalmod.jurnal_diagnostics(execs, bench_close=bench_close)
+        bars_by_ticker, bench_close = await fetch_diag_context(execs)
+    diag = jurnalmod.jurnal_diagnostics(
+        execs, bars_by_ticker=bars_by_ticker, bench_close=bench_close,
+    )
     txt = jurnalmod.format_journal_report(
         real_sum, paper_sum, open_real_count=len(positions), diagnostics=diag,
     )

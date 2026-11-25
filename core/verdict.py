@@ -9,7 +9,7 @@ from datetime import date
 
 import pandas as pd
 
-from core import (analysis, btcache, marketcal, powerscore, pricing,
+from core import (analysis, btcache, data_quality, marketcal, powerscore, pricing,
                   reports as core_reports, saran as saranmod)
 from core.reports import esc, fmt_rp
 
@@ -401,11 +401,8 @@ def build_verdict(
     prov_line = core_reports.provenance_line(res)
     if not prov_line and res.get("as_of"):
         prov_line = f"🔎 <i>Data per {esc(str(res['as_of']))} WIB</i>\n"
-    qual_note = (
-        f"⚠️ <i>{esc(str(res['quality_note']))}</i>\n"
-        if res.get("quality_note")
-        else ""
-    )
+    qn = data_quality.plain_note(res.get("quality_note"))
+    qual_note = f"⚠️ <i>{esc(qn)}</i>\n" if qn else ""
 
     bt_line = btcache.format_verdict_backtest(bt_summary, t)
     trap = powerscore.trap_warning(snap.get("ret20d"), snap.get("ret1d"))

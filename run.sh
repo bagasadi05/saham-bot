@@ -22,9 +22,30 @@ fi
 PY="python3"
 [ -x .venv/bin/python ] && PY=".venv/bin/python"
 
-# cek token tanpa menampilkan isinya
+# cek token tanpa mengeksekusi .env sebagai skrip shell
 if [ -z "${BOT_TOKEN:-}" ] && [ -f .env ]; then
-    set -a; . ./.env; set +a
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+            ""|\#*) continue ;;
+            *=*)
+                key="${line%%=*}"
+                val="${line#*=}"
+                key="${key#"${key%%[![:space:]]*}"}"
+                key="${key%"${key##*[![:space:]]}"}"
+                case "$key" in
+                    ''|*[!A-Za-z0-9_]*|[0-9]*) continue ;;
+                esac
+                val="${val#"${val%%[![:space:]]*}"}"
+                val="${val%"${val##*[![:space:]]}"}"
+                case "$val" in
+                    \"*\") val="${val#\"}"; val="${val%\"}" ;;
+                    \'*\') val="${val#\'}"; val="${val%\'}" ;;
+                esac
+                export "$key=$val"
+                ;;
+        esac
+    done < .env
 fi
 if [ -z "${BOT_TOKEN:-}" ]; then
     echo "BOT_TOKEN belum di-set. Salin .env.example -> .env lalu isi token." >&2

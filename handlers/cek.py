@@ -14,8 +14,8 @@ import re
 from telegram import Update
 from telegram.constants import ParseMode
 
-from core import (analysis, bandar, banding, cek as cekmod, data, fundamental,
-                  marketcal, news, rencana, reports as core_reports,
+from core import (analysis, bandar, banding, cek as cekmod, data, data_quality,
+                  fundamental, marketcal, news, rencana, reports as core_reports,
                   risk as riskmod, saran as saranmod, store, universe)
 from core.reports import esc
 from handlers import jurnal as jurnal_handler
@@ -156,8 +156,9 @@ def _cek_text(
         prov_line = f"🔎 <i>Data per {esc(str(res['as_of']))} WIB</i>"
     if prov_line:
         out_lines.append(prov_line)
-    if res.get("quality_note"):
-        out_lines.append(f"⚠️ <i>{esc(str(res['quality_note']))}</i>")
+    qn = data_quality.plain_note(res.get("quality_note"))
+    if qn:
+        out_lines.append(f"⚠️ <i>{esc(qn)}</i>")
     out_lines.append("")
 
     num = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣")

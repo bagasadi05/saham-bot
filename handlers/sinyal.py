@@ -17,7 +17,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 
 import config
-from core import fundamental, kualitas as kvalmod, marketcal, pricing, store
+from core import data_quality, fundamental, kualitas as kvalmod, marketcal, pricing, store
 from core.reports import _rp, esc
 from core.textutil import rupiah
 
@@ -65,8 +65,9 @@ def _sinyal_row(i: int, r: dict, kval: dict | None = None) -> str:
     line = " · ".join(parts)
     if kval:
         line += f" · {kvalmod.mark(kval)} {esc(kval.get('label') or '')}"
-    if r.get("quality_note"):
-        line += f" · ⚠️ <i>{esc(r['quality_note'])}</i>"
+    qn = data_quality.plain_note(r.get("quality_note"))
+    if qn:
+        line += f" · ⚠️ <i>{esc(qn)}</i>"
     if r.get("entry") and r.get("sl") and r.get("tp"):
         arb = pricing.check_arb_gap_risk(float(r["entry"]), float(r["sl"]))
         arb_tag = " · ⚠️ risiko gap ARB" if arb.get("risk") else ""
@@ -209,8 +210,9 @@ def _sinyal_detail(r: dict, meta: dict, deps,
         arb = pricing.check_arb_gap_risk(float(r["entry"]), float(r["sl"]))
         if arb.get("warning"):
             lines.append(f"⚠️ <i>{esc(arb['warning'])}</i>")
-    if r.get("quality_note"):
-        lines.append(f"⚠️ <i>Catatan data: {esc(r['quality_note'])}</i>")
+    qn = data_quality.plain_note(r.get("quality_note"))
+    if qn:
+        lines.append(f"⚠️ <i>Catatan data: {esc(qn)}</i>")
     if kval:
         lines.append(f"Kualitas fundamental: {kvalmod.mark(kval)} "
                      f"<b>{esc(kval.get('label') or '—')}</b>"

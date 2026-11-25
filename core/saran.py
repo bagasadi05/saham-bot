@@ -882,11 +882,11 @@ def scale_out_plan(
         }
     tick = pricing.tick_size(px)
     tp_target = float(tp_full) if tp_full and float(tp_full) > px else target_price(px, atr_v)
-    tp1 = pricing.round_tick(px + float(tp1_atr_mult) * atr_v, tick)
+    tp1 = pricing.round_tick(px + float(tp1_atr_mult) * atr_v)
     if tp1 <= px:
-        tp1 = px + tick
+        tp1 = pricing.ceil_tick(px + tick)
     if tp1 > tp_target and tp_target > px + tick:
-        tp1 = pricing.round_tick((px + tp_target) / 2.0, tick)
+        tp1 = pricing.round_tick((px + tp_target) / 2.0)
     bep_sl = breakeven_stop(px)
 
     if n_lots >= 2:
@@ -991,8 +991,8 @@ def arb_gap_risk(
     arb_base = float(prev_close if prev_close is not None and float(prev_close) > 0 else ref_price)
     if arb_base <= 0:
         arb_floor = REGULAR_MIN_PRICE
-    elif arb_base <= 10.0:
-        arb_floor = max(REGULAR_MIN_PRICE, arb_base - 1.0)
+    elif arb_base <= 10.0 or (pct_limit <= 7.0 and arb_base <= 14.0):
+        arb_floor = max(REGULAR_MIN_PRICE, float(int(arb_base) - 1))
     else:
         arb_floor = max(
             REGULAR_MIN_PRICE,

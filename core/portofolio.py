@@ -28,7 +28,7 @@ CONC_SECTOR = 50.0      # satu sektor > 50% nilai = konsentrasi tinggi
 
 
 def atr14(df: pd.DataFrame | None) -> float | None:
-    """ATR 14 sederhana (rata-rata true range) dari OHLC harian."""
+    """ATR 14 Wilder RMA (selaras `analysis.compute_indicators`) dari OHLC harian."""
     if df is None or len(df) < 15:
         return None
     try:
@@ -37,9 +37,18 @@ def atr14(df: pd.DataFrame | None) -> float | None:
         c = df["close"].astype(float)
     except (KeyError, TypeError, ValueError):
         return None
-    tr = pd.concat([h - low, (h - c.shift()).abs(), (low - c.shift()).abs()],
-                   axis=1).max(axis=1)
-    val = tr.rolling(14).mean().iloc[-1]
+    val = None
+    try:
+        import pandas_ta_classic as ta  # noqa: F401
+        ser = df.ta.atr(14)
+        if ser is not None and not getattr(ser, "isna", lambda: pd.Series([True]))().all():
+            val = ser.iloc[-1]
+    except Exception:
+        val = None
+    if val is None or pd.isna(val):
+        tr = pd.concat([h - low, (h - c.shift()).abs(), (low - c.shift()).abs()],
+                       axis=1).max(axis=1)
+        val = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean().iloc[-1]
     if pd.isna(val) or float(val) <= 0:
         return None
     return float(val)

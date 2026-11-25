@@ -403,7 +403,7 @@ def score_from_rows(last, prev) -> dict:
     try:
         last_date = pd.Timestamp(last.name).date()
         now_wib = pd.Timestamp.now(tz="Asia/Jakarta")
-        if last_date == now_wib.date() and now_wib.hour < 15:
+        if last_date == now_wib.date() and now_wib.hour < 16:
             vol_bear += " (pasar masih buka — volume hari ini belum lengkap)"
     except Exception:
         pass

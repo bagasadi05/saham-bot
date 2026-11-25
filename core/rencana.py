@@ -174,7 +174,7 @@ def enrich(cand: dict, analyzed: dict | None,
 
     per = _f(fund_raw.get("per"))
     pbv = _f(fund_raw.get("pbv"))
-    roe = fundamental.normalize_roe(fund_raw.get("roe"))
+    roe = fundamental.normalize_roe(fund_raw.get("roe"), unit=fund_raw.get("roe_unit"))
     der = fundamental.normalize_der(fund_raw.get("debt_eq"))
     div_yield = fundamental.normalize_div_yield(fund_raw.get("div_yield"))
     sector = fund_raw.get("sector") or cand.get("sector")
@@ -370,7 +370,7 @@ def price_levels(c: dict) -> dict:
     """
     raw_entry = _f(c.get("price")) or 0.0
     tick = tick_size(raw_entry)
-    entry = _round_tick(raw_entry, tick)
+    entry = _round_tick(raw_entry)
     atr = _f(c.get("atr")) or entry * 0.03
     if atr <= 0:
         atr = entry * 0.03
@@ -380,16 +380,17 @@ def price_levels(c: dict) -> dict:
     sma20 = _f(c.get("sma20"))
     entry_pullback = None
     if sma20 is not None and sma20 > 0 and raw_entry > sma20 * 1.02:
-        pb = _round_tick(sma20, tick)
+        pb = _round_tick(sma20)
         if 0 < pb < entry:
             entry_pullback = pb
-    sl = _round_tick(max(entry - atr, tick), tick)
+    sl = _round_tick(max(entry - atr, 1.0))
     if sl >= entry:
-        sl = max(entry - tick, tick)
-    tp = _round_tick(entry + 2.0 * atr, tick)
+        step_down = tick_size(max(1.0, entry - 1.0))
+        sl = max(entry - step_down, 1.0)
+    tp = _round_tick(entry + 2.0 * atr)
     if tp <= entry:
-        tp = entry + 2.0 * tick
-    chase_above = _ceil_tick(entry + 0.5 * atr, tick)
+        tp = _ceil_tick(entry + 2.0 * tick)
+    chase_above = _ceil_tick(entry + 0.5 * atr)
     if chase_above <= entry:
         chase_above = entry + tick
     risk_per_share = max(entry - sl, 0.0)

@@ -57,8 +57,13 @@ def fmt_compact_amount(v: float, currency: str | None = "IDR") -> str:
     sign = "-" if v < 0 else ""
     av = abs(v)
     if cur == "IDR":
-        tril = av / 1e12
-        return f"{sign}Rp{tril:.2f}T" if tril >= 1 else f"{sign}Rp{av / 1e9:.0f}M"
+        if av >= 1e12:
+            return f"{sign}Rp{av / 1e12:.2f}T"
+        if av >= 1e9:
+            return f"{sign}Rp{av / 1e9:.0f}M"
+        if av >= 1e6:
+            return f"{sign}Rp{av / 1e6:.0f}jt"
+        return f"{sign}Rp{av:,.0f}".replace(",", ".")
     prefix = "" if cur == "TIDAK TERSEDIA" else f"{cur} "
     if av >= 1e12:
         return f"{sign}{prefix}{av / 1e12:.2f}T"
