@@ -102,3 +102,53 @@ def test_semua_tombol_terhubung_command_yang_ada():
             assert name in known or name in dir(desktop), (
                 f"command merujuk {name} yang tidak ada (baris {call.lineno})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Helper UI/UX baru: teks rapi, loading tombol, cross-link antar fitur
+# ---------------------------------------------------------------------------
+
+def test_classify_line_hierarki_visual():
+    assert desktop.classify_line("=== RENCANA MANUAL ===") == "heading"
+    assert desktop.classify_line("--- DIAGNOSTIK MAE/MFE ---") == "heading"
+    assert desktop.classify_line("⛔ VETO VERDICT: PBV ≤ 0") == "bad"
+    assert desktop.classify_line("Verdict: HINDARI") == "bad"
+    assert desktop.classify_line("⚠ risiko ARB") == "warn"
+    assert desktop.classify_line("Verdict: TUNGGU") == "warn"
+    assert desktop.classify_line("PRO / PENDUKUNG:") == "good"
+    assert desktop.classify_line("Verdict: LAYAK (7 poin)") == "good"
+    assert desktop.classify_line("🔎 Sumber: Yahoo · bar terakhir 2026-11-25") == "muted"
+    assert desktop.classify_line("data tidak tersedia") == "muted"
+    assert desktop.classify_line("biasa saja") == "normal"
+    assert desktop.classify_line("") == "normal"
+
+
+def test_inline_segments_markup_b_i_dan_entitas():
+    segs = desktop.inline_segments("<b>tebal</b> &amp; <i>miring</i>")
+    assert segs == [("tebal", "b"), (" & ", None), ("miring", "i")]
+    # tag tak dikenal dibuang, entitas yang di-escape tetap literal
+    assert desktop.inline_segments("a <unknown>x</unknown> b") == [("a x b", None)]
+    assert desktop.inline_segments("&lt;b&gt;bukan&lt;/b&gt;") == [("<b>bukan</b>", None)]
+    assert desktop.inline_segments("") == []
+
+
+def test_busy_text_menunjukkan_proses_berjalan():
+    txt = desktop.busy_text("⚡ Scan BEI (~944)", 4)
+    assert txt.startswith(desktop.SPINNER_FRAMES[4])
+    assert "⚡ Scan BEI (~944)" in txt and txt.endswith("…")
+
+
+def test_hit_test_rects_dan_match_sector_option():
+    rects = [(0.0, 0.0, 100.0, 20.0, "A"), (0.0, 20.0, 100.0, 40.0, "B")]
+    assert desktop.hit_test_rects(rects, 50, 10) == "A"
+    assert desktop.hit_test_rects(rects, 50, 30) == "B"
+    assert desktop.hit_test_rects(rects, 50, 45) is None
+    opts = ["Semua Sektor", "Keuangan", "Energi", "Teknologi"]
+    assert desktop.match_sector_option("Keuangan", opts) == "Keuangan"
+    assert desktop.match_sector_option("keuangan", opts) == "Keuangan"
+    # alias IDX-IC (Inggris) -> nama sektor Indonesia di snapshot /scan
+    assert desktop.match_sector_option("Financials", opts) == "Keuangan"
+    assert desktop.match_sector_option("Technology", opts) == "Teknologi"
+    assert desktop.match_sector_option("Energy", opts) == "Energi"
+    assert desktop.match_sector_option("ZZZ", opts) is None
+    assert desktop.match_sector_option("", opts) is None

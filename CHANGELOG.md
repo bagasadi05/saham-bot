@@ -10,6 +10,12 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ## [Unreleased] — 2026-11-25
 
+- **Peningkatan keterbacaan, loading & konektivitas aplikasi Desktop** (`desktop.py`, 4 tes baru → total **968 tes**):
+  - **Teks penjelasan rapi & enak dibaca**: panel Pasar, Cek Emiten, dan Jurnal kini memakai rich text — judul `===` tampil aksen bold, verdict LAYAK/HINDARI/TUNGGU/VETO berwarna hijau/merah/amber, markup `<b>`/`<i>` dari core dirender bold/italic (bukan lagi di-strip), plus spasi antarbaris (`spacing1/spacing3`) pada ketiga panel.
+  - **Indikator loading jelas per tombol**: saat proses berjalan, tombol terkait (Segarkan Pasar, Terapkan, Scan BEI, Hitung Paket, Cek Lengkap, Segarkan Jurnal, dan tombol topbar Refresh/Semua Tab) otomatis nonaktif + label spinner animasi `⠋ …`; kembali normal saat selesai.
+  - **Semua fitur saling terhubung**: klik bar grafik rotasi sektor → lompat ke Sinyal Pasar dengan filter sektor itu (alias IDX-IC↔Indonesia, mis. Financials→Keuangan); tombol lompat cepat di tab Pasar (Watchlist/Sinyal/Paket/Portofolio) dan di Cek Emiten (→ Sinyal sesuai ticker, → Paket); menu klik-kanan baru: Sinyal (→ Paket/Watchlist), Paket & Portofolio (→ Watchlist, Portofolio → Alert), Alert (klik kanan → Cek/Watchlist), Watchlist (→ Sinyal Pasar).
+  - Helper murni teruji offline: `classify_line`, `inline_segments`, `busy_text`, `hit_test_rects`, `match_sector_option` (`tests/test_desktop_ui_ux.py`).
+
 - **Peningkatan fitur & UI/UX aplikasi Desktop** (`desktop.py` + `core/store_profile.py`, 7 tes baru → total **963 tes**):
   - **Jam WIB + status bursa hidup** di top bar (BUKA/TUTUP, hijau saat buka) via `marketcal`, plus tombol **🗗 Ke Tray** eksplisit saat ikon system tray aktif.
   - **Status bar hidup**: spinner animasi saat ada proses berjalan, countdown auto-refresh berikutnya, dan jam update data terakhir.

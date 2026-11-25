@@ -1,7 +1,7 @@
 # Rencana Perbaikan & Pengembangan — SahamBuddy
 
 > **Dibuat:** 2026-11-12 · **Direview & disesuaikan:** 2026-11-21 (pasca-Wave 2A/2B, Mode Pemula vs Expert, VaR historis/ES & batas sektor, alpha jurnal vs IHSG, serta gelombang W0–W4: housekeeping skill, audit sentimen berita gold/CAMPURAN, `/pasar` + job penutupan 16:15 WIB & ringkasan pagi, dan pelacak tesis posisi `core/tesis.py`)
-> **Baseline terukur saat ini:** **`964 passed`** (`0 skipped`, `0 failed`; naik dari 956 pasca-UI/UX desktop W5, 953 pasca-security-fix, 921 pasca-W0–W4, 838 pasca-W0–W4 awal, 793 pasca-risk/jurnal, 764 pasca-Mode Pemula/Expert, 678 pasca-menu sederhana, 653 di Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
+> **Baseline terukur saat ini:** **`968 passed`** (`0 skipped`, `0 failed`; naik dari 956 pasca-UI/UX desktop W5, 953 pasca-security-fix, 921 pasca-W0–W4, 838 pasca-W0–W4 awal, 793 pasca-risk/jurnal, 764 pasca-Mode Pemula/Expert, 678 pasca-menu sederhana, 653 di Wave 2A, & 517 pada 2026-11-12) · `ruff check .` bersih ·
 > coverage target CI (`core+handlers+bot+config`) **`TOTAL 87%`** (`87.37%`; gerbang CI `>= 86%`) · `bot.py` **1.865 baris** +
 > 13 modul `handlers/` (analisis, cek, info, jobs, jurnal, market, menu, pasar, portfolio, sektor,
 > sinyal, trading, watchlist) + 35 modul `core/` (`SCHEMA_VERSION = 6`).
@@ -528,6 +528,7 @@ keanggotaan; menambah scraper IDX/Stockbit; refactor `bot.py` sekaligus (satu do
 
 - Memperbaiki kontrak data & rendering chart (`chartmod.build_chart`, `fetch_fundamentals`/`score_fundamentals`, `rencana.budget_plan` `"price"`, `bandar.call_with_stale`, `jurnal_diagnostics`), memperbarui antarmuka 8 tab bergaya terminal gelap tabular, filter Syariah ISSI persisten, ekspor CSV/Stockbit order ticket, serta menambah tes offline di `tests/test_desktop_features.py`.
 - **UI/UX W5 (2026-11-25)**: jam WIB + status bursa hidup di top bar, tombol Ke Tray, status bar spinner/countdown/jam update, badge counter tab Watchlist & Sinyal, persistensi sesi `desktop_ui_state` (geometri, tab aktif, auto-refresh, toast, zoom font, riwayat ticker cek max 12), zoom `Ctrl +/- / Ctrl 0`, konfirmasi bersihkan riwayat alert — helper murni + tes di `tests/test_desktop_ui_ux.py`.
+- **UI/UX W6 (2026-11-25)**: rich text pada panel penjelasan (heading/verdict berwarna, `<b>`/`<i>` dirender, spasi antarbaris), indikator loading per tombol (nonaktif + spinner saat proses berjalan), dan cross-link antar fitur (klik grafik sektor → filter Sinyal, tombol lompat Pasar/Cek, menu klik-kanan baru di Sinyal/Paket/Portofolio/Alert/Watchlist).
 
 ---
 

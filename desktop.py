@@ -220,6 +220,101 @@ def market_clock_text(now: datetime | None = None) -> tuple[str, str]:
     return f"{n:%H:%M:%S} WIB · {label}", status
 
 
+def busy_text(base: str, frame: int) -> str:
+    """Label tombol saat prosesnya berjalan: spinner + teks asli + elipsis."""
+    return f"{spinner_frame(frame)} {base}…"
+
+
+def classify_line(line: str) -> str:
+    """Klasifikasi satu baris teks penjelasan menjadi tag gaya agar enak dibaca.
+
+    Mengembalikan nama tag: ``heading``, ``good``, ``bad``, ``warn``, ``muted``,
+    atau ``normal``.
+    """
+    s = str(line or "").strip()
+    if not s:
+        return "normal"
+    if s.startswith("===") or (s.startswith("---") and s.endswith("---")):
+        return "heading"
+    up = s.upper()
+    if "⛔" in s or "VETO" in up or "HINDARI" in up:
+        return "bad"
+    if "⚠" in s or "TUNGGU" in up or "STALE" in up:
+        return "warn"
+    if "RISIKO" in up or "CATATAN KRITIS" in up:
+        return "bad"
+    if s.startswith("PRO") or "LAYAK" in up or "PENDUKUNG" in up:
+        return "good"
+    if s.startswith("🔎") or "TIDAK TERSEDIA" in up:
+        return "muted"
+    return "normal"
+
+
+def inline_segments(line: str) -> list[tuple[str, str | None]]:
+    """Pecah satu baris menjadi segmen ``(teks, 'b'|'i'|None)`` dari markup ``<b>``/``<i>``.
+
+    Tag lain dihilangkan, entitas HTML di-decode — aman untuk teks dari core.
+    """
+    out: list[tuple[str, str | None]] = []
+    pos = 0
+    style: str | None = None
+    for m in re.finditer(r"<(/?)([bi])>", str(line or "")):
+        chunk = str(line)[pos:m.start()]
+        if chunk:
+            out.append((html.unescape(re.sub(r"<[^>]+>", "", chunk)), style))
+        style = None if m.group(1) == "/" else m.group(2)
+        pos = m.end()
+    tail = str(line)[pos:]
+    if tail:
+        out.append((html.unescape(re.sub(r"<[^>]+>", "", tail)), style))
+    return [(t, s) for t, s in out if t]
+
+
+def hit_test_rects(
+    rects: list[tuple[float, float, float, float, str]], x: float, y: float,
+) -> str | None:
+    """Kembalikan nama pada rect ``(x0, y0, x1, y1, nama)`` yang terkena titik ``(x, y)``."""
+    for x0, y0, x1, y1, name in rects:
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return name
+    return None
+
+
+# Alias nama sektor IDX-IC (Inggris, dipakai grafik rotasi) ke sektor Indonesia (snapshot /scan)
+SECTOR_ALIAS_IDX_IC = {
+    "financials": "keuangan",
+    "energy": "energi",
+    "basic materials": "bahan baku",
+    "industrials": "industri",
+    "consumer cyclicals": "konsumen siklikal",
+    "consumer non-cyclicals": "konsumen primer",
+    "technology": "teknologi",
+    "infrastructures": "infrastruktur",
+    "transportation & logistics": "transportasi",
+    "transportation": "transportasi",
+    "healthcare": "kesehatan",
+    "properties & real estate": "properti",
+    "real estate": "properti",
+    "utilities": "utilitas",
+}
+
+
+def match_sector_option(name: str, options: list[str]) -> str | None:
+    """Cocokkan nama sektor grafik IDX-IC ke opsi filter sinyal (alias, exact, lalu substring)."""
+    n = str(name or "").strip()
+    if not n:
+        return None
+    low = SECTOR_ALIAS_IDX_IC.get(n.lower(), n.lower())
+    for opt in options:
+        if opt == n or opt.lower() == low:
+            return opt
+    for opt in options:
+        o = opt.lower()
+        if low in o or o in low:
+            return opt
+    return None
+
+
 def create_tray_icon_image(size: int = 64) -> Image.Image:
     """Buat ikon baki sistem SahamBot (ikon candlestick & garis tren hijau/biru)."""
     dim = max(16, int(size))
@@ -657,6 +752,10 @@ class SahamBotDesktopApp:
         self._next_auto_ts: float | None = None
         self._ui_state: dict[str, Any] = {}
         self._recent_tickers: list[str] = []
+        self._busy_buttons: dict[str, list[Any]] = {}
+        self._busy_keys: set[str] = set()
+        self._global_busy_buttons: list[Any] = []
+        self._sector_rects: list[tuple[float, float, float, float, str]] = []
 
         # Variabel UI persisten (mendukung profil "desktop" maupun chat_id Telegram)
         self.var_profile = tk.StringVar(value=str(DESKTOP_CHAT_ID))
@@ -973,12 +1072,16 @@ class SahamBotDesktopApp:
             lambda _e: (self._schedule_auto_refresh(), self._save_ui_state()),
         )
 
-        ttk.Button(
+        self.btn_refresh = ttk.Button(
             right_bar, text="↻ Refresh", style="Accent.TButton", command=self.refresh_active_tab,
-        ).pack(side="left", padx=(0, 4))
-        ttk.Button(
+        )
+        self.btn_refresh.pack(side="left", padx=(0, 4))
+        self.btn_all = ttk.Button(
             right_bar, text="Semua Tab", style="Ghost.TButton", command=self.refresh_all,
-        ).pack(side="left")
+        )
+        self.btn_all.pack(side="left")
+        # Kedua tombol topbar ikut menunjukkan estado sibuk saat ada proses berjalan
+        self._global_busy_buttons = [self.btn_refresh, self.btn_all]
         if pystray is not None:
             ttk.Button(
                 right_bar, text="🗗 Ke Tray", style="Ghost.TButton",
@@ -1109,6 +1212,9 @@ class SahamBotDesktopApp:
             self.lbl_status_extra.configure(text="   ".join(parts))
         except Exception:
             pass
+        if self._busy_keys:
+            # animasikan spinner pada tombol yang sedang sibuk
+            self._refresh_busy_ui()
         self._status_after_id = self.root.after(500, self._tick_statusbar)
 
     def _zoom(self, delta: float | None) -> None:
@@ -1173,6 +1279,149 @@ class SahamBotDesktopApp:
         self._save_ui_state()
 
     # ------------------------------------------------------------------
+    # Indikator loading per tombol: tombol menunjukkan prosesnya berjalan
+    # ------------------------------------------------------------------
+
+    def _reg_busy(self, key: str, *buttons: Any) -> None:
+        """Daftarkan tombol yang menunjukkan estado sibuk saat worker ``key`` jalan."""
+        self._busy_buttons.setdefault(key, []).extend(buttons)
+
+    def _apply_btn_busy(self, btn: Any, busy: bool) -> None:
+        if busy:
+            if not hasattr(btn, "_orig_text"):
+                btn._orig_text = str(btn.cget("text"))  # type: ignore[attr-defined]
+            btn.state(["disabled"])
+            btn.configure(text=busy_text(btn._orig_text, self._status_tick))  # type: ignore[attr-defined]
+        else:
+            if hasattr(btn, "_orig_text"):
+                btn.configure(text=btn._orig_text)  # type: ignore[attr-defined]
+                del btn._orig_text  # type: ignore[attr-defined]
+            btn.state(["!disabled"])
+
+    def _refresh_busy_ui(self) -> None:
+        """Segarkan label semua tombol yang terdaftar + tombol global topbar."""
+        for key, buttons in self._busy_buttons.items():
+            busy = key in self._busy_keys
+            for btn in buttons:
+                try:
+                    self._apply_btn_busy(btn, busy)
+                except Exception:
+                    pass
+        any_busy = bool(self._busy_keys)
+        for btn in self._global_busy_buttons:
+            try:
+                self._apply_btn_busy(btn, any_busy)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Teks penjelasan rapi: rich text (heading/warna/bold/italic) + spasi
+    # ------------------------------------------------------------------
+
+    def _rich_tags(self, widget: tk.Text) -> None:
+        widget.tag_configure("heading", foreground=THEME["accent"], font=FONT_UI_BOLD)
+        widget.tag_configure("good", foreground=THEME["green"])
+        widget.tag_configure("bad", foreground=THEME["red"])
+        widget.tag_configure("warn", foreground=THEME["amber"])
+        widget.tag_configure("info", foreground=THEME["accent"])
+        widget.tag_configure("muted", foreground=THEME["dim"])
+        widget.tag_configure("bold", font=FONT_UI_BOLD)
+        widget.tag_configure("italic", font=("Segoe UI", 10, "italic"))
+
+    def _set_rich_text(self, widget: scrolledtext.ScrolledText, content: str) -> None:
+        """Tampilkan teks penjelasan dengan hierarki visual (judul, warna verdict, bold)."""
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        self._rich_tags(widget)
+        inline_tag = {"b": "bold", "i": "italic"}
+        for line in str(content or "").split("\n"):
+            base = classify_line(line)
+            segs = inline_segments(line)
+            if not segs:
+                widget.insert("end", "\n", (base,))
+                continue
+            for text, inline in segs:
+                tags = (base, inline_tag[inline]) if inline else (base,)
+                widget.insert("end", text, tags)
+            widget.insert("end", "\n", (base,))
+        widget.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Semua fitur saling terhubung: lompat lintas tab & klik grafik sektor
+    # ------------------------------------------------------------------
+
+    _TAB_NAMES = (
+        "Pasar & Rezim", "Watchlist", "Sinyal Pasar", "Paket Beli",
+        "Portofolio", "Jurnal", "Cek Emiten", "Alert",
+    )
+
+    def _goto_tab(self, idx: int, refresh: Callable[[], None] | None = None) -> None:
+        """Lompat ke tab ``idx`` (0..7) dan opsional menjalankan refresh-nya."""
+        try:
+            self.notebook.select(idx)
+        except Exception:
+            pass
+        if refresh is not None:
+            try:
+                refresh()
+            except Exception:
+                log.exception("Refresh saat lompat tab gagal")
+        name = self._TAB_NAMES[idx] if 0 <= idx < len(self._TAB_NAMES) else str(idx)
+        self.var_status.set(f"Loncat ke tab {name}.")
+
+    def _on_sector_motion(self, event: tk.Event) -> None:
+        hit = hit_test_rects(self._sector_rects, event.x, event.y)
+        try:
+            self.canvas_sectors.configure(cursor="hand2" if hit else "")
+        except Exception:
+            pass
+
+    def _on_sector_click(self, event: tk.Event) -> None:
+        name = hit_test_rects(self._sector_rects, event.x, event.y)
+        if not name:
+            return
+        options = [str(v) for v in (self.cb_sinyal_sector.cget("values") or [])]
+        match = match_sector_option(name, options)
+        if match and match != "Semua Sektor":
+            self.var_sinyal_sector.set(match)
+            self._goto_tab(2, self.refresh_sinyal)
+            self.var_status.set(
+                f"Sinyal Pasar difilter sektor '{match}' (dari grafik rotasi). "
+                "Pilih 'Semua Sektor' untuk reset."
+            )
+        else:
+            self.var_status.set(
+                f"Sektor '{name}' belum ada di snapshot /scan — jalankan ⚡ Scan BEI lebih dulu."
+            )
+
+    def _cek_goto_sinyal(self) -> None:
+        sym = self.var_cek_ticker.get().strip().upper().replace(".JK", "")
+        if sym:
+            self.var_sinyal_search.set(sym)
+        self._goto_tab(2, self.refresh_sinyal)
+
+    def _watch_goto_sinyal(self, sym: str | None) -> None:
+        if sym:
+            self.var_sinyal_search.set(str(sym).upper())
+        self._goto_tab(2, self.refresh_sinyal)
+
+    def _cek_goto_paket(self) -> None:
+        self._goto_tab(3, self.refresh_paket)
+
+    def _alerts_context_menu(self, event: tk.Event) -> None:
+        iid = self.tree_alerts.identify_row(event.y)
+        if not iid:
+            return
+        self.tree_alerts.selection_set(iid)
+        sym = self._selected_ticker(self.tree_alerts, 2)
+        items: list[tuple[str, Callable[[], None]]] = [
+            ("🔍 Cek Emiten Lengkap", self._alert_open_cek),
+        ]
+        if sym:
+            items.append(("⭐ Tambah ke Watchlist", lambda s=sym: self._add_watchlist(s)))
+        self._show_popup(event, items)
+
+    # ------------------------------------------------------------------
     # Tab 1: Pasar & Rezim + Rotasi Sektor
     # ------------------------------------------------------------------
 
@@ -1184,10 +1433,25 @@ class SahamBotDesktopApp:
             text="Ringkasan Kondisi Pasar BEI, Rezim IHSG, Breadth /scan, Asing & Sentimen",
             bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL_BOLD,
         ).pack(side="left")
-        ttk.Button(
+        # Lompat cepat ke fitur terkait (semua fitur saling terhubung)
+        nav = tk.Frame(ctrl, bg=THEME["bg"])
+        nav.pack(side="right", padx=(0, 8))
+        for label, idx, fn in (
+            ("⭐ Watchlist", 1, self.refresh_watch),
+            ("🎯 Sinyal", 2, self.refresh_sinyal),
+            ("📦 Paket", 3, self.refresh_paket),
+            ("💼 Portofolio", 4, self.refresh_port),
+        ):
+            ttk.Button(
+                nav, text=label, style="Ghost.TButton",
+                command=lambda i=idx, f=fn: self._goto_tab(i, f),
+            ).pack(side="left", padx=(0, 4))
+        btn_market = ttk.Button(
             ctrl, text="↻ Segarkan Pasar & IDX", style="Accent.TButton",
             command=lambda: self.refresh_market(force=True),
-        ).pack(side="right")
+        )
+        btn_market.pack(side="right")
+        self._reg_busy("market", btn_market)
 
         kpi_row = tk.Frame(self.tab_market, bg=THEME["bg"], padx=8)
         kpi_row.pack(fill="x", pady=(0, 8))
@@ -1214,14 +1478,17 @@ class SahamBotDesktopApp:
             highlightthickness=1, padx=10, pady=8,
         )
         tk.Label(
-            left, text="ROTASI SEKTOR BEI (IDX-IC 1 HARI)", bg=THEME["card"],
-            fg=THEME["accent"], font=FONT_SMALL_BOLD, anchor="w",
+            left, text="ROTASI SEKTOR BEI (IDX-IC 1 HARI) — klik bar untuk filter Sinyal Pasar",
+            bg=THEME["card"], fg=THEME["accent"], font=FONT_SMALL_BOLD, anchor="w",
         ).pack(fill="x", pady=(0, 6))
         self.canvas_sectors = tk.Canvas(
             left, bg=THEME["bg_elev"], highlightthickness=0, bd=0,
         )
         self.canvas_sectors.pack(fill="both", expand=True)
         self.canvas_sectors.bind("<Configure>", lambda _e: self._draw_sector_bars())
+        # Klik bar sektor -> lompat ke Sinyal Pasar dengan filter sektor tersebut
+        self.canvas_sectors.bind("<Button-1>", self._on_sector_click)
+        self.canvas_sectors.bind("<Motion>", self._on_sector_motion)
         body.add(left, stretch="always", minsize=420)
 
         right = tk.Frame(
@@ -1242,6 +1509,8 @@ class SahamBotDesktopApp:
             relief="flat",
             padx=10,
             pady=8,
+            spacing1=2,
+            spacing3=5,
         )
         self.txt_market.pack(fill="both", expand=True)
         self.txt_market.configure(state="disabled")
@@ -1379,12 +1648,16 @@ class SahamBotDesktopApp:
         )
         self.sw_quality.pack(side="left", padx=(4, 8))
 
-        ttk.Button(
+        btn_terapkan = ttk.Button(
             bar, text="Terapkan", style="Accent.TButton", command=self.refresh_sinyal,
-        ).pack(side="left", padx=(0, 4))
-        ttk.Button(
+        )
+        btn_terapkan.pack(side="left", padx=(0, 4))
+        btn_scan = ttk.Button(
             bar, text="⚡ Scan BEI (~944)", style="Ghost.TButton", command=self._run_full_scan,
-        ).pack(side="left", padx=(0, 4))
+        )
+        btn_scan.pack(side="left", padx=(0, 4))
+        self._reg_busy("sinyal", btn_terapkan)
+        self._reg_busy("scan", btn_scan)
         ttk.Button(
             bar, text="Ekspor CSV", style="Ghost.TButton", command=self._export_sinyal_csv,
         ).pack(side="right")
@@ -1440,9 +1713,11 @@ class SahamBotDesktopApp:
         cb_max.pack(side="left", padx=(0, 8))
         cb_max.bind("<<ComboboxSelected>>", lambda _e: self.refresh_paket())
 
-        ttk.Button(
+        btn_paket = ttk.Button(
             bar, text="↻ Hitung Ulang Paket", style="Accent.TButton", command=self.refresh_paket,
-        ).pack(side="left", padx=(0, 6))
+        )
+        btn_paket.pack(side="left", padx=(0, 6))
+        self._reg_busy("paket", btn_paket)
         ttk.Button(
             bar, text="📋 Salin Order Stockbit", style="Ghost.TButton", command=self._copy_paket_orders,
         ).pack(side="left", padx=(0, 6))
@@ -1614,9 +1889,11 @@ class SahamBotDesktopApp:
         )
         cb.pack(side="left", padx=(0, 8))
         cb.bind("<<ComboboxSelected>>", lambda _e: self.refresh_jurnal())
-        ttk.Button(
+        btn_jurnal = ttk.Button(
             bar, text="↻ Segarkan Jurnal", style="Accent.TButton", command=self.refresh_jurnal,
-        ).pack(side="left")
+        )
+        btn_jurnal.pack(side="left")
+        self._reg_busy("jurnal", btn_jurnal)
         ttk.Button(
             bar, text="Ekspor Eksekusi CSV", style="Ghost.TButton", command=self._export_jurnal_csv,
         ).pack(side="right")
@@ -1643,6 +1920,8 @@ class SahamBotDesktopApp:
             relief="flat",
             padx=12,
             pady=10,
+            spacing1=2,
+            spacing3=5,
         )
         self.txt_jurnal.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.txt_jurnal.configure(state="disabled")
@@ -1679,14 +1958,23 @@ class SahamBotDesktopApp:
         cb_p.pack(side="left", padx=(0, 8))
         cb_p.bind("<<ComboboxSelected>>", lambda _e: self.refresh_cek())
 
-        ttk.Button(
+        btn_cek = ttk.Button(
             bar, text="🔍 Cek Lengkap", style="Accent.TButton", command=self.refresh_cek,
-        ).pack(side="left", padx=(0, 6))
+        )
+        btn_cek.pack(side="left", padx=(0, 6))
+        self._reg_busy("cek", btn_cek)
         ttk.Button(
             bar, text="+ Watchlist", style="Ghost.TButton", command=self._cek_add_watchlist,
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             bar, text="📋 Salin Order Stockbit", style="Ghost.TButton", command=self._copy_cek_order,
+        ).pack(side="left", padx=(0, 6))
+        # Lompat ke fitur terkait ticker yang sedang dicek
+        ttk.Button(
+            bar, text="→ Sinyal", style="Ghost.TButton", command=self._cek_goto_sinyal,
+        ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bar, text="→ Paket", style="Ghost.TButton", command=self._cek_goto_paket,
         ).pack(side="left", padx=(0, 6))
         ttk.Button(
             bar, text="💾 Simpan Chart PNG", style="Ghost.TButton", command=self._save_cek_chart_png,
@@ -1745,6 +2033,8 @@ class SahamBotDesktopApp:
             relief="flat",
             padx=10,
             pady=8,
+            spacing1=2,
+            spacing3=5,
         )
         self.txt_cek.pack(fill="both", expand=True)
         self.txt_cek.configure(state="disabled")
@@ -1792,6 +2082,7 @@ class SahamBotDesktopApp:
                 ("message", "Detail Kondisi / Trigger", 620, "w", "str"),
             ],
             on_double_click=lambda _e: self._alert_open_cek(),
+            on_right_click=self._alerts_context_menu,
         )
 
     # ------------------------------------------------------------------
@@ -1803,6 +2094,8 @@ class SahamBotDesktopApp:
             self._pending_jobs[key] = (fn, done_event)
             return
         self._busy_flags[key] = True
+        self._busy_keys.add(key)
+        self._refresh_busy_ui()
 
         def _worker() -> None:
             try:
@@ -1832,6 +2125,8 @@ class SahamBotDesktopApp:
 
                 key, ok, data = payload
                 self._busy_flags[key] = False
+                self._busy_keys.discard(key)
+                self._refresh_busy_ui()
                 pending = self._pending_jobs.pop(key, None)
                 if not ok:
                     self.var_status.set(f"[{key}] Gagal memuat: {data}")
@@ -2218,7 +2513,7 @@ class SahamBotDesktopApp:
             "",
         ]
         for n in data.get("condition_notes") or []:
-            lines.append(f"• {_strip_html(n)}")
+            lines.append(f"• {n}")
         lines.append("")
         if news and news.get("n"):
             npct = _safe_float(news.get("pct"), 0.0) or 0.0
@@ -2227,13 +2522,13 @@ class SahamBotDesktopApp:
                 f"(skor {npct:+.0f}%, {news.get('n', 0)} berita)"
             )
             for item in (news.get("details") or [])[:8]:
-                title = _strip_html(item.get("title"))
+                title = item.get("title") or ""
                 st = _news_item_tag(item)
                 lines.append(f"  - [{st}] {title}")
         else:
             lines.append("SENTIMEN BERITA PASAR: tidak tersedia / RSS berita tidak terjangkau.")
 
-        self._set_text(self.txt_market, "\n".join(lines))
+        self._set_rich_text(self.txt_market, "\n".join(lines))
         self.var_status.set(
             f"Pasar diperbarui ({datetime.now().strftime('%H:%M:%S')} WIB) · Rezim {reg_label}"
         )
@@ -2241,6 +2536,7 @@ class SahamBotDesktopApp:
     def _draw_sector_bars(self) -> None:
         cv = self.canvas_sectors
         cv.delete("all")
+        self._sector_rects = []
         w = max(360, cv.winfo_width())
         h = max(260, cv.winfo_height())
 
@@ -2276,7 +2572,8 @@ class SahamBotDesktopApp:
             y0 = top_pad + i * row_h
             ym = y0 + row_h / 2.0
             pct = float(row.get("pct") or 0.0)
-            name = str(row.get("name") or row.get("code") or "-")[:22]
+            full_name = str(row.get("name") or row.get("code") or "-")
+            name = full_name[:22]
             clr = THEME["green"] if pct > 0 else (THEME["red"] if pct < 0 else THEME["muted"])
 
             cv.create_text(8, ym, text=name, anchor="w", fill=THEME["fg"], font=FONT_SMALL)
@@ -2289,6 +2586,8 @@ class SahamBotDesktopApp:
             cv.create_text(
                 w - 10, ym, text=f"{pct:+.2f}%", anchor="e", fill=clr, font=FONT_MONO_BOLD,
             )
+            # rect area klik (label + bar + pct) untuk lompat ke filter sinyal
+            self._sector_rects.append((0.0, float(y0), float(w), float(y0 + row_h), full_name))
 
     def _apply_watch(self, rows: list[dict[str, Any]]) -> None:
         self._last_watch_rows = rows or []
@@ -2667,10 +2966,10 @@ class SahamBotDesktopApp:
                 f"(menang {bench_str})"
             )
             for note in diag.get("notes") or []:
-                sections.append(f"  • {_strip_html(note)}")
+                sections.append(f"  • {note}")
         sections.append("\n--- RIWAYAT EKSEKUSI TERAKHIR ---")
         sections.append(str(data.get("history_text") or "Belum ada eksekusi tercatat."))
-        self._set_text(self.txt_jurnal, _strip_html("\n".join(sections)))
+        self._set_rich_text(self.txt_jurnal, "\n".join(sections))
 
     def _apply_cek(self, data: dict[str, Any]) -> None:
         self._last_cek_detail = data
@@ -2693,7 +2992,7 @@ class SahamBotDesktopApp:
         cek = data.get("cek") or {}
         raw_ps = data.get("powerscore")
         ps = raw_ps if isinstance(raw_ps, dict) else {"rating": str(raw_ps or "-"), "pct": 0}
-        power_text = _strip_html(data.get("power_text") or "")
+        power_text = str(data.get("power_text") or "")
         fund = data.get("fund")
         news = data.get("news") or {}
         plan = data.get("plan") or {}
@@ -2720,9 +3019,9 @@ class SahamBotDesktopApp:
         if data.get("quality_note"):
             lines.append(f"⚠ KUALITAS DATA: {data['quality_note']}")
         for v in cek.get("vetoes") or []:
-            lines.append(f"⛔ VETO VERDICT: {_strip_html(v)}")
+            lines.append(f"⛔ VETO VERDICT: {v}")
         for rsn in cek.get("reasons") or []:
-            lines.append(f"ℹ RINGKASAN VERDICT: {_strip_html(rsn)}")
+            lines.append(f"ℹ RINGKASAN VERDICT: {rsn}")
         lines.append(
             f"=== RENCANA MANUAL STOCKBIT (Modal {_fmt_rp(self._get_modal_rp())} · Periode {data.get('period')}) ==="
         )
@@ -2758,10 +3057,10 @@ class SahamBotDesktopApp:
 
         if cek.get("bull_points"):
             lines.append("\nPRO / PENDUKUNG:")
-            lines.extend(f"  + {_strip_html(p)}" for p in cek["bull_points"])
+            lines.extend(f"  + {p}" for p in cek["bull_points"])
         if cek.get("bear_points"):
             lines.append("RISIKO / CATATAN KRITIS:")
-            lines.extend(f"  - {_strip_html(p)}" for p in cek["bear_points"])
+            lines.extend(f"  - {p}" for p in cek["bear_points"])
 
         if power_text:
             lines.append("\n=== PENILAIAN 3 PIN (POWERSCORE) ===")
@@ -2775,7 +3074,7 @@ class SahamBotDesktopApp:
                 f"Mata uang laporan: {fund.get('currency', 'tidak diketahui')})"
             )
             for note in fund.get("notes") or []:
-                lines.append(f"  • {_strip_html(note)}")
+                lines.append(f"  • {note}")
         else:
             lines.append("Fundamental tidak tersedia dari Yahoo Finance.")
 
@@ -2784,11 +3083,11 @@ class SahamBotDesktopApp:
             npct = _safe_float(news.get("pct"), 0.0) or 0.0
             lines.append(f"Sentimen {news.get('n')} berita: {news.get('label')} ({npct:+.0f}%)")
             for item in (news.get("details") or [])[:6]:
-                lines.append(f"  - [{_news_item_tag(item)}] {_strip_html(item.get('title'))}")
+                lines.append(f"  - [{_news_item_tag(item)}] {item.get('title') or ''}")
         else:
             lines.append("Tidak ada berita terbaru / gagal memuat RSS.")
 
-        self._set_text(self.txt_cek, _strip_html("\n".join(lines)))
+        self._set_rich_text(self.txt_cek, "\n".join(lines))
         self.var_status.set(f"Analisis {sym} selesai · {verdict} ({ps.get('rating', '-')})")
 
     def _resize_chart_preview(self) -> None:
@@ -3081,10 +3380,12 @@ class SahamBotDesktopApp:
         if not iid:
             return
         self.tree_watch.selection_set(iid)
+        sym = self._selected_ticker(self.tree_watch, 0)
         self._show_popup(event, [
             ("🔍 Cek Emiten Lengkap", self._watch_open_cek),
             ("🔔 Atur Alert Harga/Indikator", self._watch_edit_alerts),
             ("💼 Siapkan Catat BELI di Portofolio", self._watch_prefill_buy),
+            ("🎯 Lihat di Sinyal Pasar", lambda: self._watch_goto_sinyal(sym)),
             ("🗑 Hapus dari Watchlist", self._remove_watchlist),
         ])
 
@@ -3097,6 +3398,8 @@ class SahamBotDesktopApp:
         self._show_popup(event, [
             ("🔍 Cek Emiten Lengkap", self._sinyal_open_cek),
             ("⭐ Tambah ke Watchlist", lambda: self._add_watchlist(sym)),
+            ("📦 Buka Paket Beli", lambda: self._goto_tab(3, self.refresh_paket)),
+            ("⭐ Buka Watchlist", lambda: self._goto_tab(1, self.refresh_watch)),
         ])
 
     def _paket_context_menu(self, event: tk.Event) -> None:
@@ -3104,10 +3407,12 @@ class SahamBotDesktopApp:
         if not iid:
             return
         self.tree_paket.selection_set(iid)
+        sym = self._selected_ticker(self.tree_paket, 1)
         self._show_popup(event, [
             ("🔍 Cek Emiten Lengkap", self._paket_open_cek),
             ("💼 Siapkan Catat BELI di Portofolio", self._paket_prefill_buy),
             ("📋 Salin Semua Order Stockbit", self._copy_paket_orders),
+            ("⭐ Tambah ke Watchlist", lambda: self._add_watchlist(sym)),
         ])
 
     def _port_context_menu(self, event: tk.Event) -> None:
@@ -3115,9 +3420,12 @@ class SahamBotDesktopApp:
         if not iid:
             return
         self.tree_port.selection_set(iid)
+        sym = self._selected_ticker(self.tree_port, 0)
         self._show_popup(event, [
             ("🔍 Cek Emiten Lengkap", self._port_open_cek),
             ("💰 Siapkan Form JUAL", self._port_prefill_sell),
+            ("⭐ Tambah ke Watchlist", lambda: self._add_watchlist(sym)),
+            ("🔔 Buka Alert & Riwayat", lambda: self._goto_tab(7)),
         ])
 
     def _copy_text(self, text: str, status_msg: str) -> None:
