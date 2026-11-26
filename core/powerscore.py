@@ -23,6 +23,7 @@ def combine(
     news_pct: float | None,
     *,
     forensic_penalty: float = 0.0,
+    vetoes: list[str] | None = None,
 ) -> dict:
     """Gabungkan komponen yang tersedia dengan bobot dinormalisasi.
 
@@ -58,12 +59,23 @@ def combine(
         rating, emoji = "SELL", "📉"
     else:
         rating, emoji = "STRONG SELL", "🔻"
+
+    active_vetoes = [str(v).strip() for v in (vetoes or []) if str(v).strip()]
+    veto_capped = False
+    trend_lbl = analysis.describe_rating(rating)
+    if active_vetoes and rating in ("STRONG BUY", "BUY"):
+        rating, emoji = "NETRAL", "⚠️"
+        veto_capped = True
+        trend_lbl = f"Dibatasi veto ({active_vetoes[0]})"
+
     return {
         "pct": round(comp),
         "rating": rating,
-        "trend_label": analysis.describe_rating(rating),
+        "trend_label": trend_lbl,
         "disclaimer": SCORE_DISCLAIMER,
         "emoji": emoji,
+        "veto_capped": veto_capped,
+        "veto_reasons": active_vetoes,
         "forensic_penalty": round(pen, 1) if pen else 0,
         "components": {
             "tech_pct": tech_pct,

@@ -436,6 +436,82 @@ def sector_relative_valuation(f: dict | None) -> dict | None:
     return out if ("per_diff_pct" in out or "pbv_diff_pct" in out) else None
 
 
+def analyze_quarterly_trend(f: dict | None) -> dict:
+    """Evaluasi momentum pendapatan & laba 2–4 kuartal terakhir (offline, jujur bila NA)."""
+    raw = f or {}
+    rev_raw = raw.get("rev_trend") or []
+    prof_raw = raw.get("profit_trend") or []
+
+    def _vals(series) -> list[float]:
+        out: list[float] = []
+        for item in series:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                v = _finite_float(item[1])
+                if v is not None:
+                    out.append(v)
+        return out
+
+    revs = _vals(rev_raw)
+    profs = _vals(prof_raw)
+    if len(revs) < 2 and len(profs) < 2:
+        return {
+            "available": False,
+            "flags": [],
+            "strengths": [],
+            "forensic_flags": [],
+            "penalty": 0,
+            "rev_growth_pct": None,
+            "profit_growth_pct": None,
+        }
+
+    flags: list[str] = []
+    strengths: list[str] = []
+    forensic_flags: list[str] = []
+    penalty = 0
+    rev_growth_pct = None
+    profit_growth_pct = None
+
+    if len(profs) >= 2:
+        first_p, last_p = profs[0], profs[-1]
+        if first_p > 0:
+            profit_growth_pct = round((last_p - first_p) / abs(first_p) * 100.0, 1)
+        declines = sum(1 for i in range(1, len(profs)) if profs[i] < profs[i - 1])
+        if last_p < 0:
+            flags.append("Kuartal terakhir mencatat rugi bersih — waspada tren laba memburuk")
+            forensic_flags.append("kuartal_terakhir_rugi")
+            penalty += 20
+        elif declines >= 2 and last_p < first_p:
+            flags.append(f"Laba kuartalan menyusut beruntun ({len(profs)}Q terakhir)")
+            forensic_flags.append("laba_turun_beruntun")
+            penalty += 10
+        elif all(p > 0 for p in profs) and last_p > first_p * 1.05 and profs[-1] >= profs[-2]:
+            pct_str = f" ({profit_growth_pct:+.0f}%)" if profit_growth_pct is not None else ""
+            strengths.append(f"Laba kuartalan tumbuh konsisten{pct_str}")
+
+    if len(revs) >= 2:
+        first_r, last_r = revs[0], revs[-1]
+        if first_r > 0:
+            rev_growth_pct = round((last_r - first_r) / abs(first_r) * 100.0, 1)
+        declines_r = sum(1 for i in range(1, len(revs)) if revs[i] < revs[i - 1])
+        if declines_r >= 2 and last_r < first_r:
+            flags.append(f"Pendapatan kuartalan menyusut beruntun ({len(revs)}Q terakhir)")
+            forensic_flags.append("pendapatan_menyusut")
+            penalty += 5
+        elif all(r > 0 for r in revs) and last_r > first_r * 1.05 and revs[-1] >= revs[-2]:
+            pct_str = f" ({rev_growth_pct:+.0f}%)" if rev_growth_pct is not None else ""
+            strengths.append(f"Pendapatan kuartalan tumbuh konsisten{pct_str}")
+
+    return {
+        "available": True,
+        "flags": flags,
+        "strengths": strengths,
+        "forensic_flags": forensic_flags,
+        "penalty": min(30, penalty),
+        "rev_growth_pct": rev_growth_pct,
+        "profit_growth_pct": profit_growth_pct,
+    }
+
+
 def score_fundamentals(f: dict) -> dict:
     """Skor valuasi -100..+100 lewat poin per aspek (heuristik standar)."""
     points: list[float] = []
@@ -515,7 +591,8 @@ def score_fundamentals(f: dict) -> dict:
 
     base_raw = max(-40, min(40, sum(points))) * 2.5  # skala -100..100
     cf = analyze_cashflow_quality(f)
-    forensic_penalty = int(cf.get("forensic_penalty") or 0)
+    qt = analyze_quarterly_trend(f)
+    forensic_penalty = min(90, int(cf.get("forensic_penalty") or 0) + int(qt.get("penalty") or 0))
     raw = max(-100.0, min(100.0, base_raw - forensic_penalty))
     if raw >= 50:
         label, emoji = "FUNDAMENTAL KUAT", "💪"
@@ -525,8 +602,10 @@ def score_fundamentals(f: dict) -> dict:
         label, emoji = "MIX", "🤷"
     else:
         label, emoji = "LEMAH", "🫤"
-    for flg in cf["flags"]:
+    for flg in cf["flags"] + qt["flags"]:
         verdicts.append(f"⚠️ {flg}")
+    for ok_q in qt["strengths"]:
+        verdicts.append(f"📈 {ok_q}")
     if forensic_penalty > 0:
         verdicts.append(
             f"📉 Penalti forensik kas/neraca: -{forensic_penalty} poin "
@@ -561,8 +640,9 @@ def score_fundamentals(f: dict) -> dict:
         "emoji": emoji,
         "notes": verdicts,
         "forensic": cf,
+        "quarterly": qt,
         "forensic_penalty": forensic_penalty,
-        "forensic_flags": list(cf.get("forensic_flags") or []),
+        "forensic_flags": list(cf.get("forensic_flags") or []) + list(qt.get("forensic_flags") or []),
         "currency": normalize_currency(f.get("currency")),
         "filing_note": filing_note,
         "sector_rel": sector_rel,

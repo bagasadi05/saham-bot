@@ -386,6 +386,16 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
                     elif div.get("kind") == "bullish":
                         detail += " · divergensi RSI bullish"
                         facts.append((1, "Divergensi RSI bullish — tekanan jual mulai mereda."))
+                poc_info = _ana.volume_profile_poc(ind_df)
+                poc_px = _num((poc_info or {}).get("poc"))
+                if poc_px and poc_px > 0 and price and price > 0:
+                    poc_diff = (price - poc_px) / poc_px * 100.0
+                    if poc_diff >= 2.0:
+                        detail += f" · di atas POC {poc_px:,.0f}"
+                        facts.append((1, f"Harga bertahan di atas zona volume tertinggi (POC {poc_px:,.0f})."))
+                    elif poc_diff <= -2.0:
+                        detail += f" · di bawah POC {poc_px:,.0f}"
+                        facts.append((-1, f"Harga masih di bawah zona volume padat (POC {poc_px:,.0f}, resistance atas)."))
             except Exception:
                 pass
         if status == "ok":
@@ -483,6 +493,15 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
                 f" · kinerja harga 20h peers {peer_ret:+.1f}%{sec_tag}"
                 .replace(".", ",")
             )
+        ihsg_ret20 = _num((peers or {}).get("ihsg_ret20d"))
+        stock_ret20 = _num(snap.get("ret20d"))
+        if ihsg_ret20 is not None and stock_ret20 is not None:
+            rs_ihsg = stock_ret20 - ihsg_ret20
+            v_detail += f" · RS vs IHSG 20h {rs_ihsg:+.1f}%".replace(".", ",")
+            if rs_ihsg >= 5.0:
+                facts.append((1, f"Mengungguli IHSG 20 hari terakhir (RS {rs_ihsg:+.1f}%).".replace(".", ",")))
+            elif rs_ihsg <= -5.0:
+                facts.append((-1, f"Tertinggal dari IHSG 20 hari terakhir (RS {rs_ihsg:+.1f}%).".replace(".", ",")))
         if laba_negatif:
             facts.append((-4, "Perusahaan sedang merugi (PER/ROE negatif)."))
         elif roe_tipis:
@@ -597,6 +616,20 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
     for ok_note in cf["strengths"]:
         facts.append((1, ok_note))
 
+    # 6b2. Momentum pertumbuhan pendapatan & laba kuartalan (4Q)
+    qt = fundamental.analyze_quarterly_trend(fund_raw)
+    if qt.get("available"):
+        qt_pen = int(qt.get("penalty") or 0)
+        if qt_pen >= 10:
+            points -= 1
+        elif len(qt.get("strengths") or []) >= 2 and not qt.get("flags"):
+            points += 1
+        for q_flg in qt.get("flags") or []:
+            warnings.append(q_flg)
+            facts.append((-2, q_flg))
+        for q_ok in qt.get("strengths") or []:
+            facts.append((1, q_ok))
+
     # 6c. Kualitas data OHLCV, risiko suspensi & gap ARB
     _collect_data_and_arb_warnings(res, snap, price, warnings, facts)
 
@@ -680,6 +713,7 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         "bull_points": bull_points,
         "bear_points": bear_points,
         "cashflow": cf,
+        "quarterly": qt,
         "missing": missing,
         "warnings": warnings,
     }

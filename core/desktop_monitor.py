@@ -864,6 +864,7 @@ def inspect_ticker_detail(
         base_fund_pct,
         nsent.get("pct") if nsent else None,
         forensic_penalty=forensic_pen,
+        vetoes=cek_res.get("vetoes") if isinstance(cek_res, dict) else None,
     )
     power_text = powerscore.judge(sc["pct"], fund, nsent, snap)
 
