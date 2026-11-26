@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import scrolledtext, ttk
 
 from core import desktop_monitor as dm
-from core.desktop_helpers import _fmt_pct, _fmt_rp, _safe_float
+from core.desktop_helpers import _fmt_pct, _fmt_rp, _safe_float, _safe_int
 from desktop_ui.widgets import FONT_MONO, FONT_SMALL, THEME, _make_kpi_card, _set_kpi
 
 
@@ -69,24 +69,26 @@ class JurnalTabMixin:
         self._run_async("jurnal", lambda: dm.build_journal_summary(cid, limit=lim), "jurnal")
 
     def _apply_jurnal(self, data: dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            data = {}
         self._last_jurnal_res = data
         kpis = data.get("kpis") or {}
         diag = data.get("diag") or {}
 
-        n_exec = kpis.get("n_exec", 0)
+        n_exec = _safe_int(kpis.get("n_exec"))
         _set_kpi(
             self.jk_execs,
             str(n_exec),
             f"BELI {kpis.get('n_buys', 0)} · JUAL {kpis.get('n_sells', 0)}",
         )
-        wr = kpis.get("win_rate_pct")
+        wr = _safe_float(kpis.get("win_rate_pct"))
         _set_kpi(
             self.jk_wr,
             f"{wr:.1f}%" if wr is not None else "-",
             f"{kpis.get('n_closed', 0)} trade tertutup",
             color=THEME["green"] if (wr or 0) >= 50 else THEME["amber"],
         )
-        pf = kpis.get("profit_factor")
+        pf = _safe_float(kpis.get("profit_factor"))
         _set_kpi(
             self.jk_pf,
             f"{pf:.2f}" if pf is not None else "-",
@@ -100,9 +102,9 @@ class JurnalTabMixin:
             "total realisasi bersih",
             color=THEME["green"] if net_rp > 0 else (THEME["red"] if net_rp < 0 else THEME["fg"]),
         )
-        avg_r = kpis.get("avg_r_multiple")
-        alpha = kpis.get("mean_alpha_pct")
-        mae = kpis.get("avg_mae_pct")
+        avg_r = _safe_float(kpis.get("avg_r_multiple"))
+        alpha = _safe_float(kpis.get("mean_alpha_pct"))
+        mae = _safe_float(kpis.get("avg_mae_pct"))
         _set_kpi(
             self.jk_alpha,
             f"{avg_r:+.2f}R" if avg_r is not None else "-",
@@ -112,9 +114,9 @@ class JurnalTabMixin:
 
         sections = [str(data.get("summary_text") or "")]
         if diag and diag.get("n_trades"):
-            avg_r_diag = diag.get("avg_r_multiple")
-            cap_ratio = diag.get("avg_capture_ratio")
-            win_bench = diag.get("win_vs_bench_pct")
+            avg_r_diag = _safe_float(diag.get("avg_r_multiple"))
+            cap_ratio = _safe_float(diag.get("avg_capture_ratio"))
+            win_bench = _safe_float(diag.get("win_vs_bench_pct"))
             r_str = f"{avg_r_diag:+.2f}R" if avg_r_diag is not None else "-"
             cap_str = f"{cap_ratio:.2f}" if cap_ratio is not None else "-"
             bench_str = f"{win_bench:.1f}%" if win_bench is not None else "-"

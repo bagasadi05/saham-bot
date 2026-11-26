@@ -163,6 +163,26 @@ def test_hit_test_rects_dan_match_sector_option():
     assert dh.match_sector_option("", opts) is None
 
 
+def test_safe_int_tidak_pernah_melempar():
+    assert dh._safe_int("5") == 5
+    assert dh._safe_int(3.9) == 3
+    assert dh._safe_int("a") == 0
+    assert dh._safe_int(None) == 0
+    assert dh._safe_int(None, 7) == 7
+    assert dh._safe_int(float("nan"), 2) == 2
+
+
+def test_detect_action_alerts_aman_terhadap_baris_rusak():
+    from core import desktop_monitor as dm
+
+    prev: dict[str, str] = {}
+    # baris tanpa ticker / dengan nilai aneh tidak boleh membuat crash
+    out = dm.detect_action_alerts(prev, [{}], [{"ticker": "BBCA", "thesis": "GUGUR", "data_ok": False}])
+    assert isinstance(out, list)
+    out2 = dm.detect_action_alerts(prev, [{"ticker": "BBCA", "action": "BELI", "price": "abc"}], [])
+    assert isinstance(out2, list) and out2 and out2[0]["ticker"] == "BBCA"
+
+
 def test_format_plan_levels_rencana_beli():
     plan = {
         "ok": True,

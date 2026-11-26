@@ -131,6 +131,8 @@ class PasarTabMixin:
         )
 
     def _apply_market(self, data: dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            data = {}
         self._last_market_pulse = data
         ihsg = data.get("ihsg") or {}
         reg = ihsg.get("regime") or {}
@@ -261,7 +263,7 @@ class PasarTabMixin:
             )
             return
 
-        max_abs = max(max(abs(float(r.get("pct") or 0.0)) for r in rows), 0.5)
+        max_abs = max(max(abs(_safe_float(r.get("pct"), 0.0) or 0.0) for r in rows), 0.5)
         n = len(rows)
         top_pad = 14
         row_h = min(30, max(20, (h - top_pad * 2) // max(n, 1)))
@@ -276,7 +278,7 @@ class PasarTabMixin:
         for i, row in enumerate(rows):
             y0 = top_pad + i * row_h
             ym = y0 + row_h / 2.0
-            pct = float(row.get("pct") or 0.0)
+            pct = _safe_float(row.get("pct"), 0.0) or 0.0
             full_name = str(row.get("name") or row.get("code") or "-")
             name = full_name[:22]
             clr = THEME["green"] if pct > 0 else (THEME["red"] if pct < 0 else THEME["muted"])

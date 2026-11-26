@@ -55,6 +55,7 @@ from core.desktop_helpers import (  # noqa: F401 - re-export untuk kompatibilita
     _news_item_tag,
     _parse_sort_key,
     _safe_float,
+    _safe_int,
     _strip_html,
     busy_text,
     classify_line,

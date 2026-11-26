@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from core import desktop_monitor as dm
-from core.desktop_helpers import _fmt_num, _fmt_pct, _fmt_rp
+from core.desktop_helpers import _fmt_num, _fmt_pct, _fmt_rp, _safe_float
 from desktop_ui.widgets import (
     FONT_SMALL,
     THEME,
@@ -115,14 +115,16 @@ class PaketTabMixin:
         )
 
     def _apply_paket(self, data: dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            data = {}
         self._last_paket_res = data
         plans = data.get("plans") or []
         self._update_tab_badges()
-        scale = float(data.get("scale") or 1.0)
-        modal = float(data.get("modal") or 0.0)
-        alloc = float(data.get("total_alloc_rp") or 0.0)
-        cash_left = float(data.get("cash_left_rp") or 0.0)
-        tot_risk = float(data.get("total_risk_rp") or 0.0)
+        scale = _safe_float(data.get("scale"), 1.0) or 1.0
+        modal = _safe_float(data.get("modal"), 0.0) or 0.0
+        alloc = _safe_float(data.get("total_alloc_rp"), 0.0) or 0.0
+        cash_left = _safe_float(data.get("cash_left_rp"), 0.0) or 0.0
+        tot_risk = _safe_float(data.get("total_risk_rp"), 0.0) or 0.0
 
         _set_kpi(
             self.pk_modal,

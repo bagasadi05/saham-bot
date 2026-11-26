@@ -191,6 +191,8 @@ class CekTabMixin:
                 market_regime=reg,
                 include_bandar=True,
             )
+            if not isinstance(detail, dict):
+                detail = {"ok": False, "reason": "Analisis mengembalikan respons tidak valid.", "ticker": sym}
             chart_path = ""
             res = detail.get("res") or {}
             ind = res.get("ind")
@@ -206,7 +208,7 @@ class CekTabMixin:
                 chart_path = chartmod.build_chart(
                     sym,
                     ind,
-                    float((res.get("score") or {}).get("pct") or 0.0),
+                    _safe_float((res.get("score") or {}).get("pct"), 0.0) or 0.0,
                     out_png,
                     levels=levels or None,
                 )
@@ -216,6 +218,8 @@ class CekTabMixin:
         self._run_async("cek", _work, "cek")
 
     def _apply_cek(self, data: dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            data = {"ok": False, "reason": "Respons analisis tidak valid."}
         self._last_cek_detail = data
         if not data.get("ok"):
             msg = data.get("reason") or "Data emiten tidak tersedia."
@@ -315,10 +319,11 @@ class CekTabMixin:
 
         adv = data.get("advanced") or {}
         adv_lines: list[str] = []
-        if adv.get("rel_pct") is not None:
-            adv_lines.append(f"  • Peringkat Relatif OOS (/scan): persentil {float(adv['rel_pct']):.0f}%")
-        if adv.get("cmf20") is not None:
-            cv = float(adv["cmf20"])
+        rel_pct = _safe_float(adv.get("rel_pct"))
+        if rel_pct is not None:
+            adv_lines.append(f"  • Peringkat Relatif OOS (/scan): persentil {rel_pct:.0f}%")
+        cv = _safe_float(adv.get("cmf20"))
+        if cv is not None:
             c_lbl = "akumulasi" if cv >= 0.12 else ("distribusi" if cv <= -0.12 else "netral")
             adv_lines.append(f"  • Arus Uang CMF20: {cv:+.2f} ({c_lbl})")
         div = adv.get("rsi_divergence")
@@ -332,22 +337,27 @@ class CekTabMixin:
         if adv.get("candle_patterns"):
             adv_lines.append("  • Pola Candle: " + ", ".join(str(p) for p in adv["candle_patterns"]))
         em = adv.get("expected_move")
-        if isinstance(em, dict) and em.get("bands"):
-            b20 = em["bands"].get(20)
-            b5 = em["bands"].get(5)
+        if isinstance(em, dict) and isinstance(em.get("bands"), dict):
+            b20 = em["bands"].get(20) if isinstance(em["bands"].get(20), dict) else None
+            b5 = em["bands"].get(5) if isinstance(em["bands"].get(5), dict) else None
             parts = []
             if b5:
-                parts.append(f"5h {_fmt_num(b5['low'], 0)}–{_fmt_num(b5['high'], 0)} (±{b5['pct']}%)")
+                p5 = _safe_float(b5.get("pct"))
+                parts.append(f"5h {_fmt_num(b5.get('low'), 0)}–{_fmt_num(b5.get('high'), 0)} (±{p5:.1f}%)" if p5 is not None else f"5h {_fmt_num(b5.get('low'), 0)}–{_fmt_num(b5.get('high'), 0)}")
             if b20:
-                parts.append(f"20h {_fmt_num(b20['low'], 0)}–{_fmt_num(b20['high'], 0)} (±{b20['pct']}%)")
+                p20 = _safe_float(b20.get("pct"))
+                parts.append(f"20h {_fmt_num(b20.get('low'), 0)}–{_fmt_num(b20.get('high'), 0)} (±{p20:.1f}%)" if p20 is not None else f"20h {_fmt_num(b20.get('low'), 0)}–{_fmt_num(b20.get('high'), 0)}")
             if parts:
                 adv_lines.append("  • Rentang Gerak ±1σ: " + " | ".join(parts))
         odds = adv.get("tp_sl_odds")
         if isinstance(odds, dict) and odds.get("n"):
+            tp_r = _safe_float(odds.get("tp_rate_pct"))
+            sl_r = _safe_float(odds.get("sl_rate_pct"))
+            to_r = _safe_float(odds.get("timeout_rate_pct"))
             adv_lines.append(
-                f"  • Frekuensi Historis TP vs SL (n={odds['n']}): "
-                f"TP {odds['tp_rate_pct']:.1f}% | SL {odds['sl_rate_pct']:.1f}% | "
-                f"Timeout {odds['timeout_rate_pct']:.1f}%"
+                f"  • Frekuensi Historis TP vs SL (n={odds.get('n')}): "
+                f"TP {_fmt_pct(tp_r)} | SL {_fmt_pct(sl_r)} | "
+                f"Timeout {_fmt_pct(to_r)}"
             )
         if adv_lines:
             lines.append("\n=== SINYAL LANJUTAN & KONTEKS STATISTIK ===")

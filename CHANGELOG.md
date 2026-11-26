@@ -10,6 +10,13 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ## [Unreleased] — 2026-11-26
 
+- **Perbaikan robustness aplikasi Desktop hasil fuzz audit** (10 crash ditemukan & diperbaiki, 2 tes baru → total **983 tes**):
+  - Semua handler render (`_apply_market/_watch/_sinyal/_paket/_port/_jurnal/_cek/_scan_done` di `desktop_ui/tab_*.py`) kini aman terhadap payload `None`/bukan-dict — tidak lagi crash; UI menampilkan "tidak tersedia".
+  - Konversi `float()/int()` pada data eksternal diganti `_safe_float`/`_safe_int` (helper baru di `core/desktop_helpers.py`): grafik sektor (`pct`), KPI Paket/Portofolio/Jurnal (win rate, profit factor, R, alpha, MAE/MFE, batas risiko), `tot_scan`, dan blok sinyal lanjutan di Cek (persentil OOS, CMF20, bands expected-move, frekuensi TP/SL).
+  - `core/desktop_monitor.detect_action_alerts`: baris tanpa `ticker` di-skip (sebelumnya `KeyError`), dan `price` non-numerik tidak lagi crash saat format `Rp`.
+  - `refresh_cek` meng-guard respons non-dict dari `inspect_ticker_detail`.
+  - Diverifikasi dengan fuzz audit GUI sungguhan: 66/66 + 30/30 cek ekstrem lolos tanpa crash.
+
 - **Perbaikan celah teknis pasca-sinkronisasi `ac32797` (Python 3.11, CI headless, modularisasi `desktop_ui/`, warning MA200 & Aturan 5–6 pullback):**
   - **Kompatibilitas Python 3.11 (`core/reports.py`, `core/verdict.py`)**: memindahkan ekspresi `conf_block` & `conds_block` yang mengandung `\n` keluar dari `{...}` f-string agar tidak memicu `SyntaxError` di Python 3.11, ditambah tes regresi AST lintas-repo.
   - **Ekstraksi `core/desktop_helpers.py` & CI headless tanpa `tkinter`**: memisahkan seluruh helper tampilan murni (`_fmt_*`, `spinner_frame`, `countdown_text`, `classify_line`, `inline_segments`, `hit_test_rects`, `format_plan_levels`, `format_pullback_sub`, `create_tray_icon_image`, `record_desktop_execution`) ke modul tanpa `tkinter` (tetap di-re-export dari `desktop.py`), serta membersihkan impor level-modul `desktop` di 4 file tes desktop (`test_desktop_features.py`, `test_desktop_monitor.py`, `test_desktop_ui_state.py`, `test_desktop_ui_ux.py`).

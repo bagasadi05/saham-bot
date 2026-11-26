@@ -625,7 +625,9 @@ def detect_action_alerts(
     alerts: list[dict[str, str]] = []
 
     for r in watch_rows:
-        sym = r["ticker"]
+        sym = r.get("ticker")
+        if not sym:
+            continue
         act = r.get("action") or "TIDAK TERSEDIA"
         if act == "TIDAK TERSEDIA":
             continue
@@ -633,7 +635,7 @@ def detect_action_alerts(
         old = prev_state.get(key)
         prev_state[key] = act
         if old != act and act in ("BELI", "JUAL"):
-            px = r.get("price")
+            px = _num(r.get("price"))
             px_s = f"Rp{px:,.0f}" if px else "-"
             alerts.append({
                 "time": now_str,
@@ -644,7 +646,9 @@ def detect_action_alerts(
             })
 
     for p in port_rows:
-        sym = p["ticker"]
+        sym = p.get("ticker")
+        if not sym:
+            continue
         st = p.get("thesis") or "TIDAK_TERSEDIA"
         if not p.get("data_ok"):
             continue
@@ -652,7 +656,7 @@ def detect_action_alerts(
         old = prev_state.get(key)
         prev_state[key] = st
         if old != st and st in (tesis.GUGUR, tesis.MELEMAH):
-            px = p.get("price")
+            px = _num(p.get("price"))
             px_s = f"Rp{px:,.0f}" if px else "-"
             why = "; ".join((p.get("reasons") or [])[:2])
             alerts.append({

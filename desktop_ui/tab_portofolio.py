@@ -16,6 +16,7 @@ from core.desktop_helpers import (
     _fmt_pct,
     _fmt_rp,
     _safe_float,
+    _safe_int,
     record_desktop_execution,
 )
 from desktop_ui.widgets import (
@@ -139,30 +140,32 @@ class PortofolioTabMixin:
         self._run_async("port", _work, "port")
 
     def _apply_port(self, data: dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            data = {}
         rows = data.get("rows") or []
         summary = data.get("summary") or {}
         self._last_port_rows = rows
         self._last_port_summary = summary
         self._update_tab_badges()
 
-        n_pos = int(summary.get("n_positions") or 0)
-        priced_cnt = int(summary.get("priced_count") or 0)
+        n_pos = _safe_int(summary.get("n_positions"))
+        priced_cnt = _safe_int(summary.get("priced_count"))
         tot_val = summary.get("total_value_rp")
-        tot_cost = float(summary.get("total_cost_rp") or 0.0)
+        tot_cost = _safe_float(summary.get("total_cost_rp"), 0.0) or 0.0
         tot_pnl = summary.get("total_pnl_rp")
         pnl_pct = summary.get("total_pnl_pct")
-        risk_rp = float(summary.get("risk_to_sl_rp") or 0.0)
+        risk_rp = _safe_float(summary.get("risk_to_sl_rp"), 0.0) or 0.0
         risk_pct = summary.get("risk_to_sl_pct")
         var95 = summary.get("var95_rp")
         es95 = summary.get("es95_rp")
-        pos_lim = float(
+        pos_lim = _safe_float(
             summary.get("max_pos_limit_pct")
-            or ((summary.get("max_pos_pct") or 0.2) * 100.0)
-        )
-        sec_lim = float(
+            or ((summary.get("max_pos_pct") or 0.2) * 100.0), 20.0,
+        ) or 20.0
+        sec_lim = _safe_float(
             summary.get("max_sec_limit_pct")
-            or ((summary.get("max_sector_pct") or 0.4) * 100.0)
-        )
+            or ((summary.get("max_sector_pct") or 0.4) * 100.0), 40.0,
+        ) or 40.0
 
         val_txt = "tidak tersedia" if (n_pos > 0 and priced_cnt == 0) else _fmt_rp(tot_val)
         _set_kpi(
@@ -173,7 +176,7 @@ class PortofolioTabMixin:
         if tot_pnl is None:
             _set_kpi(self.pt_pnl, "tidak tersedia" if n_pos > 0 else "-", "harga pasar belum tersedia", color=THEME["muted"])
         else:
-            pnl_v = float(tot_pnl)
+            pnl_v = _safe_float(tot_pnl, 0.0) or 0.0
             pnl_clr = THEME["green"] if pnl_v > 0 else (THEME["red"] if pnl_v < 0 else THEME["fg"])
             _set_kpi(self.pt_pnl, _fmt_rp(pnl_v), f"{_fmt_arrow_pct(pnl_pct)}", color=pnl_clr)
         _set_kpi(

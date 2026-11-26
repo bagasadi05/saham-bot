@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from core import desktop_monitor as dm
-from core.desktop_helpers import _fmt_arrow_pct, _fmt_num, _safe_float
+from core.desktop_helpers import _fmt_arrow_pct, _fmt_num, _safe_float, _safe_int
 from desktop_ui.widgets import (
     FONT_SMALL,
     FONT_SMALL_BOLD,
@@ -151,7 +151,9 @@ class SinyalTabMixin:
         self._run_async("scan", lambda: dm.run_full_market_scan(force=True), "scan")
 
     def _apply_scan_done(self, res: dict[str, Any]) -> None:
-        cnt = res.get("count") or res.get("scanned") or 0
+        if not isinstance(res, dict):
+            res = {}
+        cnt = _safe_int(res.get("count") or res.get("scanned"))
         self.var_status.set(f"Scan BEI selesai ({cnt} emiten diproses). Memperbarui Sinyal, Paket & Pasar...")
         if self.var_toast.get():
             send_windows_toast("Scan BEI Selesai", "Snapshot sinyal & breadth pasar telah diperbarui.")
@@ -160,6 +162,8 @@ class SinyalTabMixin:
         self.refresh_market()
 
     def _apply_sinyal(self, data: dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            data = {}
         rows = data.get("rows") or []
         self._last_sinyal_rows = rows
         self._update_tab_badges()
@@ -168,7 +172,7 @@ class SinyalTabMixin:
         sectors = ["Semua Sektor"] + list(data.get("sectors") or [])
         self.cb_sinyal_sector.configure(values=sectors)
 
-        tot_scan = sum(int(v or 0) for v in counts.values()) or len(rows)
+        tot_scan = sum(_safe_int(v) for v in counts.values()) or len(rows)
         _set_kpi(
             self.sk_scan_date,
             str(meta.get("trade_date") or "-"),

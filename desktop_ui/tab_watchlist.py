@@ -118,7 +118,9 @@ class WatchlistTabMixin:
         )
 
     def _apply_watch(self, rows: list[dict[str, Any]]) -> None:
-        self._last_watch_rows = rows or []
+        if not isinstance(rows, list):
+            rows = []
+        self._last_watch_rows = rows
         self._render_watch_table()
         self._update_tab_badges()
         self._rebuild_quick_chips()

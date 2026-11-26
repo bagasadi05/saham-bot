@@ -140,6 +140,14 @@ def _safe_float(value: Any, default: float | None = None) -> float | None:
         return default
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Konversi aman ke int (``"a"``/``None`` → ``default``), tidak pernah melempar."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_sort_key(raw: str, kind: str) -> tuple[int, Any]:
     """Konversi string sel Treeview menjadi kunci pengurutan yang konsisten."""
     txt = str(raw or "").strip()
