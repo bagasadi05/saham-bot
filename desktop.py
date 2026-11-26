@@ -99,6 +99,7 @@ from desktop_ui.widgets import (  # noqa: F401 - re-export untuk kompatibilitas 
     _populate_tree,
     _set_kpi,
     _sort_treeview,
+    attach_tooltip,
     send_windows_toast,
 )
 
@@ -336,6 +337,15 @@ class SahamBotDesktopApp(
             foreground=THEME["fg"],
             arrowcolor=THEME["accent"],
             bordercolor=THEME["border"],
+            selectbackground=THEME["card"],
+            selectforeground=THEME["fg"],
+        )
+        style.map(
+            "Dark.TCombobox",
+            fieldbackground=[("readonly", THEME["card"])],
+            foreground=[("readonly", THEME["fg"])],
+            selectbackground=[("readonly", THEME["card"])],
+            selectforeground=[("readonly", THEME["fg"])],
         )
         self.root.option_add("*TCombobox*Listbox.background", THEME["card"])
         self.root.option_add("*TCombobox*Listbox.foreground", THEME["fg"])
@@ -367,18 +377,21 @@ class SahamBotDesktopApp(
         )
 
     def _build_layout(self) -> None:
-        # ---- Top Command Bar ----
+        # ---- Top Command Bar (2 baris agar tidak terpotong di layar sempit) ----
         topbar = tk.Frame(
             self.root,
             bg=THEME["bg_elev"],
             highlightbackground=THEME["border"],
             highlightthickness=1,
             padx=12,
-            pady=8,
+            pady=6,
         )
         topbar.pack(fill="x")
 
-        brand = tk.Frame(topbar, bg=THEME["bg_elev"])
+        top_row1 = tk.Frame(topbar, bg=THEME["bg_elev"])
+        top_row1.pack(fill="x", pady=(0, 6))
+
+        brand = tk.Frame(top_row1, bg=THEME["bg_elev"])
         brand.pack(side="left")
         tk.Label(
             brand, text="SAHAMBOT", bg=THEME["bg_elev"], fg=THEME["accent"],
@@ -390,7 +403,7 @@ class SahamBotDesktopApp(
         ).pack(side="left", padx=(2, 12))
 
         self.lbl_regime = tk.Label(
-            topbar,
+            top_row1,
             textvariable=self.var_regime_badge,
             bg=THEME["card"],
             fg=THEME["fg"],
@@ -404,7 +417,7 @@ class SahamBotDesktopApp(
 
         # Jam WIB live + status bursa (BUKA/TUTUP)
         self.lbl_clock = tk.Label(
-            topbar,
+            top_row1,
             text="--:--:-- WIB",
             bg=THEME["card"],
             fg=THEME["dim"],
@@ -414,11 +427,11 @@ class SahamBotDesktopApp(
             highlightbackground=THEME["border"],
             highlightthickness=1,
         )
-        self.lbl_clock.pack(side="left", padx=(0, 12))
+        self.lbl_clock.pack(side="right")
 
-        # Kontrol kanan topbar
+        # Baris 2: Kontrol Profil, Modal, Switch & Tombol Aksi
         right_bar = tk.Frame(topbar, bg=THEME["bg_elev"])
-        right_bar.pack(side="right")
+        right_bar.pack(fill="x")
 
         tk.Label(
             right_bar, text="Profil:", bg=THEME["bg_elev"], fg=THEME["muted"], font=FONT_SMALL,
@@ -433,8 +446,14 @@ class SahamBotDesktopApp(
         ent_modal = self._entry(right_bar, self.var_modal, width=12)
         ent_modal.pack(side="left", padx=(0, 4))
         ent_modal.bind("<Return>", lambda _e: self._save_profile())
-        ttk.Button(right_bar, text="Simpan", style="Ghost.TButton", command=self._save_profile).pack(
-            side="left", padx=(0, 8),
+        btn_simpan = ttk.Button(
+            right_bar, text="Simpan", style="Ghost.TButton", command=self._save_profile,
+        )
+        btn_simpan.pack(side="left", padx=(0, 8))
+        attach_tooltip(btn_simpan, "Simpan profil & modal ke database lokal (Enter pada input)")
+
+        tk.Frame(right_bar, bg=THEME["border"], width=1, height=22).pack(
+            side="left", padx=(0, 8), fill="y",
         )
 
         self.sw_syariah = Switch(
@@ -446,6 +465,7 @@ class SahamBotDesktopApp(
             bg=THEME["bg_elev"],
         )
         self.sw_syariah.pack(side="left", padx=(0, 8))
+        attach_tooltip(self.sw_syariah, "Saring Watchlist, Sinyal & Paket hanya saham syariah (DES OJK)")
 
         self.sw_toast = Switch(
             right_bar,
@@ -456,6 +476,7 @@ class SahamBotDesktopApp(
             bg=THEME["bg_elev"],
         )
         self.sw_toast.pack(side="left", padx=(0, 8))
+        attach_tooltip(self.sw_toast, "Tampilkan notifikasi Windows saat ada sinyal BUY/JUAL atau perubahan tesis")
 
         tk.Label(
             right_bar, text="Auto:", bg=THEME["bg_elev"], fg=THEME["muted"], font=FONT_SMALL,
@@ -473,22 +494,37 @@ class SahamBotDesktopApp(
             "<<ComboboxSelected>>",
             lambda _e: (self._schedule_auto_refresh(), self._save_ui_state()),
         )
+        attach_tooltip(cb_auto, "Interval auto-refresh Watchlist & Portofolio di background")
+
+        tk.Frame(right_bar, bg=THEME["border"], width=1, height=22).pack(
+            side="left", padx=(0, 8), fill="y",
+        )
 
         self.btn_refresh = ttk.Button(
             right_bar, text="↻ Refresh", style="Accent.TButton", command=self.refresh_active_tab,
         )
         self.btn_refresh.pack(side="left", padx=(0, 4))
+        attach_tooltip(self.btn_refresh, "Segarkan tab yang sedang dibuka (F5 / Ctrl+R)")
         self.btn_all = ttk.Button(
             right_bar, text="Semua Tab", style="Ghost.TButton", command=self.refresh_all,
         )
         self.btn_all.pack(side="left")
+        attach_tooltip(self.btn_all, "Segarkan Pasar, Watchlist, Sinyal, Paket, Portofolio & Jurnal")
         # Kedua tombol topbar ikut menunjukkan estado sibuk saat ada proses berjalan
         self._global_busy_buttons = [self.btn_refresh, self.btn_all]
         if pystray is not None:
-            ttk.Button(
+            btn_tray = ttk.Button(
                 right_bar, text="🗗 Ke Tray", style="Ghost.TButton",
                 command=self._on_close_or_tray,
-            ).pack(side="left", padx=(4, 0))
+            )
+            btn_tray.pack(side="left", padx=(4, 0))
+            attach_tooltip(btn_tray, "Sembunyikan ke System Tray (tetap memantau di background)")
+        btn_help = ttk.Button(
+            right_bar, text="?", width=3, style="Ghost.TButton",
+            command=self._open_shortcut_dialog,
+        )
+        btn_help.pack(side="left", padx=(4, 0))
+        attach_tooltip(btn_help, "Panduan pintasan keyboard & tips cepat (F1)")
 
         # ---- Main Notebook (8 Tab) ----
         self.notebook = ttk.Notebook(self.root)
@@ -553,18 +589,17 @@ class SahamBotDesktopApp(
         tk.Label(
             footer,
             text=(
-                "Data ±15 menit delay · Tidak ada janji untung · "
-                "Eksekusi manual di Stockbit (tanpa auto-trading) · "
-                "Pintasan: F5/Ctrl+R Refresh | Ctrl+F Cari | Ctrl+K Cek Emiten | "
-                "Ctrl+1..8 Tab | Ctrl +/- Zoom | Ctrl+0 Reset"
+                "Data ±15 menit delay · Tanpa auto-trading (eksekusi manual di Stockbit) · "
+                "F1: Pintasan Keyboard"
             ),
             bg=THEME["bg_elev"],
             fg=THEME["dim"],
-            font=("Segoe UI", 8),
+            font=FONT_SMALL,
             anchor="e",
         ).pack(side="right")
 
     def _bind_shortcuts(self) -> None:
+        self.root.bind("<F1>", lambda _e: self._open_shortcut_dialog())
         self.root.bind("<F5>", lambda _e: self.refresh_active_tab())
         self.root.bind("<Control-r>", lambda _e: self.refresh_active_tab())
         self.root.bind("<Control-R>", lambda _e: self.refresh_active_tab())
@@ -579,6 +614,51 @@ class SahamBotDesktopApp(
         self.root.bind("<Control-plus>", lambda _e: self._zoom(0.1))
         self.root.bind("<Control-minus>", lambda _e: self._zoom(-0.1))
         self.root.bind("<Control-Key-0>", lambda _e: self._zoom(None))
+
+    def _open_shortcut_dialog(self) -> None:
+        """Tampilkan dialog ringkas pintasan keyboard & panduan navigasi."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Pintasan Keyboard & Panduan Cepat")
+        dlg.configure(bg=THEME["bg"])
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        _enable_dark_titlebar(dlg)
+
+        box = tk.Frame(dlg, bg=THEME["bg"], padx=18, pady=14)
+        box.pack(fill="both", expand=True)
+        tk.Label(
+            box, text="PINTASAN KEYBOARD SAHAMBOT",
+            bg=THEME["bg"], fg=THEME["accent"], font=FONT_UI_BOLD,
+        ).pack(anchor="w", pady=(0, 8))
+
+        shortcuts = [
+            ("F5 / Ctrl+R", "Segarkan tab yang sedang aktif"),
+            ("Ctrl+K", "Fokus ke input Cek Emiten (Tab 7)"),
+            ("Ctrl+F", "Fokus ke kotak pencarian pada tab aktif"),
+            ("Ctrl+1 .. 8", "Pindah cepat ke tab 1 sampai 8"),
+            ("Ctrl + / -", "Perbesar / perkecil ukuran huruf"),
+            ("Ctrl+0", "Reset ukuran huruf ke 100%"),
+            ("Space / Enter", "Toggle Switch (saat fokus) atau jalankan input"),
+            ("Delete", "Hapus emiten terpilih di Watchlist"),
+            ("Klik Ganda", "Buka detail Cek Emiten dari baris tabel"),
+            ("Klik Kanan", "Menu aksi cepat pada baris tabel"),
+            ("F1", "Buka dialog pintasan ini"),
+        ]
+        grid = tk.Frame(box, bg=THEME["card"], highlightbackground=THEME["border"], highlightthickness=1, padx=12, pady=10)
+        grid.pack(fill="x", pady=(0, 12))
+        for idx, (key, desc) in enumerate(shortcuts):
+            tk.Label(
+                grid, text=key, bg=THEME["card"], fg=THEME["accent"],
+                font=FONT_MONO_BOLD, width=16, anchor="w",
+            ).grid(row=idx, column=0, sticky="w", pady=2)
+            tk.Label(
+                grid, text=desc, bg=THEME["card"], fg=THEME["fg"],
+                font=FONT_SMALL, anchor="w",
+            ).grid(row=idx, column=1, sticky="w", padx=(10, 0), pady=2)
+
+        ttk.Button(box, text="Tutup (Esc)", style="Accent.TButton", command=dlg.destroy).pack(anchor="e")
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.focus_set()
 
     def _tick_clock(self) -> None:
         """Perbarui label jam WIB + status bursa setiap 1 detik."""

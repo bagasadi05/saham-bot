@@ -262,7 +262,12 @@ class CekTabMixin:
             f"PowerScore: {ps.get('rating', '-')} ({ps_pct:.0f}%)"
         )
         self.lbl_cek_header.configure(text=header_txt, fg=v_clr)
-        self._set_plan_cards(format_plan_levels(plan), pullback_sub=format_pullback_sub(plan))
+        plan_reason = None if plan.get("ok") else (plan.get("reason") or "tidak cukup modal / ditolak batas risiko")
+        self._set_plan_cards(
+            format_plan_levels(plan),
+            pullback_sub=format_pullback_sub(plan),
+            plan_reason=plan_reason,
+        )
         self._resize_chart_preview()
 
         lines: list[str] = []
@@ -417,14 +422,25 @@ class CekTabMixin:
                     pass
             self._chart_after_id = self.root.after(120, self._resize_chart_preview)
 
-    def _set_plan_cards(self, levels: dict[str, str], pullback_sub: str | None = None) -> None:
+    def _set_plan_cards(
+        self,
+        levels: dict[str, str],
+        pullback_sub: str | None = None,
+        plan_reason: str | None = None,
+    ) -> None:
         """Tampilkan kartu ringkasan rencana beli (Entry/SL/TP/Lot/Biaya/Risiko) di tab Cek."""
         get = levels.get
         entry_sub = pullback_sub if pullback_sub else f"pullback {get('pullback', '-')}"
         _set_kpi(self.pc_entry, get("entry", "-"), entry_sub, color=THEME["accent"])
         _set_kpi(self.pc_sl, get("sl", "-"), "batas rugi jika harga turun ke SL", color=THEME["red"])
         _set_kpi(self.pc_tp, get("tp", "-"), "target ambil untung (TP)", color=THEME["green"])
-        _set_kpi(self.pc_lots, get("lots", "-"), "1 lot = 100 saham", color=THEME["fg"])
+        lot_sub = (plan_reason[:48] + "…") if (plan_reason and len(plan_reason) > 48) else (plan_reason or "1 lot = 100 saham")
+        _set_kpi(
+            self.pc_lots,
+            get("lots", "-"),
+            lot_sub,
+            color=THEME["amber"] if plan_reason else THEME["fg"],
+        )
         _set_kpi(self.pc_cost, get("cost", "-"), "entry × lot × 100", color=THEME["fg"])
         _set_kpi(self.pc_risk, get("risk", "-"), "kehilangan maks bila SL tersentuh", color=THEME["amber"])
 

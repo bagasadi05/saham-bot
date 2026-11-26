@@ -36,10 +36,10 @@ class PortofolioTabMixin:
         kpi.pack(fill="x")
         for c in range(4):
             kpi.columnconfigure(c, weight=1, uniform="prkpi")
-        self.pt_val = _make_kpi_card(kpi, "Nilai Pasar / Cost")
-        self.pt_pnl = _make_kpi_card(kpi, "PnL Belum Realisasi")
-        self.pt_sl = _make_kpi_card(kpi, "Risiko ke Stop-Loss")
-        self.pt_var = _make_kpi_card(kpi, "VaR 95% / Batas Risiko")
+        self.pt_val = _make_kpi_card(kpi, "Nilai Pasar / Cost", tooltip="Total nilai pasar posisi terbuka dibanding modal beli rata-rata")
+        self.pt_pnl = _make_kpi_card(kpi, "PnL Belum Realisasi", tooltip="Estimasi untung/rugi bersih posisi terbuka setelah fee jual 0,25%")
+        self.pt_sl = _make_kpi_card(kpi, "Risiko ke Stop-Loss", tooltip="Total potensi rugi jika seluruh posisi menyentuh SL efektif")
+        self.pt_var = _make_kpi_card(kpi, "VaR 95% / Batas Risiko", tooltip="Historical Value-at-Risk 95% (1 hari) & batas alokasi posisi/sektor")
         for idx, c in enumerate((self.pt_val, self.pt_pnl, self.pt_sl, self.pt_var)):
             c["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
 
@@ -242,7 +242,11 @@ class PortofolioTabMixin:
             if "GUGUR" in thesis or "MELEMAH" in thesis:
                 self._push_alert("Exit / Tesis", str(r.get("ticker", "")), f"Tesis {thesis}: {reasons_txt}")
 
-        _populate_tree(self.tree_port, table_rows)
+        _populate_tree(
+            self.tree_port,
+            table_rows,
+            empty_text="Belum ada posisi terbuka di profil ini.\nGunakan form di atas untuk mencatat eksekusi BELI manual dari Stockbit.",
+        )
         self._rebuild_quick_chips()
 
     def _port_open_cek(self) -> None:

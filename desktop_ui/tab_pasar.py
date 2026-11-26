@@ -62,11 +62,11 @@ class PasarTabMixin:
         for c in range(5):
             kpi_row.columnconfigure(c, weight=1, uniform="mkpi")
 
-        self.mk_ihsg = _make_kpi_card(kpi_row, "IHSG (^JKSE)")
-        self.mk_regime = _make_kpi_card(kpi_row, "Rezim & Skala")
-        self.mk_breadth = _make_kpi_card(kpi_row, "Breadth /scan")
-        self.mk_foreign = _make_kpi_card(kpi_row, "Aliran Asing BEI")
-        self.mk_cond = _make_kpi_card(kpi_row, "Kondisi & Kesegaran")
+        self.mk_ihsg = _make_kpi_card(kpi_row, "IHSG (^JKSE)", tooltip="Penutupan terakhir IHSG & perubahan 1 hari / 20 hari")
+        self.mk_regime = _make_kpi_card(kpi_row, "Rezim & Skala", tooltip="Rezim tren kausal IHSG (SMA50 vs SMA200) & skala risiko posisi")
+        self.mk_breadth = _make_kpi_card(kpi_row, "Breadth /scan", tooltip="Persentase saham yang naik vs turun serta di atas MA50/MA200 dari snapshot /scan")
+        self.mk_foreign = _make_kpi_card(kpi_row, "Aliran Asing BEI", tooltip="Net beli/jual investor asing dari ringkasan perdagangan idx.co.id")
+        self.mk_cond = _make_kpi_card(kpi_row, "Kondisi & Kesegaran", tooltip="Sintesis kondisi pasar & waktu pembaruan terakhir")
         for idx, card in enumerate(
             (self.mk_ihsg, self.mk_regime, self.mk_breadth, self.mk_foreign, self.mk_cond)
         ):

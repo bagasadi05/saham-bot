@@ -52,10 +52,10 @@ class PaketTabMixin:
         kpi.pack(fill="x", pady=(0, 8))
         for c in range(4):
             kpi.columnconfigure(c, weight=1, uniform="pkpi")
-        self.pk_modal = _make_kpi_card(kpi, "Modal & Skala Rezim")
-        self.pk_alloc = _make_kpi_card(kpi, "Total Alokasi Paket")
-        self.pk_cash = _make_kpi_card(kpi, "Sisa Kas")
-        self.pk_risk = _make_kpi_card(kpi, "Total Risiko ke SL")
+        self.pk_modal = _make_kpi_card(kpi, "Modal & Skala Rezim", tooltip="Modal aktif dan faktor pengali eksposur berdasar rezim IHSG")
+        self.pk_alloc = _make_kpi_card(kpi, "Total Alokasi Paket", tooltip="Total estimasi biaya beli seluruh kandidat paket + fee broker")
+        self.pk_cash = _make_kpi_card(kpi, "Sisa Kas", tooltip="Sisa dana tunai yang tidak dialokasikan")
+        self.pk_risk = _make_kpi_card(kpi, "Total Risiko ke SL", tooltip="Estimasi rugi maksimal bila seluruh posisi paket menyentuh Stop-Loss")
         for idx, c in enumerate((self.pk_modal, self.pk_alloc, self.pk_cash, self.pk_risk)):
             c["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
 
@@ -168,7 +168,11 @@ class PaketTabMixin:
                 ),
                 tone,
             ))
-        _populate_tree(self.tree_paket, table_rows)
+        empty_msg = (
+            data.get("reason")
+            or "Belum ada paket beli yang lolos saringan.\nJalankan '⚡ Scan BEI (~944)' di tab Sinyal Pasar atau klik '↻ Hitung Ulang Paket'."
+        )
+        _populate_tree(self.tree_paket, table_rows, empty_text=empty_msg)
 
         rej = data.get("rejected") or {}
         if not data.get("ok"):

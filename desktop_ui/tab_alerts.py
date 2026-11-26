@@ -103,7 +103,11 @@ class AlertsTabMixin:
                 (a.get("time", ""), cat, a.get("ticker", ""), a.get("message", "")),
                 tone,
             ))
-        _populate_tree(self.tree_alerts, table_rows)
+        empty_msg = (
+            "Belum ada alert yang terpicu pada sesi ini.\n"
+            "Alert akan muncul otomatis saat sinyal Watchlist berubah atau tesis Portofolio menjadi GUGUR/MELEMAH."
+        )
+        _populate_tree(self.tree_alerts, table_rows, empty_text=empty_msg)
 
     def _copy_alerts_text(self) -> None:
         lines = [

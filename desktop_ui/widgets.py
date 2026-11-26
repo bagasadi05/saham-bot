@@ -131,18 +131,30 @@ class Switch(tk.Canvas):
         except Exception:
             txt_w = len(text) * 8 if text else 0
         width = self._track_w + (16 + txt_w if text else 4)
+        self._focused = False
         super().__init__(
             master,
             width=max(self._track_w, width),
             height=26,
             bg=bg,
-            highlightthickness=0,
+            highlightthickness=1,
+            highlightbackground=bg,
+            highlightcolor=THEME["accent"],
+            takefocus=1,
             bd=0,
             cursor="hand2",
         )
         self.bind("<Button-1>", self._toggle)
+        self.bind("<space>", self._toggle)
+        self.bind("<Return>", self._toggle)
+        self.bind("<FocusIn>", lambda _e: self._set_focus(True))
+        self.bind("<FocusOut>", lambda _e: self._set_focus(False))
         self._trace_id = self._var.trace_add("write", lambda *_: self._redraw())
         self.bind("<Destroy>", self._on_destroy, add="+")
+        self._redraw()
+
+    def _set_focus(self, focused: bool) -> None:
+        self._focused = focused
         self._redraw()
 
     def _on_destroy(self, _event: tk.Event) -> None:
@@ -189,37 +201,127 @@ class Switch(tk.Canvas):
             )
 
 
+class Tooltip:
+    """Tooltip hover ringan dengan jeda 350ms agar UI tetap bersih & informatif."""
+
+    def __init__(self, widget: tk.Misc, text: str, *, delay_ms: int = 350) -> None:
+        self._widget = widget
+        self._text = text
+        self._delay_ms = delay_ms
+        self._after_id: str | None = None
+        self._tip: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def _schedule(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        self._after_id = self._widget.after(self._delay_ms, self._show)
+
+    def _cancel(self) -> None:
+        if self._after_id is not None:
+            try:
+                self._widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._tip is not None or not self._text:
+            return
+        try:
+            x = self._widget.winfo_rootx() + 12
+            y = self._widget.winfo_rooty() + self._widget.winfo_height() + 6
+            scr_w = self._widget.winfo_screenwidth()
+            scr_h = self._widget.winfo_screenheight()
+            tip = tk.Toplevel(self._widget)
+            tip.wm_overrideredirect(True)
+            tip.configure(bg=THEME["border"])
+            lbl = tk.Label(
+                tip,
+                text=self._text,
+                justify="left",
+                wraplength=320,
+                bg=THEME["bg_elev"],
+                fg=THEME["fg"],
+                font=FONT_SMALL,
+                padx=10,
+                pady=6,
+            )
+            lbl.pack(padx=1, pady=1)
+            tip.update_idletasks()
+            tw = tip.winfo_reqwidth()
+            th = tip.winfo_reqheight()
+            if x + tw > scr_w - 12:
+                x = max(8, scr_w - tw - 12)
+            if y + th > scr_h - 12:
+                y = max(8, self._widget.winfo_rooty() - th - 6)
+            tip.wm_geometry(f"+{x}+{y}")
+            self._tip = tip
+        except Exception:
+            self._tip = None
+
+    def _hide(self, _event: tk.Event | None = None) -> None:
+        self._cancel()
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
+
+
+def attach_tooltip(widget: tk.Misc, text: str) -> Tooltip:
+    """Pasang tooltip penjelas pada widget interaktif atau kartu KPI."""
+    return Tooltip(widget, text)
+
+
 def _make_kpi_card(
     parent: tk.Misc,
     title: str,
     default_val: str = "-",
     default_sub: str = "",
+    *,
+    tooltip: str = "",
 ) -> dict[str, Any]:
-    """Bangun kartu KPI ringkas dengan angka tabular & keterangan sekunder."""
+    """Bangun kartu KPI ringkas dengan aksen atas, angka tabular & keterangan sekunder."""
     frame = tk.Frame(
         parent,
         bg=THEME["card"],
         highlightbackground=THEME["border"],
         highlightthickness=1,
-        padx=12,
-        pady=9,
     )
+    accent_bar = tk.Frame(frame, bg=THEME["border"], height=3)
+    accent_bar.pack(fill="x", side="top")
+    inner = tk.Frame(frame, bg=THEME["card"], padx=12, pady=8)
+    inner.pack(fill="both", expand=True)
     lbl_title = tk.Label(
-        frame, text=title.upper(), bg=THEME["card"], fg=THEME["muted"],
+        inner, text=title.upper(), bg=THEME["card"], fg=THEME["muted"],
         font=("Segoe UI", 8, "bold"), anchor="w",
     )
     lbl_title.pack(fill="x")
     lbl_val = tk.Label(
-        frame, text=default_val, bg=THEME["card"], fg=THEME["fg"],
+        inner, text=default_val, bg=THEME["card"], fg=THEME["fg"],
         font=FONT_KPI, anchor="w",
     )
     lbl_val.pack(fill="x", pady=(3, 1))
     lbl_sub = tk.Label(
-        frame, text=default_sub, bg=THEME["card"], fg=THEME["dim"],
+        inner, text=default_sub, bg=THEME["card"], fg=THEME["dim"],
         font=FONT_SMALL, anchor="w",
     )
     lbl_sub.pack(fill="x")
-    return {"frame": frame, "title": lbl_title, "val": lbl_val, "sub": lbl_sub}
+    if tooltip:
+        for w in (frame, inner, lbl_title, lbl_val, lbl_sub):
+            attach_tooltip(w, tooltip)
+    return {
+        "frame": frame,
+        "accent_bar": accent_bar,
+        "title": lbl_title,
+        "val": lbl_val,
+        "sub": lbl_sub,
+    }
 
 
 def _set_kpi(
@@ -229,9 +331,14 @@ def _set_kpi(
     *,
     color: str = THEME["fg"],
     sub_color: str = THEME["muted"],
+    accent: str | None = None,
 ) -> None:
     card["val"].configure(text=val, fg=color)
     card["sub"].configure(text=sub, fg=sub_color)
+    bar = card.get("accent_bar")
+    if bar is not None:
+        bar_clr = accent or (color if color != THEME["fg"] else THEME["border"])
+        bar.configure(bg=bar_clr)
 
 
 def _sort_treeview(tree: ttk.Treeview, col: str, kind: str, state: dict[str, Any]) -> None:
@@ -318,6 +425,16 @@ def _build_treeview(
         tree.column(cid, width=width, minwidth=max(48, width // 2), anchor=anchor, stretch=stretch)
 
     _configure_tree_tags(tree)
+    empty_lbl = tk.Label(
+        wrap,
+        text="",
+        bg=THEME["bg_elev"],
+        fg=THEME["muted"],
+        font=FONT_UI,
+        justify="center",
+        wraplength=520,
+    )
+    tree._empty_lbl = empty_lbl
     if on_double_click:
         tree.bind("<Double-1>", on_double_click)
     if on_right_click:
@@ -328,11 +445,21 @@ def _build_treeview(
 def _populate_tree(
     tree: ttk.Treeview,
     rows_with_tags: list[tuple[tuple[Any, ...], str | None]],
+    *,
+    empty_text: str = "",
 ) -> None:
-    """Isi ulang Treeview sambil menjaga keterbacaan striping baris."""
+    """Isi ulang Treeview sambil menjaga keterbacaan striping baris & empty-state."""
     tree.delete(*tree.get_children())
     for idx, (values, tone_tag) in enumerate(rows_with_tags):
         stripe = "row_even" if idx % 2 == 0 else "row_odd"
         tags = (tone_tag,) if tone_tag else (stripe,)
         tree.insert("", "end", values=values, tags=tags)
+    empty_lbl = getattr(tree, "_empty_lbl", None)
+    if empty_lbl is not None:
+        if not rows_with_tags and empty_text:
+            empty_lbl.configure(text=empty_text)
+            empty_lbl.place(in_=tree, relx=0.5, rely=0.54, anchor="center")
+            empty_lbl.lift()
+        else:
+            empty_lbl.place_forget()
 

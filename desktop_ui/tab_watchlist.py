@@ -70,10 +70,10 @@ class WatchlistTabMixin:
         kpi.pack(fill="x", pady=(0, 8))
         for c in range(4):
             kpi.columnconfigure(c, weight=1, uniform="wkpi")
-        self.wk_total = _make_kpi_card(kpi, "Total Watchlist")
-        self.wk_beli = _make_kpi_card(kpi, "Sinyal BELI")
-        self.wk_zona = _make_kpi_card(kpi, "Zona Beli Aktif")
-        self.wk_alert = _make_kpi_card(kpi, "Alert Terpicu / Stale")
+        self.wk_total = _make_kpi_card(kpi, "Total Watchlist", tooltip="Jumlah saham dalam daftar pantau profil ini")
+        self.wk_beli = _make_kpi_card(kpi, "Sinyal BELI", tooltip="Emiten watchlist dengan sinyal teknikal BELI")
+        self.wk_zona = _make_kpi_card(kpi, "Zona Beli Aktif", tooltip="Emiten berada di dekat support, oversold RSI, atau breakout")
+        self.wk_alert = _make_kpi_card(kpi, "Alert Terpicu / Stale", tooltip="Emiten dengan alarm harga/indikator terpicu atau data harga lama")
         for idx, c in enumerate((self.wk_total, self.wk_beli, self.wk_zona, self.wk_alert)):
             c["frame"].grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
 
@@ -197,7 +197,12 @@ class WatchlistTabMixin:
                 ),
                 tone,
             ))
-        _populate_tree(self.tree_watch, table_rows)
+        empty_msg = (
+            f"Tidak ada emiten yang cocok dengan pencarian '{q}'."
+            if (rows and q)
+            else "Watchlist masih kosong.\nKetik kode saham (mis. BBCA) di kiri atas lalu klik '+ Tambah'."
+        )
+        _populate_tree(self.tree_watch, table_rows, empty_text=empty_msg)
 
     def _add_watchlist(self, sym: str | None = None) -> None:
         code = (sym or self.var_watch_add.get()).strip().upper().replace(".JK", "")

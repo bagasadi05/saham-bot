@@ -94,11 +94,11 @@ class SinyalTabMixin:
         kpi.pack(fill="x", pady=(0, 8))
         for c in range(5):
             kpi.columnconfigure(c, weight=1, uniform="skpi")
-        self.sk_scan_date = _make_kpi_card(kpi, "Snapshot /scan")
-        self.sk_matched = _make_kpi_card(kpi, "Hasil Filter")
-        self.sk_beli = _make_kpi_card(kpi, "Total BELI")
-        self.sk_tahan = _make_kpi_card(kpi, "Total TAHAN")
-        self.sk_jual = _make_kpi_card(kpi, "Total JUAL")
+        self.sk_scan_date = _make_kpi_card(kpi, "Snapshot /scan", tooltip="Tanggal bar terakhir hasil pemindaian seluruh emiten BEI")
+        self.sk_matched = _make_kpi_card(kpi, "Hasil Filter", tooltip="Jumlah emiten yang lolos filter sinyal, sektor, syariah, dan kualitas")
+        self.sk_beli = _make_kpi_card(kpi, "Total BELI", tooltip="Total emiten berstatus BELI pada snapshot /scan terakhir")
+        self.sk_tahan = _make_kpi_card(kpi, "Total TAHAN", tooltip="Total emiten berstatus TAHAN / netral pada snapshot /scan")
+        self.sk_jual = _make_kpi_card(kpi, "Total JUAL", tooltip="Total emiten berstatus JUAL (hindari beli / tinjau kurangi)")
         for idx, c in enumerate(
             (self.sk_scan_date, self.sk_matched, self.sk_beli, self.sk_tahan, self.sk_jual)
         ):
@@ -221,7 +221,11 @@ class SinyalTabMixin:
                 ),
                 tone,
             ))
-        _populate_tree(self.tree_sinyal, table_rows)
+        empty_msg = (
+            "Belum ada data snapshot /scan atau tidak ada emiten yang lolos filter.\n"
+            "Klik '⚡ Scan BEI (~944)' untuk memindai pasar atau longgarkan filter."
+        )
+        _populate_tree(self.tree_sinyal, table_rows, empty_text=empty_msg)
         self.var_status.set(f"Sinyal pasar dimuat: {len(rows)} baris ditampilkan.")
 
     def _sinyal_open_cek(self) -> None:
