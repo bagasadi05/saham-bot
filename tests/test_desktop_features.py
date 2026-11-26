@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-import desktop
 from core import bandar
 from core import chart as chartmod
 from core import data as datamod
+from core import desktop_helpers as dh
 from core import desktop_monitor as dm
 from core import fundamental
 from core import news as newsmod
@@ -205,11 +205,11 @@ def test_portfolio_risk_summary_execution_and_journal_mae_alpha(monkeypatch, tmp
     assert store_profile.get_syariah_mode(0) is True
     store_portfolio.set_risk_limits(0, 0.25, 0.45)
 
-    buy_res = desktop.record_desktop_execution(
+    buy_res = dh.record_desktop_execution(
         0, "TLKM", "BELI", 4, 2400, trade_date="2024-06-03", sl=2250, tp=2900, note="entry awal",
     )
     assert buy_res["ticker"] == "TLKM"
-    sell_res = desktop.record_desktop_execution(
+    sell_res = dh.record_desktop_execution(
         0, "TLKM", "JUAL", 2, 2850, trade_date="2024-09-02", note="tp1",
     )
     assert sell_res["net_pnl"] is not None
@@ -272,16 +272,16 @@ def test_csv_export_order_ticket_and_desktop_helpers(tmp_path):
     assert "TLKM" in ticket and "5 lot" in ticket and "Rp3.200" in ticket
     assert "Tidak ada rencana order" in dm.format_order_ticket_text([])
 
-    assert desktop.DESKTOP_CHAT_ID == "desktop"
-    assert desktop._news_item_tag({"sent": 0.4}) == "POSITIF"
-    assert desktop._news_item_tag({"sent": -0.35}) == "NEGATIF"
-    assert desktop._news_item_tag({"sent": 0.0}) == "NETRAL"
-    assert desktop._news_item_tag({}) == "NETRAL"
-    assert desktop._fmt_rp(-1_500_000) == "-Rp1.500.000"
-    assert desktop._fmt_rp(float("nan")) == "-"
-    assert desktop._fmt_arrow_pct(2.5) == "▲ +2.50%"
-    assert desktop._fmt_arrow_pct(-1.25) == "▼ -1.25%"
-    assert desktop._fmt_arrow_pct(0.0) == "0.00%"
-    assert desktop._parse_sort_key("Rp1.200.000", "num") > desktop._parse_sort_key("Rp950.000", "num")
-    assert desktop._parse_sort_key("▲ +3.50%", "num") > desktop._parse_sort_key("▼ -1.20%", "num")
-    assert desktop._parse_sort_key("-", "num")[0] == 1
+    assert dh.DESKTOP_CHAT_ID == "desktop"
+    assert dh._news_item_tag({"sent": 0.4}) == "POSITIF"
+    assert dh._news_item_tag({"sent": -0.35}) == "NEGATIF"
+    assert dh._news_item_tag({"sent": 0.0}) == "NETRAL"
+    assert dh._news_item_tag({}) == "NETRAL"
+    assert dh._fmt_rp(-1_500_000) == "-Rp1.500.000"
+    assert dh._fmt_rp(float("nan")) == "-"
+    assert dh._fmt_arrow_pct(2.5) == "▲ +2.50%"
+    assert dh._fmt_arrow_pct(-1.25) == "▼ -1.25%"
+    assert dh._fmt_arrow_pct(0.0) == "0.00%"
+    assert dh._parse_sort_key("Rp1.200.000", "num") > dh._parse_sort_key("Rp950.000", "num")
+    assert dh._parse_sort_key("▲ +3.50%", "num") > dh._parse_sort_key("▼ -1.20%", "num")
+    assert dh._parse_sort_key("-", "num")[0] == 1

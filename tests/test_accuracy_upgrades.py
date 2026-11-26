@@ -253,3 +253,129 @@ def test_desktop_advanced_signals_and_watchlist_guardrail(monkeypatch, tmp_store
     act, rsn = dm._classify_watch_action(3000.0, 60.0, ind, 3000.0, 2900.0, rel_pct=25.0)
     assert act == "TAHAN"
     assert "relatif lemah" in rsn.lower()
+
+
+def test_no_py311_fstring_backslashes_in_repo():
+    """Regresi Python 3.11: tidak boleh ada backslash di dalam ekspresi `{...}` f-string."""
+    import ast
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    bad: list[str] = []
+    for p in sorted(repo.rglob("*.py")):
+        parts = set(p.parts)
+        if parts & {".venv", ".agents", "__pycache__", ".git", "temp"}:
+            continue
+        src = p.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(src, filename=str(p))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FormattedValue):
+                seg = ast.get_source_segment(src, node) or ""
+                if "\\" in seg:
+                    bad.append(f"{p.relative_to(repo)}:{node.lineno}: {seg[:80]}")
+    assert bad == [], f"F-string tidak kompatibel Python 3.11: {bad}"
+
+
+def test_headless_desktop_tests_and_modular_desktop_ui():
+    """4 file tes desktop tidak mengimpor tkinter/desktop di level modul & UI terpecah ke desktop_ui/."""
+    import ast
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    desktop_tests = [
+        "tests/test_desktop_features.py",
+        "tests/test_desktop_monitor.py",
+        "tests/test_desktop_ui_state.py",
+        "tests/test_desktop_ui_ux.py",
+    ]
+    for rel in desktop_tests:
+        tree = ast.parse((repo / rel).read_text(encoding="utf-8"), filename=rel)
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                names = {a.name.split(".")[0] for a in node.names}
+                assert "desktop" not in names and "tkinter" not in names, (
+                    f"{rel} mengimpor GUI di top-level: {names}"
+                )
+            elif isinstance(node, ast.ImportFrom):
+                mod = (node.module or "").split(".")[0]
+                assert mod not in ("desktop", "tkinter", "desktop_ui"), (
+                    f"{rel} mengimpor GUI di top-level: {mod}"
+                )
+
+    tab_files = sorted((repo / "desktop_ui").glob("tab_*.py"))
+    assert len(tab_files) == 8
+    desktop_lines = len((repo / "desktop.py").read_text(encoding="utf-8").splitlines())
+    assert desktop_lines < 1500
+
+
+def test_death_cross_missing_ma200_warns_explicitly():
+    """Bila riwayat < 200 bar (sma200 is None), screener & rencana memberi peringatan eksplisit."""
+    from core import rencana
+
+    sig, reason = screener.classify(
+        1050.0, 1020.0, 1000.0, 58.0, 5.0, 4.0,
+        85.0, 5, True, 65.0, sma200=None,
+    )
+    assert sig == "BELI"
+    assert "ma200 belum tersedia" in reason.lower()
+    assert "death cross" in reason.lower()
+
+    enriched = rencana.enrich(
+        {"ticker": "BBCA", "price": 9000.0, "rel_pct": 85.0, "value_avg20": 50_000_000_000.0},
+        {
+            "res": {
+                "ticker": "BBCA",
+                "snap": {"close": 9000.0, "sma20": 8800.0, "sma50": 8700.0, "sma200": None, "rsi": 55.0, "ret20d": 4.0},
+                "ind": None,
+            },
+            "fund_raw": {"per": 15.0, "pbv": 2.0, "roe": 18.0, "roe_unit": "pct", "sector": "Financials"},
+            "fund": {"pct": 50.0, "label": "BAIK"},
+            "nsent": {"pct": 20.0, "label": "POSITIF", "n": 2},
+        },
+        require_rel=False,
+    )
+    assert enriched is not None
+    assert any("ma200 tidak tersedia" in w.lower() and "death cross" in w.lower() for w in enriched["warnings"])
+
+
+def test_pullback_aturan_5_dan_6_core_market_and_desktop():
+    """Aturan 5 & 6: estimasi peluang tersentuh (vs ATR14) & masa berlaku zona 5 hari bursa."""
+    from types import SimpleNamespace
+
+    from core import desktop_helpers as dh
+    from core import rencana
+    from handlers import market as market_handler
+
+    hi = rencana.pullback_touch_estimate(1000.0, 950.0, 100.0)
+    mid = rencana.pullback_touch_estimate(1000.0, 880.0, 100.0)
+    lo = rencana.pullback_touch_estimate(1000.0, 800.0, 100.0)
+    assert hi["touch_label"] == "tinggi" and hi["valid_days"] == 5
+    assert mid["touch_label"] == "sedang" and mid["gap_atr"] == 1.2
+    assert lo["touch_label"] == "rendah" and lo["valid_days"] == 5
+
+    cand = {
+        "ticker": "TLKM", "name": "Telkom", "sector": "Infrastruktur", "board": "Utama",
+        "price": 3200.0, "sma20": 3080.0, "atr": 100.0, "rel_pct": 88.0,
+        "rsi": 56.0, "ret20d": 5.0, "value_avg20": 150_000_000_000.0,
+    }
+    plan = rencana.budget_plan(cand, 10_000_000, modal=20_000_000)
+    assert plan["entry_pullback"] is not None
+    assert plan["pullback_info"]["valid_days"] == 5
+    assert plan["pullback_info"]["touch_label"] in ("tinggi", "sedang", "rendah")
+
+    fake_deps = SimpleNamespace(
+        _money=lambda v: f"Rp{int(round(v)):,}".replace(",", "."),
+        _plan_pct=lambda v, sign=True: (f"{v:+.1f}%" if sign else f"{v:.1f}%") if v is not None else "—",
+        _rp_big=lambda v: "Rp150M",
+        _SINYAL_DISCLAIMER="DYOR",
+    )
+    ticket_txt = "\n".join(market_handler._order_ticket(plan, fake_deps))
+    single_txt = market_handler._rencana_single_text(plan, cand, budget_from_modal=True, deps=fake_deps)
+    card_txt = market_handler._plan_card(rencana.make_plan(cand, 20_000_000), 1, fake_deps)
+    for txt in (ticket_txt, single_txt, card_txt):
+        assert "estimasi peluang tersentuh" in txt.lower()
+        assert "atr14" in txt.lower()
+        assert "5 hari bursa" in txt.lower()
+
+    pb_sub = dh.format_pullback_sub(plan)
+    assert "peluang" in pb_sub.lower() and "×ATR" in pb_sub and "5h bursa" in pb_sub

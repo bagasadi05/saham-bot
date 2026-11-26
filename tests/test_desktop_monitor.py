@@ -6,8 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import desktop
-from core import bandar, desktop_monitor as dm, store_portfolio
+from core import bandar, desktop_helpers as dh, desktop_monitor as dm, store_portfolio
 from tests.conftest import make_prices
 
 
@@ -190,13 +189,20 @@ def test_inspect_ticker_detail_and_desktop_helpers(tmp_store):
     with pytest.raises(ValueError):
         dm.inspect_ticker_detail("", 10_000_000)
 
-    assert desktop._fmt_rp(1500000) == "Rp1.500.000"
-    assert desktop._fmt_rp(None) == "-"
-    assert desktop._fmt_pct(1.234) == "+1.23%"
-    assert desktop._fmt_pct(None) == "-"
-    assert desktop._strip_html("<b>Halo</b> &amp; <i>dunia</i>") == "Halo & dunia"
-    assert desktop.create_tray_icon_image(32).size == (32, 32)
+    assert dh._fmt_rp(1500000) == "Rp1.500.000"
+    assert dh._fmt_rp(None) == "-"
+    assert dh._fmt_pct(1.234) == "+1.23%"
+    assert dh._fmt_pct(None) == "-"
+    assert dh._strip_html("<b>Halo</b> &amp; <i>dunia</i>") == "Halo & dunia"
+    assert dh.create_tray_icon_image(32).size == (32, 32)
+
+
+def test_desktop_gui_class_available_when_tk_installed():
+    pytest.importorskip("tkinter")
+    import desktop
+
     assert isinstance(SimpleNamespace(app=desktop.SahamBotDesktopApp), object)
+    assert desktop._fmt_rp is dh._fmt_rp
 
 
 def test_load_sinyal_paket_jurnal_and_scan(tmp_store, tmp_path):

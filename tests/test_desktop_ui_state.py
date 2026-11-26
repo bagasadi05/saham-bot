@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-import desktop  # noqa: F401  # import pertama: menarik rantai core.store dengan urutan benar
+from core import store  # noqa: F401  # menarik rantai core.store tanpa butuh tkinter
 from core import store_profile
 
 
