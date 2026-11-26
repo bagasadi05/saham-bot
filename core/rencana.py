@@ -40,6 +40,7 @@ TRAP_RET20D = 15.0
 NEWS_VETO = -30.0
 FUND_VETO = -35.0
 VALUE_GOOD = 5_000_000_000
+PULLBACK_VALID_DAYS = 5  # Aturan 6: masa berlaku zona entry pullback (hari bursa)
 # Judul halaman otomatis Yahoo bukan berita; jangan ditampilkan sebagai konteks.
 _AUTO_NEWS = ("estimates – idx:", "stock price", "stock quote", "chart",
               "profile", "history")
@@ -248,6 +249,10 @@ def enrich(cand: dict, analyzed: dict | None,
     death_cross = (sma50 is not None and sma200 is not None
                    and sma50 < sma200)
     below_sma50 = sma50 is not None and price < sma50
+    if sma200 is None:
+        warnings.append(
+            "riwayat < 200 hari — MA200 tidak tersedia, filter death cross belum aktif"
+        )
     if below_sma50 and death_cross:
         msg = ("downtrend kuat: harga di bawah MA50 dan MA50 < MA200 "
                "(death cross) — entry berisiko tinggi, ini pola falling knife")
@@ -361,6 +366,44 @@ def _merge_warnings(base: list[str] | None, extra: list[str]) -> list[str]:
     return out
 
 
+def pullback_touch_estimate(
+    entry: float,
+    entry_pullback: float | None,
+    atr: float,
+) -> dict | None:
+    """Aturan 5 & 6: estimasi peluang zona pullback tersentuh (vs ATR14) & masa berlaku.
+
+    Mengukur jarak harga ke zona pullback dalam satuan ATR14 secara objektif
+    (bukan janji probabilitas):
+      - ``<= 0,75×ATR14`` → ``tinggi`` (dekat)
+      - ``<= 1,50×ATR14`` → ``sedang`` (wajar)
+      - ``>  1,50×ATR14`` → ``rendah`` (jauh)
+    Masa berlaku zona pullback dibatasi ``PULLBACK_VALID_DAYS`` (5 hari bursa).
+    """
+    if entry_pullback is None or entry <= 0 or entry_pullback <= 0 or entry_pullback >= entry:
+        return None
+    gap_rp = round(entry - entry_pullback, 2)
+    gap_pct = round(gap_rp / entry * 100.0, 2)
+    gap_atr = round(gap_rp / atr, 2) if atr and atr > 0 else None
+    if gap_atr is None:
+        touch_label, touch_note = "tidak terukur", "ATR14 tidak tersedia"
+    elif gap_atr <= 0.75:
+        touch_label, touch_note = "tinggi", "dekat (≤ 0,75×ATR14)"
+    elif gap_atr <= 1.50:
+        touch_label, touch_note = "sedang", "wajar (≤ 1,5×ATR14)"
+    else:
+        touch_label, touch_note = "rendah", "jauh (> 1,5×ATR14)"
+    return {
+        "entry_pullback": entry_pullback,
+        "gap_rp": gap_rp,
+        "gap_pct": gap_pct,
+        "gap_atr": gap_atr,
+        "touch_label": touch_label,
+        "touch_note": touch_note,
+        "valid_days": PULLBACK_VALID_DAYS,
+    }
+
+
 def price_levels(c: dict) -> dict:
     """Entry/SL/TP/chase satu kandidat — satu aturan untuk semua perintah.
 
@@ -383,6 +426,7 @@ def price_levels(c: dict) -> dict:
         pb = _round_tick(sma20)
         if 0 < pb < entry:
             entry_pullback = pb
+    pb_info = pullback_touch_estimate(entry, entry_pullback, atr)
     sl = _round_tick(max(entry - atr, 1.0))
     if sl >= entry:
         step_down = tick_size(max(1.0, entry - 1.0))
@@ -398,6 +442,7 @@ def price_levels(c: dict) -> dict:
     return {
         "raw_entry": raw_entry, "tick": tick, "entry": entry, "atr": atr,
         "entry_pullback": entry_pullback,
+        "pullback_info": pb_info,
         "sl": sl, "tp": tp, "chase_above": chase_above,
         "risk_per_share": risk_per_share,
         "rr": ((tp - entry) / risk_per_share) if risk_per_share > 0 else 0.0,
@@ -451,6 +496,7 @@ def make_plan(
         "last_price": round(float(c.get("price") or entry), 2),
         "entry": entry,
         "entry_pullback": lv.get("entry_pullback"),
+        "pullback_info": lv.get("pullback_info"),
         "sl": sl,
         "tp": tp,
         "atr": round(atr, 2),
@@ -582,6 +628,7 @@ def budget_plan(
         "price": entry,
         "entry": entry, "sl": sl, "tp": tp, "atr": round(lv["atr"], 2),
         "entry_pullback": lv.get("entry_pullback"),
+        "pullback_info": lv.get("pullback_info"),
         "chase_above": lv["chase_above"],
         "rr": round(lv["rr"], 2),
         "sl_dist_pct": lv["sl_dist_pct"],

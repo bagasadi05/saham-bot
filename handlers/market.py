@@ -169,6 +169,37 @@ def _bandar_markup(ticker: str | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _pullback_note_line(plan: dict, deps) -> str | None:
+    """Baris Aturan 5 & 6: zona pullback MA20, peluang tersentuh vs ATR14 & berlaku 5 hari bursa."""
+    pb = plan.get("entry_pullback")
+    if not pb:
+        return None
+    info = plan.get("pullback_info") if isinstance(plan.get("pullback_info"), dict) else None
+    if not info:
+        entry = float(plan.get("entry") or 0)
+        atr = float(plan.get("atr") or 0)
+        info = rencana.pullback_touch_estimate(entry, float(pb), atr)
+    if not info:
+        return (
+            f"Zona pullback MA20: <b>{deps._money(pb)}</b> · "
+            f"berlaku {rencana.PULLBACK_VALID_DAYS} hari bursa"
+        )
+    gap_atr = info.get("gap_atr")
+    gap_pct = info.get("gap_pct")
+    atr_txt = (
+        f"jarak {gap_pct:.1f}% / {gap_atr:.2f}×ATR14".replace(".", ",")
+        if gap_atr is not None and gap_pct is not None
+        else "jarak tidak terukur"
+    )
+    lbl = esc(str(info.get("touch_label") or "-"))
+    days = int(info.get("valid_days") or rencana.PULLBACK_VALID_DAYS)
+    return (
+        f"Zona pullback MA20: <b>{deps._money(pb)}</b> · "
+        f"estimasi peluang tersentuh <b>{lbl}</b> ({atr_txt}) · "
+        f"masa berlaku zona <b>{days} hari bursa</b>"
+    )
+
+
 def _order_ticket(plan: dict, deps) -> list[str]:
     """Tiket order limit + kapan memasangnya (bukan janji untung)."""
     entry = float(plan.get("entry") or 0)
@@ -185,6 +216,9 @@ def _order_ticket(plan: dict, deps) -> list[str]:
         f"Limit <b>{deps._money(entry)}</b> · {lot_txt} · "
         f"SL <b>{deps._money(sl)}</b> · TP <b>{deps._money(tp)}</b>",
     ]
+    pb_line = _pullback_note_line(plan, deps)
+    if pb_line:
+        lines.append(pb_line)
     if last > entry:
         lines.append(
             f"Patokan penutupan <b>{deps._money(last)}</b> di atas limit — "
@@ -196,10 +230,17 @@ def _order_ticket(plan: dict, deps) -> list[str]:
             f"Patokan penutupan <b>{deps._money(last)}</b> ≤ limit — "
             "bisa dipasang sekarang; order hanya terisi kalau harga menyentuh limit."
         )
-    lines.append(
-        "Berlaku hari ini (sesi bursa 09.00–16.00 WIB). Kalau tidak tersentuh "
-        "sampai tutup, batalkan dan evaluasi ulang besok."
-    )
+    if pb_line:
+        lines.append(
+            f"Order limit harian berlaku 09.00–16.00 WIB; zona pullback berlaku "
+            f"{rencana.PULLBACK_VALID_DAYS} hari bursa — bila belum tersentuh, "
+            "evaluasi ulang level."
+        )
+    else:
+        lines.append(
+            "Berlaku hari ini (sesi bursa 09.00–16.00 WIB). Kalau tidak tersentuh "
+            "sampai tutup, batalkan dan evaluasi ulang besok."
+        )
     return lines
 
 
@@ -251,6 +292,9 @@ def _plan_card(p: dict, idx: int, deps) -> str:
         f"({risk_pct_txt}% modal) · batalkan bila open di atas "
         f"{deps._money(p['chase_above'])}",
     ]
+    pb_line = _pullback_note_line(p, deps)
+    if pb_line:
+        lines.append(pb_line)
     if p.get("reason"):
         lines.append(f"Alasan: <i>{esc(p['reason'])}</i>")
     warns = list(p.get("warnings") or [])[:2]
@@ -570,8 +614,11 @@ def _rencana_single_text(plan: dict, c: dict, *, budget_from_modal: bool,
         f"<b>{deps._money(plan['sl'])}</b> · TP <b>{deps._money(plan['tp'])}</b> "
         f"(net {deps._plan_pct(plan.get('net_tp_pct'))}) · RR 1:{plan['rr']:g}",
         f"Jangan kejar di atas <b>{deps._money(plan['chase_above'])}</b>",
-        "",
     ]
+    pb_line = _pullback_note_line(plan, deps)
+    if pb_line:
+        out.append(pb_line)
+    out.append("")
     if plan.get("vetoes"):
         out += [
             "⛔ <b>Tidak lolos saringan rencana:</b> "

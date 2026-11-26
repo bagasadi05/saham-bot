@@ -300,7 +300,7 @@ def evaluate_watchlist_rows(
         sec_name = universe.sector_of(sym) or ""
         alert_kinds = sorted(str(k) for k in (alerts_map or {}).get(sym, ()))
         try:
-            df = data_mod.fetch_history(sym, "6mo")
+            df = data_mod.fetch_history(sym, "1y")
         except Exception:
             df = None
 

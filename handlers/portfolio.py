@@ -113,7 +113,7 @@ def _exec_followup_markup(
 def _quote_posisi(t: str) -> dict:
     """Harga & ATR terakhir untuk satu posisi (None kalau data gagal)."""
     try:
-        df = data.fetch_history(t, "6mo")
+        df = data.fetch_history(t, "1y")
     except Exception as e:  # noqa: BLE001 - satu emiten gagal tidak membatalkan
         log.warning("harga portofolio %s gagal: %s", t, e)
         return {"close": None, "atr": None, "stale": True}

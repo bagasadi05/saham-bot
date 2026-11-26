@@ -525,6 +525,12 @@ def build_verdict(
     trap = powerscore.trap_warning(snap.get("ret20d"), snap.get("ret1d"))
     trap_txt = f"\n{trap}" if trap else ""
 
+    conds_block = (
+        f"<b>Yang bisa mengubah jawaban:</b>\n{conds_txt}\n"
+        if conds_txt
+        else ""
+    )
+
     return (
         f"{res.get('stale_note', '')}{prov_line}{qual_note}{title}\n"
         f"Harga: <b>{fmt_rp(close)}</b> "
@@ -535,7 +541,7 @@ def build_verdict(
         f"<b>Level penting:</b>\n"
         f"{levels_txt}\n"
         f"{bt_line}\n"
-        f"{('<b>Yang bisa mengubah jawaban:</b>\n' + conds_txt + chr(10)) if conds_txt else ''}"
+        f"{conds_block}"
         f"{trap_txt}\n"
         f"🔒 <i>Bukan saran investasi. Skor bot = deskripsi kondisi saat itu, "
         f"bukan ramalan. DYOR!</i>"

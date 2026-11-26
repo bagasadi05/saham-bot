@@ -214,6 +214,8 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
         flow_txt = " · akumulasi CMF"
     if sma200 is not None and close < sma200 and sma50 < sma200:
         flow_txt += " · di bawah MA200"
+    elif sma200 is None:
+        flow_txt += " · MA200 belum tersedia (filter death cross nonaktif)"
 
     if rel_ok and rel_pct is not None:
         pct = f"{rel_pct:.0f}"

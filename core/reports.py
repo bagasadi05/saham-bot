@@ -353,6 +353,13 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
         else ""
     )
 
+    conf_block = (
+        f"\n\n🔬 <b>Konfirmasi Indikator Pro</b>\n"
+        f"<blockquote expandable>{conf_txt}</blockquote>"
+        if conf_txt
+        else ""
+    )
+
     return (
         f"{res.get('stale_note', '')}"
         f"{res.get('quality_note', '')}"
@@ -377,7 +384,7 @@ def build_report(res: dict, fund: dict | None, news_sent: dict | None,
         f"📐 <b>Indikator Utama &amp; Level Kunci</b>\n"
         f"<pre>{esc(metrics_box)}</pre>"
         f"{scenario_block}"
-        f"{('\n\n🔬 <b>Konfirmasi Indikator Pro</b>\n<blockquote expandable>' + conf_txt + '</blockquote>') if conf_txt else ''}"
+        f"{conf_block}"
         f"{headline_txt}{weekly_txt}\n\n"
         f"{market_context_line(res, mkt)}\n\n"
         f"<blockquote>ℹ️ Skor teknikal = bacaan tren, bukan sinyal beli "
