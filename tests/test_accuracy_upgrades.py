@@ -262,9 +262,12 @@ def test_no_py311_fstring_backslashes_in_repo():
 
     repo = Path(__file__).resolve().parent.parent
     bad: list[str] = []
+    # Folder lokal sesi/artifact — bukan kode repo, jangan discan
+    EXCLUDED = {".venv", ".agents", "__pycache__", ".git", "temp",
+                ".zwork", ".sunfire", "build", "dist", ".pytest_cache", ".ruff_cache"}
     for p in sorted(repo.rglob("*.py")):
         parts = set(p.parts)
-        if parts & {".venv", ".agents", "__pycache__", ".git", "temp"}:
+        if parts & EXCLUDED:
             continue
         src = p.read_text(encoding="utf-8", errors="ignore")
         tree = ast.parse(src, filename=str(p))
