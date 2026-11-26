@@ -88,6 +88,20 @@ def judge(fund_raw: dict | None) -> dict:
         return {"ok": False, "label": "payout tinggi", "bits": bits,
                 "reason": f"payout ratio {payout:.0f}% > 100% laba — dividen "
                           "berisiko tidak berkelanjutan (jebakan dividen)"}
+    sector = raw.get("sector")
+    der = fundamental.normalize_der(raw.get("der"))
+    if der is not None and der > 300.0 and not fundamental.is_financial_sector(sector):
+        bits.append(f"DER {der:.0f}%")
+        return {"ok": False, "label": "utang tinggi", "bits": bits,
+                "reason": f"DER {der:.0f}% > 300% pada emiten non-keuangan — risiko utang tinggi"}
+    cf = fundamental.analyze_cashflow_quality(raw)
+    if cf.get("available"):
+        cf_flags = list(cf.get("forensic_flags") or [])
+        cf_pen = int(cf.get("forensic_penalty") or 0)
+        if "ocf_negatif_vs_laba" in cf_flags or cf_pen >= 30:
+            return {"ok": False, "label": "arus kas lemah", "bits": bits,
+                    "reason": "; ".join((cf.get("flags") or [])[:2])
+                    or f"risiko forensik arus kas (-{cf_pen} poin)"}
     reason = "laba positif, ROE cukup, valuasi tidak ekstrem"
     if payout is None:
         reason += "; payout ratio tidak tersedia"

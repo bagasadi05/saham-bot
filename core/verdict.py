@@ -19,16 +19,99 @@ from core.reports import esc, fmt_rp
 # fundamental + berita) beserta level SL/TP dan kondisi yang bisa mengubah
 # jawaban. Skor bot = deskripsi kondisi saat itu, bukan ramalan.
 
-def _verdict_beli(pw_pct: float) -> tuple[str, str]:
-    """(judul, alasan singkat) untuk yang belum punya."""
+def _verdict_beli(
+    pw_pct: float,
+    *,
+    close: float | None = None,
+    sma50: float | None = None,
+    sma200: float | None = None,
+    ret20d: float | None = None,
+    ret1d: float | None = None,
+    rsi: float | None = None,
+    weekly: dict | None = None,
+    rel_pct: float | None = None,
+    forensic_penalty: float = 0.0,
+    market_regime: dict | None = None,
+    cmf20: float | None = None,
+    rsi_div: dict | None = None,
+) -> tuple[str, str]:
+    """(judul, alasan singkat) untuk yang belum punya dengan guardrail risiko nyata."""
+    pen = abs(float(forensic_penalty or 0.0))
+    death_cross = (
+        sma50 is not None and sma200 is not None and float(sma50) < float(sma200)
+    )
+    falling_knife = (
+        close is not None and sma50 is not None and float(close) < float(sma50) and death_cross
+    )
+    if falling_knife:
+        return (
+            "🛑 JANGAN BELI dulu",
+            "Pola falling knife (harga di bawah MA50 & MA50 < MA200 / death cross). "
+            "Tunggu pembalikan tren yang terkonfirmasi agar tidak nyangkut.",
+        )
+    if pen >= 40.0:
+        return (
+            "🛑 JANGAN BELI dulu",
+            f"Bendera forensik arus kas/dividen berat (-{pen:.0f} poin) — risiko kualitas "
+            "laba atau jebakan dividen terlalu tinggi.",
+        )
+
+    chase_trap = (
+        ret20d is not None and ret1d is not None and float(ret20d) > 15.0 and float(ret1d) > 0.0
+    )
+    div_kind = (rsi_div or {}).get("kind") if isinstance(rsi_div, dict) else None
+    bear_div_dist = div_kind == "bearish" and cmf20 is not None and float(cmf20) <= -0.15
+
+    if pw_pct >= 20:
+        hold_reasons: list[str] = []
+        if chase_trap:
+            hold_reasons.append(
+                f"harga sudah melesat {float(ret20d):+.1f}% dalam 20 hari (waspada jebakan momentum)"
+            )
+        if rsi is not None and float(rsi) >= 75.0:
+            hold_reasons.append(f"RSI jenuh beli ekstrem ({float(rsi):.0f})")
+        if pen >= 25.0:
+            hold_reasons.append(f"ada catatan forensik kas/neraca (-{pen:.0f} poin)")
+        if rel_pct is not None and float(rel_pct) < 30.0:
+            hold_reasons.append(
+                f"peringkat relatif lintas-pasar lemah (persentil {float(rel_pct):.0f}%)"
+            )
+        if bear_div_dist:
+            hold_reasons.append("divergensi RSI bearish disertai distribusi arus uang (CMF negatif)")
+        if hold_reasons:
+            return (
+                "⏳ TUNGGU dulu",
+                "Skor gabungan positif, namun ditahan karena "
+                + "; ".join(hold_reasons[:2])
+                + ". Tunggu pullback / konfirmasi yang lebih sehat.",
+            )
+
+    caution_notes: list[str] = []
+    if isinstance(weekly, dict) and weekly.get("direction") == "turun":
+        caution_notes.append("tren mingguan masih turun (counter-trend)")
+    if isinstance(market_regime, dict) and market_regime.get("status") == "DEFENSIVE":
+        caution_notes.append("rezim IHSG defensif (pangkas ukuran lot)")
+    if div_kind == "bearish" and not bear_div_dist:
+        caution_notes.append("ada divergensi RSI bearish")
+    elif cmf20 is not None and float(cmf20) <= -0.15:
+        caution_notes.append(f"distribusi arus uang (CMF {float(cmf20):+.2f})")
+
     if pw_pct >= 50:
+        if caution_notes:
+            return (
+                "⚠️ Boleh BELI BERTAHAP",
+                "Sinyal gabungan kuat, namun "
+                + "; ".join(caution_notes[:2])
+                + " — cicil lot kecil dan disiplin SL.",
+            )
         return ("✅ Layak dipertimbangkan BELI",
                 "Sinyal kuat: teknikal, fundamental, dan berita searah. "
                 "Tetap beli bertahap, jangan all-in.")
     if pw_pct >= 20:
+        extra = f" Perhatikan: {'; '.join(caution_notes[:2])}." if caution_notes else ""
         return ("⚠️ Boleh BELI BERTAHAP",
                 "Sinyal positif tapi belum kuat — cicil, dan tunggu konfirmasi "
-                "(mis. harga tembus MA50).")
+                "(mis. harga tembus MA50)." + extra)
     if pw_pct > -20:
         return ("⏳ TUNGGU dulu",
                 "Belum ada sinyal beli yang jelas. Pantau dari watchlist, "
@@ -237,7 +320,26 @@ def build_verdict(
     )
     days_held = (exit_g.get("time_stop") or {}).get("days_held")
 
-    beli_judul, beli_alasan = _verdict_beli(pw["pct"])
+    cmf_raw = last.get("cmf20") if hasattr(last, "get") else None
+    cmf20 = float(cmf_raw) if (cmf_raw is not None and not pd.isna(cmf_raw)) else None
+    rsi_div = analysis.detect_rsi_divergence(ind) if ind is not None else None
+    poc_info = analysis.volume_profile_poc(ind) if ind is not None else None
+
+    beli_judul, beli_alasan = _verdict_beli(
+        pw["pct"],
+        close=close,
+        sma50=snap.get("sma50"),
+        sma200=snap.get("sma200"),
+        ret20d=snap.get("ret20d"),
+        ret1d=snap.get("ret1d"),
+        rsi=snap.get("rsi"),
+        weekly=weekly,
+        rel_pct=rel_pct,
+        forensic_penalty=forensic_pen,
+        market_regime=market_regime,
+        cmf20=cmf20,
+        rsi_div=rsi_div,
+    )
     jual_judul, jual_alasan = _verdict_jual(
         sc["pct"],
         close,
@@ -310,6 +412,21 @@ def build_verdict(
         )
         if weekly.get("warning"):
             reasons.append(f"⚠️ {esc(weekly['warning'])}")
+    if cmf20 is not None and abs(cmf20) >= 0.12:
+        cmf_lbl = "akumulasi arus uang" if cmf20 > 0 else "distribusi arus uang"
+        reasons.append(f"CMF20 {cmf20:+.2f} ({cmf_lbl})")
+    if isinstance(rsi_div, dict):
+        div_lbl = (
+            "Bullish RSI divergence (potensi pembalikan naik)"
+            if rsi_div.get("kind") == "bullish"
+            else "Bearish RSI divergence (momentum melemah di puncak)"
+        )
+        reasons.append(f"Divergensi: {div_lbl}")
+    if isinstance(poc_info, dict) and poc_info.get("poc"):
+        reasons.append(
+            f"Volume POC 60h: {fmt_rp(float(poc_info['poc']))} "
+            f"({esc(str(poc_info.get('position') or ''))})"
+        )
     reasons_txt = "\n".join(f"  • {r}" for r in reasons)
 
     conds = []

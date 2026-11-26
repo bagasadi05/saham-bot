@@ -2447,6 +2447,7 @@ class SahamBotDesktopApp:
                 chat_id=cid,
                 period=period,
                 market_regime=reg,
+                include_bandar=True,
             )
             chart_path = ""
             res = detail.get("res") or {}
@@ -3120,6 +3121,46 @@ class SahamBotDesktopApp:
         if power_text:
             lines.append("\n=== PENILAIAN 3 PIN (POWERSCORE) ===")
             lines.append(power_text)
+
+        adv = data.get("advanced") or {}
+        adv_lines: list[str] = []
+        if adv.get("rel_pct") is not None:
+            adv_lines.append(f"  • Peringkat Relatif OOS (/scan): persentil {float(adv['rel_pct']):.0f}%")
+        if adv.get("cmf20") is not None:
+            cv = float(adv["cmf20"])
+            c_lbl = "akumulasi" if cv >= 0.12 else ("distribusi" if cv <= -0.12 else "netral")
+            adv_lines.append(f"  • Arus Uang CMF20: {cv:+.2f} ({c_lbl})")
+        div = adv.get("rsi_divergence")
+        if isinstance(div, dict):
+            adv_lines.append(f"  • Divergensi RSI14: {div.get('kind', '-').upper()}")
+        poc = adv.get("poc")
+        if isinstance(poc, dict) and poc.get("poc"):
+            adv_lines.append(
+                f"  • Volume Profile POC (60h): {_fmt_num(poc['poc'], 0)} ({poc.get('position', '')})"
+            )
+        if adv.get("candle_patterns"):
+            adv_lines.append("  • Pola Candle: " + ", ".join(str(p) for p in adv["candle_patterns"]))
+        em = adv.get("expected_move")
+        if isinstance(em, dict) and em.get("bands"):
+            b20 = em["bands"].get(20)
+            b5 = em["bands"].get(5)
+            parts = []
+            if b5:
+                parts.append(f"5h {_fmt_num(b5['low'], 0)}–{_fmt_num(b5['high'], 0)} (±{b5['pct']}%)")
+            if b20:
+                parts.append(f"20h {_fmt_num(b20['low'], 0)}–{_fmt_num(b20['high'], 0)} (±{b20['pct']}%)")
+            if parts:
+                adv_lines.append("  • Rentang Gerak ±1σ: " + " | ".join(parts))
+        odds = adv.get("tp_sl_odds")
+        if isinstance(odds, dict) and odds.get("n"):
+            adv_lines.append(
+                f"  • Frekuensi Historis TP vs SL (n={odds['n']}): "
+                f"TP {odds['tp_rate_pct']:.1f}% | SL {odds['sl_rate_pct']:.1f}% | "
+                f"Timeout {odds['timeout_rate_pct']:.1f}%"
+            )
+        if adv_lines:
+            lines.append("\n=== SINYAL LANJUTAN & KONTEKS STATISTIK ===")
+            lines.extend(adv_lines)
 
         lines.append("\n=== FUNDAMENTAL & FORENSIK ARUS KAS ===")
         if fund:

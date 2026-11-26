@@ -178,7 +178,8 @@ def _round_buy_levels(close: float, atr: float | None) -> tuple[float, float | N
 
 def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
              rel_pct, rel_quintil, rel_ok, tech_pct,
-             rel_pct_sector=None, rel_sector_ok=False, sma200=None) -> tuple[str, str]:
+             rel_pct_sector=None, rel_sector_ok=False, sma200=None,
+             *, cmf20=None, rsi_div=None) -> tuple[str, str]:
     """Tentukan BELI / JUAL / TAHAN + alasan singkat (tanpa klaim berlebihan).
 
     Bila peringkat di dalam sektor tersedia (rel_sector_ok), persentil sektor
@@ -206,6 +207,14 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
     if rel_sector_ok and rel_pct_sector is not None:
         sec_txt = f" · di sektornya {rel_pct_sector:.0f}/100"
 
+    div_kind = rsi_div.get("kind") if isinstance(rsi_div, dict) else rsi_div
+    bear_div_dist = div_kind == "bearish" and cmf20 is not None and cmf20 <= -0.15
+    flow_txt = ""
+    if cmf20 is not None and cmf20 >= 0.12:
+        flow_txt = " · akumulasi CMF"
+    if sma200 is not None and close < sma200 and sma50 < sma200:
+        flow_txt += " · di bawah MA200"
+
     if rel_ok and rel_pct is not None:
         pct = f"{rel_pct:.0f}"
         q = f" (kuintil {rel_quintil})" if rel_quintil else ""
@@ -214,9 +223,12 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
                 return ("TAHAN",
                         f"Death cross (MA50 < MA200) — tren panjang masih turun, "
                         f"meski tren pendek naik; persentil {pct}{q}{sec_txt}")
+            if bear_div_dist:
+                return ("TAHAN",
+                        "Divergensi RSI bearish & distribusi CMF — tunggu konfirmasi")
             return ("BELI",
                     f"Tren naik (MA20 > MA50, MACD+), RSI {rsi_show:.0f}, "
-                    f"persentil {pct}{q}{sec_txt}")
+                    f"persentil {pct}{q}{sec_txt}{flow_txt}")
         if down and rel_pct <= SELL_PCT and rsi_show < 50:
             return ("JUAL",
                     f"Tren turun (MA20 < MA50, MACD−), RSI {rsi_show:.0f}, "
@@ -232,7 +244,10 @@ def classify(close, sma20, sma50, rsi_v, macd_hist, ret20d,
             return ("TAHAN",
                     f"Death cross (MA50 < MA200) — tren panjang masih turun; "
                     f"skor teknikal {tech_pct:+.0f}")
-        return "BELI", f"Tren naik, skor teknikal {tech_pct:+.0f}"
+        if bear_div_dist:
+            return ("TAHAN",
+                    "Divergensi RSI bearish & distribusi CMF — tunggu konfirmasi")
+        return "BELI", f"Tren naik, skor teknikal {tech_pct:+.0f}{flow_txt}"
     if down and tech_pct <= -40:
         return "JUAL", f"Tren turun, skor teknikal {tech_pct:+.0f}"
     return "TAHAN", "Sinyal teknikal belum selaras"
@@ -344,24 +359,48 @@ def _evaluate_detailed(
         rel_quintil = it.get("rel_quintil") if it.get("rel_ok") else None
         rel_ok = bool(it.get("rel_ok"))
         rel_pct_sector = _f(it.get("rel_pct_sector")) if it.get("rel_sector_ok") else None
+        cmf20 = _f(last.get("cmf20")) if "cmf20" in ind.columns else None
+        rsi_div = analysis.detect_rsi_divergence(ind)
 
-        signal, reason = classify(close, sma20, sma50, rsi_v, hist, ret20d,
-                                  rel_pct, rel_quintil, rel_ok, tech_pct,
-                                  rel_pct_sector=rel_pct_sector,
-                                  rel_sector_ok=bool(it.get("rel_sector_ok")),
-                                  sma200=sma200)
+        try:
+            signal, reason = classify(
+                close, sma20, sma50, rsi_v, hist, ret20d,
+                rel_pct, rel_quintil, rel_ok, tech_pct,
+                rel_pct_sector=rel_pct_sector,
+                rel_sector_ok=bool(it.get("rel_sector_ok")),
+                sma200=sma200, cmf20=cmf20, rsi_div=rsi_div,
+            )
+        except TypeError:
+            signal, reason = classify(
+                close, sma20, sma50, rsi_v, hist, ret20d,
+                rel_pct, rel_quintil, rel_ok, tech_pct,
+                rel_pct_sector=rel_pct_sector,
+                rel_sector_ok=bool(it.get("rel_sector_ok")),
+            )
 
+        board_name = universe.board_of(sym)
         dormant = recent_zero_vol >= MAX_ZERO_VOL_RECENT or q_flags.get("volume_nol", 0) >= 10
+        special_board = bool(board_name and board_name.lower().startswith("pemantauan"))
+        micro_price = close is not None and close < 50.0
         if signal == "BELI" and dormant:
             signal = "TAHAN"
             reason = (
                 f"Saham tidur ({recent_zero_vol}/20 bar terakhir volume 0) "
                 "— ditahan dari kandidat BELI"
             )
+        elif signal == "BELI" and special_board:
+            signal = "TAHAN"
+            reason = "Papan Pemantauan Khusus (FCA) — ditahan dari kandidat BELI"
+        elif signal == "BELI" and micro_price:
+            signal = "TAHAN"
+            reason = "Harga < Rp50 (zona tidak likuid/FCA) — ditahan dari kandidat BELI"
+        elif signal == "BELI" and value_avg20 is not None and value_avg20 < 500_000_000:
+            signal = "TAHAN"
+            reason = "Likuiditas sangat tipis (< Rp500 juta/hari) — ditahan dari kandidat BELI"
         elif q_flags:
             reason += f" [kualitas: {', '.join(sorted(q_flags))}]"
 
-        if q_flags or dormant:
+        if q_flags or dormant or special_board:
             stats["quality_flagged"] += 1
 
         entry = sl = tp = None
@@ -376,7 +415,7 @@ def _evaluate_detailed(
         rows.append({
             "ticker": sym,
             "name": (names or {}).get(sym, universe.name_of(sym)),
-            "board": universe.board_of(sym),
+            "board": board_name,
             "trade_date": trade_date,
             "price": round(close, 2) if close is not None else None,
             "ret1d": round(ret1d, 2) if ret1d is not None else None,

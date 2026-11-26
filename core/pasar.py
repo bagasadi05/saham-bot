@@ -49,9 +49,14 @@ def ihsg_snapshot(
     df: pd.DataFrame | None,
     *,
     regime_info: dict | None = None,
+    breadth_ma50: float | None = None,
 ) -> dict[str, Any]:
-    """Ringkas level & return IHSG (^JKSE) beserta rezim SMA50 vs SMA200."""
-    reg = dict(regime_info) if isinstance(regime_info, dict) else regimemod.evaluate_ihsg(df)
+    """Ringkas level & return IHSG (^JKSE) beserta rezim SMA50/SMA200 + vol/breadth."""
+    reg = (
+        dict(regime_info)
+        if isinstance(regime_info, dict)
+        else regimemod.evaluate_ihsg(df, breadth_ma50=breadth_ma50)
+    )
     if df is None or df.empty or "close" not in df:
         close = reg.get("close")
         return {
@@ -302,7 +307,8 @@ def build_market_report(
     as_of_label: str | None = None,
 ) -> dict[str, Any]:
     """Susun laporan kondisi pasar BEI terstruktur dari seluruh bahan yang tersedia."""
-    ihsg = ihsg_snapshot(ihsg_df, regime_info=regime_info)
+    b_ma50 = regimemod.compute_breadth_ma50(scan_rows) if regime_info is None else None
+    ihsg = ihsg_snapshot(ihsg_df, regime_info=regime_info, breadth_ma50=b_ma50)
     breadth = breadth_snapshot(scan_rows, scan_meta)
 
     if index_error:

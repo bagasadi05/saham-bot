@@ -223,12 +223,20 @@ def _classify_watch_action(
     ind: pd.DataFrame,
     entry: float,
     sl: float,
+    *,
+    rel_pct: float | None = None,
 ) -> tuple[str, str]:
-    """Tentukan saran ringkas BELI / SIAP BELI / JUAL / TAHAN dari indikator & level."""
+    """Tentukan saran ringkas BELI / SIAP BELI / JUAL / TAHAN dari indikator, CMF & relatif."""
     last = ind.iloc[-1]
     sma20 = _num(last.get("sma20")) if "sma20" in ind.columns else None
     sma50 = _num(last.get("sma50")) if "sma50" in ind.columns else None
+    sma200 = _num(last.get("sma200")) if "sma200" in ind.columns else None
     rsi = _num(last.get("rsi14")) if "rsi14" in ind.columns else None
+    ret20d = _num(last.get("ret20d")) if "ret20d" in ind.columns else None
+    ret1d = _num(last.get("ret1d")) if "ret1d" in ind.columns else None
+    cmf20 = _num(last.get("cmf20")) if "cmf20" in ind.columns else None
+    rsi_div = analysis.detect_rsi_divergence(ind)
+    div_kind = rsi_div.get("kind") if isinstance(rsi_div, dict) else None
 
     if score_pct is not None and score_pct <= -25:
         return "JUAL", f"skor teknikal lemah ({score_pct:+.0f}%)"
@@ -237,9 +245,20 @@ def _classify_watch_action(
     if close <= sl:
         return "JUAL", f"harga menyentuh area stop ({sl:,.0f})"
 
+    if sma50 and sma200 and close < sma50 and sma50 < sma200:
+        return "TAHAN", "downtrend struktural (di bawah MA50 & death cross)"
+
     if score_pct is not None and score_pct >= 25:
+        if ret20d is not None and ret1d is not None and ret20d > 15.0 and ret1d > 0.0:
+            return "TAHAN", f"sudah melesat {ret20d:+.1f}%/20h — tunggu pullback"
+        if div_kind == "bearish" and cmf20 is not None and cmf20 <= -0.15:
+            return "TAHAN", f"divergensi RSI bearish & distribusi CMF ({cmf20:+.2f})"
+        if rel_pct is not None and rel_pct < 40.0:
+            return "TAHAN", f"peringkat relatif lemah ({rel_pct:.0f}%) — tunggu konfirmasi"
         if entry > 0 and close <= entry * 1.02:
-            return "BELI", f"tren kuat ({score_pct:+.0f}%) & dekat area entry"
+            rel_txt = f", relatif {rel_pct:.0f}%" if rel_pct is not None else ""
+            cmf_txt = ", akumulasi CMF" if (cmf20 is not None and cmf20 >= 0.12) else ""
+            return "BELI", f"tren kuat ({score_pct:+.0f}%{rel_txt}{cmf_txt}) & dekat area entry"
         if rsi is not None and rsi >= 75:
             return "TAHAN", f"tren kuat ({score_pct:+.0f}%) namun RSI jenuh beli ({rsi:.0f})"
         return "SIAP BELI", f"tren positif ({score_pct:+.0f}%), tunggu pullback ke {entry:,.0f}"
@@ -331,7 +350,10 @@ def evaluate_watchlist_rows(
             tp = float(saran.target_price(entry, atr)) if entry > 0 else 0.0
 
         score_pct = _num(sc.get("pct"))
-        action, reason = _classify_watch_action(close or 0.0, score_pct, ind, entry, sl)
+        rel_pct = _num((scan_row or {}).get("rel_pct"))
+        action, reason = _classify_watch_action(
+            close or 0.0, score_pct, ind, entry, sl, rel_pct=rel_pct,
+        )
 
         lots = 0
         if modal > 0 and entry > 0 and sl > 0 and entry > sl:
@@ -355,6 +377,7 @@ def evaluate_watchlist_rows(
             "action": action,
             "signal": action,
             "score_pct": score_pct,
+            "rel_pct": rel_pct,
             "entry": entry,
             "sl": sl,
             "tp": tp,
@@ -445,6 +468,14 @@ def evaluate_portfolio_rows(
         sc_out = (eg or {}).get("scale_out") or {}
         eff_sl = (eg or {}).get("effective_sl") or sl_stored or (saran.stop_price(avg_px, atr) if atr else None)
         sl_source = "eksekusi" if sl_stored is not None else ("atr" if eff_sl is not None else "-")
+        cached_fund_sc = None
+        try:
+            cache_dir = getattr(fundamental, "CACHE_DIR", "temp/cache")
+            raw_cached = kualitas.load_cached(cache_dir, sym, start_of_day_tag())
+            if raw_cached:
+                cached_fund_sc = _score_fund_dict(fundamental, raw_cached)
+        except Exception:
+            cached_fund_sc = None
         t_res = tesis_mod.evaluate_position(
             sym,
             avg_px,
@@ -459,6 +490,7 @@ def evaluate_portfolio_rows(
             time_stop_flag=bool(ts.get("triggered")),
             pnl_net_pct=(eg or {}).get("pnl_net_pct"),
             rel_pct=rel_map.get(sym),
+            fund=cached_fund_sc,
             market_regime=market_regime,
         )
         shares = lots * 100
@@ -641,12 +673,15 @@ def inspect_ticker_detail(
     chat_id: int | str = DEFAULT_PROFILE_ID,
     period: str = "1y",
     market_regime: dict | None = None,
+    include_bandar: bool = False,
     data_mod=data,
     fundamental_mod=fundamental,
     news_mod=news,
     cek_mod=cek,
     rencana_mod=rencana,
     store_port_mod=store_portfolio,
+    store_scan_mod=store_scan,
+    bandar_mod=bandar,
     banding_mod=banding,
     universe_mod=universe,
 ) -> dict[str, Any]:
@@ -718,12 +753,35 @@ def inspect_ticker_detail(
     except Exception:
         peers = None
 
+    rel_pct = None
+    try:
+        for sr_row in store_scan_mod.load_market_scan():
+            if str(sr_row.get("ticker") or "").strip().upper().removesuffix(".JK") == sym:
+                rel_pct = _num(sr_row.get("rel_pct"))
+                break
+    except Exception:
+        rel_pct = None
+
+    bandar_row = None
+    if include_bandar:
+        try:
+            t_date = bandar_mod.last_trading_date()
+            call_stale = getattr(bandar_mod, "call_with_stale", None)
+            b_rows = (
+                call_stale(bandar_mod.get_stock_summary, t_date, max_stocks=1000, until=sym)[0]
+                if call_stale is not None
+                else bandar_mod.get_stock_summary(t_date, max_stocks=1000, until=sym)
+            )
+            bandar_row = bandar_mod.find_row(b_rows, sym)
+        except Exception:
+            bandar_row = None
+
     cek_res = cek_mod.build(
         res=res,
         fund=fund,
         fund_raw=fund_raw,
         nsent=nsent,
-        bandar_row=None,
+        bandar_row=bandar_row,
         agenda=None,
         agenda_days=None,
         peers=peers,
@@ -737,7 +795,7 @@ def inspect_ticker_detail(
     cand = None
     try:
         cand = rencana_mod.enrich(
-            {"ticker": sym, "price": close, "sector": sec_name, "board": board},
+            {"ticker": sym, "price": close, "sector": sec_name, "board": board, "rel_pct": rel_pct},
             {"res": res, "fund": fund, "fund_raw": fund_raw, "nsent": nsent},
             require_rel=False,
         )
@@ -751,6 +809,7 @@ def inspect_ticker_detail(
             "sma20": _num(snap.get("sma20")),
             "sector": sec_name,
             "board": board,
+            "rel_pct": rel_pct,
             "fund": fund,
             "news": nsent,
         }
@@ -777,6 +836,16 @@ def inspect_ticker_detail(
             )
         except Exception:
             scale_out, arb_risk = None, None
+
+    advanced = {
+        "rel_pct": rel_pct,
+        "cmf20": _num(last.get("cmf20")) if "cmf20" in ind.columns else None,
+        "rsi_divergence": analysis.detect_rsi_divergence(ind),
+        "poc": analysis.volume_profile_poc(ind),
+        "candle_patterns": analysis.detect_candle_pattern(ind),
+        "expected_move": analysis.expected_move_range(ind),
+        "tp_sl_odds": analysis.historical_tp_sl_odds(ind),
+    }
 
     positions = store_port_mod.real_positions(chat_id)
     held = next((p for p in positions if str(p.get("ticker")).upper() == sym and int(p.get("lots") or 0) > 0), None)
@@ -811,6 +880,7 @@ def inspect_ticker_detail(
         "plan": plan,
         "scale_out": scale_out,
         "arb_risk": arb_risk,
+        "advanced": advanced,
         "powerscore": power_combo,
         "power_text": power_text,
         "held": held,

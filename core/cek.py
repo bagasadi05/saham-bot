@@ -206,9 +206,21 @@ def _collect_data_and_arb_warnings(
         )
 
     ret1d = _num(snap.get("ret1d"))
-    if res.get("arb_locked") or snap.get("arb_locked") or (ret1d is not None and ret1d <= -14.0):
+    arb_limit_pct = 7.0
+    if price is not None and price > 0:
+        try:
+            raw_arb = pricing.arb_pct(price)
+            if raw_arb is not None and float(raw_arb) > 0:
+                arb_limit_pct = float(raw_arb) * 100.0 if float(raw_arb) <= 1.0 else float(raw_arb)
+        except Exception:
+            arb_limit_pct = 7.0
+    arb_trigger_pct = -(max(arb_limit_pct - 0.5, 5.0))
+    if res.get("arb_locked") or snap.get("arb_locked") or (
+        ret1d is not None and ret1d <= arb_trigger_pct
+    ):
         _add_warn(
-            "Risiko gap ARB: tekanan turun tajam/terkunci membuat eksekusi jual sulit",
+            f"Risiko gap ARB (batas {arb_limit_pct:g}%): tekanan turun tajam/terkunci "
+            "membuat eksekusi jual sulit",
             -2,
         )
 
@@ -352,6 +364,30 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         detail = " · ".join(bits)
         if weekly.get("warning"):
             detail += f" · catatan: {weekly['warning']}"
+        ind_df = res.get("ind")
+        if ind_df is not None and hasattr(ind_df, "empty") and not ind_df.empty:
+            try:
+                from core import analysis as _ana
+
+                cmf_v = _num(ind_df.iloc[-1].get("cmf20")) if "cmf20" in ind_df.columns else None
+                if cmf_v is not None and abs(cmf_v) >= 0.15:
+                    if cmf_v > 0:
+                        detail += f" · CMF20 {cmf_v:+.2f} (akumulasi)"
+                        facts.append((1, f"Arus uang CMF20 positif ({cmf_v:+.2f}, akumulasi volume)."))
+                    else:
+                        detail += f" · CMF20 {cmf_v:+.2f} (distribusi)"
+                        facts.append((-1, f"Arus uang CMF20 negatif ({cmf_v:+.2f}, distribusi volume)."))
+                div = _ana.detect_rsi_divergence(ind_df)
+                if isinstance(div, dict):
+                    if div.get("kind") == "bearish":
+                        detail += " · divergensi RSI bearish"
+                        warnings.append("Divergensi RSI bearish terdeteksi (harga naik, RSI melemah)")
+                        facts.append((-2, "Divergensi RSI bearish — momentum puncak mulai melemah."))
+                    elif div.get("kind") == "bullish":
+                        detail += " · divergensi RSI bullish"
+                        facts.append((1, "Divergensi RSI bullish — tekanan jual mulai mereda."))
+            except Exception:
+                pass
         if status == "ok":
             facts.append((3, "Tren harian dan mingguan searah naik."))
         elif status == "bad":
@@ -418,6 +454,19 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
             warnings.append("ROE tidak tersedia — valuasi hanya dari PER/PBV")
         if sector:
             v_detail += f" · sektor {sector}"
+        sec_rel = fundamental.sector_relative_valuation(fund_raw)
+        if sec_rel:
+            sr_bits = []
+            if "per_diff_pct" in sec_rel:
+                d = sec_rel["per_diff_pct"]
+                tag = "diskon" if d < -10 else ("premium" if d > 15 else "sejalan")
+                sr_bits.append(f"PER {tag} {d:+.0f}% vs patokan ~{sec_rel['bench_per']:.0f}x")
+            if "pbv_diff_pct" in sec_rel:
+                d = sec_rel["pbv_diff_pct"]
+                tag = "diskon" if d < -10 else ("premium" if d > 15 else "sejalan")
+                sr_bits.append(f"PBV {tag} {d:+.0f}% vs patokan ~{sec_rel['bench_pbv']:.1f}x")
+            if sr_bits:
+                v_detail += " · relatif sektor: " + ", ".join(sr_bits)
         sec_per = _num((peers or {}).get("per_median") or (peers or {}).get("sector_per"))
         sec_pbv = _num((peers or {}).get("pbv_median") or (peers or {}).get("sector_pbv"))
         if sec_per is not None or sec_pbv is not None:
@@ -537,6 +586,11 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
 
     # 6b. Audit forensik arus kas & jebakan dividen (offline, jujur bila NA)
     cf = fundamental.analyze_cashflow_quality(fund_raw)
+    cf_pen = int(cf.get("forensic_penalty") or 0)
+    if cf_pen >= 25:
+        points -= 2
+    elif cf_pen >= 15:
+        points -= 1
     for flg in cf["flags"]:
         warnings.append(flg)
         facts.append((-2, flg))
@@ -554,19 +608,41 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         vetoes.append("harga < Rp50")
     if (board or "").lower().startswith("pemantauan"):
         vetoes.append("papan Pemantauan Khusus")
+    if pbv is not None and pbv <= 0:
+        vetoes.append("PBV ≤ 0 (ekuitas negatif)")
     if laba_negatif:
         vetoes.append("laba negatif")
     elif roe is not None and 0 <= roe < 2:
         vetoes.append("ROE < 2% (laba nyaris nol)")
-    if pbv is not None and pbv <= 0:
-        vetoes.append("PBV ≤ 0 (ekuitas negatif)")
+    der_val = fundamental.normalize_der(fund_raw.get("der"))
+    if der_val is not None and der_val > 300.0 and not fundamental.is_financial_sector(sector):
+        vetoes.append(f"DER {der_val:.0f}% > 300% (utang sangat tinggi)")
+    if cf_pen >= 40:
+        vetoes.append(f"risiko forensik arus kas/dividen berat (-{cf_pen} poin)")
+
+    ret20d_v = _num(snap.get("ret20d"))
+    ret1d_v = _num(snap.get("ret1d"))
+    chase_trap = (
+        ret20d_v is not None and ret1d_v is not None and ret20d_v > 15.0 and ret1d_v > 0.0
+    )
 
     if vetoes:
         verdict = "HINDARI"
     elif sum(1 for it in items if it["status"] == "na") >= 3:
         verdict = "TIDAK CUKUP DATA"
     elif points >= 5:
-        verdict = "LAYAK"
+        if chase_trap:
+            verdict = "TUNGGU"
+            warnings.append(
+                f"Harga sudah naik tajam ({ret20d_v:+.1f}% dalam 20h) — tunggu pullback "
+                "agar terhindar dari jebakan momentum"
+            )
+            facts.append((
+                -2,
+                f"Harga sudah melesat {ret20d_v:+.1f}% dalam 20 hari — lebih aman tunggu pullback.",
+            ))
+        else:
+            verdict = "LAYAK"
     elif points >= 2:
         verdict = "TUNGGU"
     else:

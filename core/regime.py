@@ -101,10 +101,60 @@ def effective_scale(reg: dict | None) -> float:
     return min(BULL_SCALE, max(0.1, val))
 
 
-def evaluate_ihsg(df: pd.DataFrame | None) -> dict:
-    """Nilai rezim IHSG terkini (`BULL`, `DEFENSIVE`, atau `NA` yang jujur)."""
+def compute_breadth_ma50(
+    scan_rows: list[dict] | None,
+    *,
+    min_rows: int = 20,
+) -> float | None:
+    """Fraksi emiten (0..1) yang harganya berada di atas SMA50 dari snapshot `/scan`.
+
+    Mengembalikan ``None`` jika sampel terlalu kecil (< ``min_rows``) atau data
+    tidak tersedia — tidak mengarang breadth dari sedikit saham.
+    """
+    above = 0
+    total = 0
+    for r in scan_rows or ():
+        if not isinstance(r, dict):
+            continue
+        try:
+            px = float(r.get("price"))
+            s50 = float(r.get("sma50"))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(px) and math.isfinite(s50) and px > 0 and s50 > 0):
+            continue
+        total += 1
+        if px > s50:
+            above += 1
+    if total < min_rows:
+        return None
+    return round(above / total, 4)
+
+
+def evaluate_ihsg(
+    df: pd.DataFrame | None,
+    *,
+    breadth_ma50: float | None = None,
+) -> dict:
+    """Nilai rezim IHSG terkini (`BULL`, `DEFENSIVE`, atau `NA` yang jujur).
+
+    Mendukung aturan 3-tier (`vol_breadth_3tier`, teruji pada `data/regime_eval.json`
+    dengan Sharpe 0,789 & Calmar 0,457 vs 0,409): selain SMA50 vs SMA200 dan
+    volatilitas 20h IHSG (>22% → 50%, >30% → 25%), bila ``breadth_ma50`` dari
+    snapshot ``/scan`` tersedia (<40% → 50%, <25% → 25%) eksposur ikut direm.
+    """
     stale = bool(getattr(df, "attrs", {}).get("stale", False)) if df is not None else False
     ind = ihsg_indicators(df)
+    b_val: float | None = None
+    if breadth_ma50 is not None:
+        try:
+            bf = float(breadth_ma50)
+            if math.isfinite(bf) and 0.0 <= bf <= 1.0:
+                b_val = bf
+        except (TypeError, ValueError):
+            b_val = None
+    b_pct = round(b_val * 100.0, 1) if b_val is not None else None
+
     if ind.empty:
         return {
             "status": "NA",
@@ -114,6 +164,8 @@ def evaluate_ihsg(df: pd.DataFrame | None) -> dict:
             "sma50": None,
             "sma200": None,
             "gap_pct": None,
+            "vol20_pct": None,
+            "breadth_ma50_pct": b_pct,
             "as_of": None,
             "bars": 0,
             "stale": stale,
@@ -139,6 +191,8 @@ def evaluate_ihsg(df: pd.DataFrame | None) -> dict:
             "sma50": sma50,
             "sma200": None,
             "gap_pct": None,
+            "vol20_pct": None,
+            "breadth_ma50_pct": b_pct,
             "as_of": as_of,
             "bars": n_bars,
             "stale": stale,
@@ -148,24 +202,34 @@ def evaluate_ihsg(df: pd.DataFrame | None) -> dict:
     scale = exposure_from_indicators(
         raw_close, raw_sma50, raw_sma200, mode="sma50_200_half"
     )
+    triggers: list[str] = []
+    if scale < BULL_SCALE:
+        triggers.append("SMA50 < SMA200")
+
     raw_vol20 = float(last["vol20"]) if ("vol20" in last and pd.notna(last["vol20"])) else None
-    vol_note = None
+    vol20_pct = round(raw_vol20 * 100.0, 1) if raw_vol20 is not None else None
     if raw_vol20 is not None:
-        if raw_vol20 > 0.30 and scale > 0.25:
-            scale = 0.25
-            vol_note = f"volatilitas IHSG tinggi ({raw_vol20 * 100:.1f}% > 30%)"
-        elif raw_vol20 > 0.22 and scale > DEFENSIVE_SCALE:
-            scale = DEFENSIVE_SCALE
-            vol_note = f"volatilitas IHSG meningkat ({raw_vol20 * 100:.1f}% > 22%)"
+        if raw_vol20 > 0.30:
+            scale = min(scale, 0.25)
+            triggers.append(f"volatilitas IHSG tinggi ({vol20_pct:.1f}% > 30%)")
+        elif raw_vol20 > 0.22:
+            scale = min(scale, DEFENSIVE_SCALE)
+            triggers.append(f"volatilitas IHSG meningkat ({vol20_pct:.1f}% > 22%)")
+
+    if b_val is not None:
+        if b_val < 0.25:
+            scale = min(scale, 0.25)
+            triggers.append(f"breadth MA50 sangat lemah ({b_pct:.1f}% < 25%)")
+        elif b_val < 0.40:
+            scale = min(scale, DEFENSIVE_SCALE)
+            triggers.append(f"breadth MA50 lemah ({b_pct:.1f}% < 40%)")
+
     gap_pct = round((raw_sma50 / raw_sma200 - 1.0) * 100.0, 2)
     if scale < BULL_SCALE:
         pct_lbl = int(round(scale * 100))
-        lbl = f"defensif ({vol_note})" if vol_note else "defensif (SMA50 < SMA200)"
-        rsn = (
-            f"IHSG {vol_note} — porsi & risiko dipangkas ke {pct_lbl}%"
-            if vol_note
-            else f"IHSG defensif (SMA50 < SMA200) — porsi & risiko dipangkas ke {pct_lbl}%"
-        )
+        cause = " + ".join(triggers) if triggers else "SMA50 < SMA200"
+        lbl = f"defensif ({cause})"
+        rsn = f"IHSG {cause} — porsi & risiko dipangkas ke {pct_lbl}%"
         return {
             "status": "DEFENSIVE",
             "label": lbl,
@@ -174,6 +238,8 @@ def evaluate_ihsg(df: pd.DataFrame | None) -> dict:
             "sma50": sma50,
             "sma200": sma200,
             "gap_pct": gap_pct,
+            "vol20_pct": vol20_pct,
+            "breadth_ma50_pct": b_pct,
             "as_of": as_of,
             "bars": n_bars,
             "stale": stale,
@@ -187,6 +253,8 @@ def evaluate_ihsg(df: pd.DataFrame | None) -> dict:
         "sma50": sma50,
         "sma200": sma200,
         "gap_pct": gap_pct,
+        "vol20_pct": vol20_pct,
+        "breadth_ma50_pct": b_pct,
         "as_of": as_of,
         "bars": n_bars,
         "stale": stale,

@@ -8,6 +8,15 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ---
 
+## [Unreleased] — 2026-11-26
+
+- **Peningkatan akurasi analisis saham lintas-modul (`regime`, `pasar`, `verdict`, `cek`, `kualitas`, `screener`, `desktop_monitor`, `desktop`):**
+  - **Rezim pasar 3-tier (`vol_breadth_3tier`, `core/regime.py`, `core/pasar.py`)**: menambahkan `compute_breadth_ma50` (% emiten di atas SMA50 dari `/scan`) dan mengaktifkan pemangkasan eksposur `0.50x` (`<40%`) serta `0.25x` (`<25%`) yang tervalidasi di `data/regime_eval.json` (Sharpe `0.789`, Calmar `0.457`).
+  - **Guardrail anti-jebakan di `core/verdict.py` (`_verdict_beli` & `build_verdict`)**: mencegah rekomendasi beli agresif pada pola *falling knife* (`close < MA50 & MA50 < MA200`), risiko forensik kas berat (`>=40`), *momentum chase trap* (`ret20d > 15% & ret1d > 0`), `RSI >= 75`, peringkat relatif lemah (`<30%`), tren mingguan turun, rezim IHSG defensif, serta divergensi RSI bearish + distribusi CMF20; menampilkan CMF20, divergensi RSI, dan Volume Profile POC.
+  - **Audit `/cek` (`core/cek.py`)**: menyelaraskan deteksi ARB lock ke batas dinamis BEI 2026 (`pricing.arb_pct`, 7% reguler), menambah veto keras `PBV <= 0` (ekuitas negatif), `DER > 300%` non-keuangan, dan forensik kas berat (`>=40` poin + pengurangan poin `>=15`/`>=25`), menambahkan konteks `sector_relative_valuation`, `cmf20` & `detect_rsi_divergence`, serta menahan `LAYAK` ke `TUNGGU` saat *momentum chase trap*.
+  - **Saringan kualitas & screener (`core/kualitas.py`, `core/screener.py`)**: menolak emiten non-keuangan `DER > 300%` dan `ocf_negatif_vs_laba` / forensik `>=30` di `kualitas.judge`; menahan sinyal `BELI` di screener saat papan Pemantauan Khusus, harga `< Rp50`, likuiditas `< Rp500jt/hari`, atau divergensi RSI bearish + distribusi CMF20.
+  - **Sinkronisasi Desktop (`core/desktop_monitor.py`, `desktop.py`)**: memperkaya Cek Emiten dengan sinyal lanjutan (`rel_pct`, `cmf20`, `rsi_divergence`, `poc`, `candle_patterns`, `expected_move`, `tp_sl_odds`, dan `bandar_row` fail-soft), menambah guardrail `rel_pct`/CMF/divergensi di Watchlist, serta menyambungkan cache fundamental harian ke evaluasi tesis Portofolio.
+
 ## [Unreleased] — 2026-11-25
 
 - **Overclock CPU & GPU untuk analisis riset**:
