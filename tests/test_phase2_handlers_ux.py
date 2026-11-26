@@ -168,8 +168,7 @@ def test_cek_populates_sl_prev_close_and_hides_buy_button_on_hindari(
         captured_res.update(kwargs.get("res") or {})
         out = orig_build(**kwargs)
         out["verdict"] = "HINDARI"
-        if not out.get("warnings"):
-            out["warnings"] = ["Peringatan uji ARB / kualitas"]
+        out["warnings"] = ["Peringatan uji ARB / kualitas"] + list(out.get("warnings") or [])
         return out
 
     monkeypatch.setattr(cek_handler.cekmod, "build", spy_build)

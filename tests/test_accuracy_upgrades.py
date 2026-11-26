@@ -273,7 +273,7 @@ def test_no_py311_fstring_backslashes_in_repo():
         tree = ast.parse(src, filename=str(p))
         for node in ast.walk(tree):
             if isinstance(node, ast.FormattedValue):
-                seg = ast.get_source_segment(src, node) or ""
+                seg = ast.get_source_segment(src, node.value) or ""
                 if "\\" in seg:
                     bad.append(f"{p.relative_to(repo)}:{node.lineno}: {seg[:80]}")
     assert bad == [], f"F-string tidak kompatibel Python 3.11: {bad}"
