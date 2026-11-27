@@ -309,9 +309,13 @@ def _make_kpi_card(
     lbl_val.pack(fill="x", pady=(3, 1))
     lbl_sub = tk.Label(
         inner, text=default_sub, bg=THEME["card"], fg=THEME["dim"],
-        font=FONT_SMALL, anchor="w",
+        font=FONT_SMALL, anchor="w", justify="left", wraplength=240,
     )
     lbl_sub.pack(fill="x")
+    lbl_sub.bind(
+        "<Configure>",
+        lambda e, w=lbl_sub: w.configure(wraplength=max(140, e.width - 4)),
+    )
     if tooltip:
         for w in (frame, inner, lbl_title, lbl_val, lbl_sub):
             attach_tooltip(w, tooltip)

@@ -80,6 +80,9 @@ class CekTabMixin:
         ttk.Button(
             bar, text="📋 Salin Order Stockbit", style="Ghost.TButton", command=self._copy_cek_order,
         ).pack(side="left", padx=(0, 6))
+        ttk.Button(
+            bar, text="💼 Catat Beli", style="Ghost.TButton", command=self._cek_prefill_buy,
+        ).pack(side="left", padx=(0, 6))
         # Lompat ke fitur terkait ticker yang sedang dicek
         ttk.Button(
             bar, text="→ Sinyal", style="Ghost.TButton", command=self._cek_goto_sinyal,
@@ -110,7 +113,11 @@ class CekTabMixin:
             highlightbackground=THEME["border"],
             highlightthickness=1,
         )
-        self.lbl_cek_header.pack(fill="x", padx=8, pady=(0, 6))
+        self.lbl_cek_header.pack(fill="x", padx=8, pady=(0, 2))
+        self.canvas_cek_gauge = tk.Canvas(
+            self.tab_cek, bg=THEME["bg_elev"], height=6, highlightthickness=0, bd=0,
+        )
+        self.canvas_cek_gauge.pack(fill="x", padx=8, pady=(0, 6))
 
         # Kartu ringkasan RENCANA BELI (Entry/SL/TP/Lot/Biaya/Risiko) langsung terlihat
         plan_row = tk.Frame(self.tab_cek, bg=THEME["bg"], padx=8)
@@ -262,6 +269,7 @@ class CekTabMixin:
             f"PowerScore: {ps.get('rating', '-')} ({ps_pct:.0f}%)"
         )
         self.lbl_cek_header.configure(text=header_txt, fg=v_clr)
+        self._draw_cek_gauge(ps_pct, v_clr)
         plan_reason = None if plan.get("ok") else (plan.get("reason") or "tidak cukup modal / ditolak batas risiko")
         self._set_plan_cards(
             format_plan_levels(plan),
@@ -479,6 +487,27 @@ class CekTabMixin:
     def _cek_add_watchlist(self) -> None:
         sym = (self._last_cek_detail or {}).get("ticker") or self.var_cek_ticker.get()
         self._add_watchlist(sym)
+
+    def _cek_prefill_buy(self) -> None:
+        detail = self._last_cek_detail or {}
+        sym = detail.get("ticker") or self.var_cek_ticker.get().strip().upper().replace(".JK", "")
+        if not sym:
+            return
+        plan = detail.get("plan") or {}
+        snap = (detail.get("res") or {}).get("snap") or {}
+        px = plan.get("entry") or snap.get("close")
+        lots = int(plan.get("lots") or 1)
+        self._prefill_order_form(sym, "BELI", px, max(1, lots))
+
+    def _draw_cek_gauge(self, pct: float, color: str) -> None:
+        if not hasattr(self, "canvas_cek_gauge"):
+            return
+        cv = self.canvas_cek_gauge
+        cv.delete("all")
+        w = max(200, cv.winfo_width())
+        norm = max(0.0, min(1.0, (float(pct) + 100.0) / 200.0))
+        cv.create_rectangle(0, 0, w, 6, fill=THEME["card"], outline="")
+        cv.create_rectangle(0, 0, max(6.0, w * norm), 6, fill=color, outline="")
 
     def _save_cek_chart_png(self) -> None:
         src = (self._last_cek_detail or {}).get("chart_path")

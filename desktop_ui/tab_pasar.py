@@ -14,6 +14,7 @@ from core.desktop_helpers import (
     _fmt_pct,
     _news_item_tag,
     _safe_float,
+    format_stale_age,
     hit_test_rects,
     match_sector_option,
 )
@@ -30,12 +31,26 @@ from desktop_ui.widgets import (
 
 class PasarTabMixin:
     def _build_market_tab(self) -> None:
+        self._hover_sector_name: str | None = None
+        self.var_quick_jump = tk.StringVar()
+
         ctrl = tk.Frame(self.tab_market, bg=THEME["bg"], padx=8, pady=8)
         ctrl.pack(fill="x")
         tk.Label(
             ctrl,
-            text="Ringkasan Kondisi Pasar BEI, Rezim IHSG, Breadth /scan, Asing & Sentimen",
+            text="Cek Cepat:",
             bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL_BOLD,
+        ).pack(side="left", padx=(0, 4))
+        ent_qj = self._entry(ctrl, self.var_quick_jump, width=10)
+        ent_qj.pack(side="left", padx=(0, 4))
+        ent_qj.bind("<Return>", lambda _e: self._market_quick_jump())
+        ttk.Button(
+            ctrl, text="🔍 Cek", style="Ghost.TButton", command=self._market_quick_jump,
+        ).pack(side="left", padx=(0, 12))
+        tk.Label(
+            ctrl,
+            text="Ringkasan Kondisi Pasar BEI, Rezim IHSG, Breadth /scan & Sentimen",
+            bg=THEME["bg"], fg=THEME["muted"], font=FONT_SMALL,
         ).pack(side="left")
         # Lompat cepat ke fitur terkait (semua fitur saling terhubung)
         nav = tk.Frame(ctrl, bg=THEME["bg"])
@@ -81,10 +96,16 @@ class PasarTabMixin:
             body, bg=THEME["card"], highlightbackground=THEME["border"],
             highlightthickness=1, padx=10, pady=8,
         )
-        tk.Label(
-            left, text="ROTASI SEKTOR BEI (IDX-IC 1 HARI) — klik bar untuk filter Sinyal Pasar",
+        self.lbl_sector_title = tk.Label(
+            left, text="ROTASI SEKTOR BEI (1 HARI) — klik bar untuk filter Sinyal Pasar",
             bg=THEME["card"], fg=THEME["accent"], font=FONT_SMALL_BOLD, anchor="w",
-        ).pack(fill="x", pady=(0, 6))
+        )
+        self.lbl_sector_title.pack(fill="x", pady=(0, 6))
+        self.canvas_breadth = tk.Canvas(
+            left, bg=THEME["card"], height=26, highlightthickness=0, bd=0,
+        )
+        self.canvas_breadth.pack(fill="x", pady=(0, 6))
+        self.canvas_breadth.bind("<Configure>", lambda _e: self._draw_breadth_bar())
         self.canvas_sectors = tk.Canvas(
             left, bg=THEME["bg_elev"], highlightthickness=0, bd=0,
         )
@@ -93,6 +114,7 @@ class PasarTabMixin:
         # Klik bar sektor -> lompat ke Sinyal Pasar dengan filter sektor tersebut
         self.canvas_sectors.bind("<Button-1>", self._on_sector_click)
         self.canvas_sectors.bind("<Motion>", self._on_sector_motion)
+        self.canvas_sectors.bind("<Leave>", self._on_sector_leave)
         body.add(left, stretch="always", minsize=420)
 
         right = tk.Frame(
@@ -151,17 +173,22 @@ class PasarTabMixin:
             color=ihsg_clr,
         )
 
-        reg_label = str(reg.get("label") or "TIDAK TERSEDIA")
+        reg_status = str(reg.get("status") or "").upper()
+        reg_short = {"DEFENSIVE": "DEFENSIF", "BULL": "BULLISH", "CAUTION": "WASPADA"}.get(
+            reg_status, reg_status or "NA"
+        )
+        reg_label = str(reg.get("label") or reg_short)
         scale = _safe_float(reg.get("exposure_scale"), 1.0) or 1.0
         reg_clr = THEME["green"] if scale >= 0.99 else (THEME["amber"] if scale >= 0.45 else THEME["red"])
+        reg_sub = str(reg.get("reason") or reg.get("summary") or "SMA50 vs SMA200 ^JKSE")
         _set_kpi(
             self.mk_regime,
-            f"{reg_label} ({scale:.1f}x)",
-            str(reg.get("reason") or reg.get("summary") or "SMA50 vs SMA200 ^JKSE"),
+            f"{reg_short} · {scale:.1f}x",
+            reg_sub[:78] + ("…" if len(reg_sub) > 78 else ""),
             color=reg_clr,
         )
         self.var_regime_badge.set(
-            f"IHSG {_fmt_num(close_val, 0)} ({_fmt_arrow_pct(ret1d)}) · Rezim {reg_label} ({scale:.1f}x)"
+            f"IHSG {_fmt_num(close_val, 0)} ({_fmt_arrow_pct(ret1d)}) · {reg_short} {scale:.1f}x"
         )
         self.lbl_regime.configure(fg=reg_clr)
 
@@ -193,29 +220,56 @@ class PasarTabMixin:
                 color=f_clr,
             )
         else:
+            raw_f_reason = str(foreign.get("reason") or "").strip()
+            f_reason = (
+                "Data asing BEI belum tersedia"
+                if (not raw_f_reason or raw_f_reason.lower() == "tidak diminta")
+                else raw_f_reason
+            )
             _set_kpi(
                 self.mk_foreign,
-                "tidak tersedia",
-                str(foreign.get("reason") or "data asing BEI offline"),
+                "Tidak tersedia",
+                f_reason,
                 color=THEME["muted"],
             )
 
         cond = str(data.get("condition") or "-")
-        stale_txt = str(data.get("index_stale_age") or data.get("as_of_label") or "-")
+        as_of_txt = str(data.get("as_of_label") or "-")
+        age_txt = format_stale_age(data.get("index_stale_age"))
+        fresh_sub = f"{as_of_txt}" + (f" · cache {age_txt}" if age_txt else "")
         cond_clr = THEME["green"] if "KONDUSIF" in cond.upper() else (
             THEME["red"] if "WASPADA" in cond.upper() or "BERAT" in cond.upper() else THEME["amber"]
         )
         _set_kpi(
             self.mk_cond,
             cond,
-            f"As of: {stale_txt}",
+            fresh_sub,
             color=cond_clr,
         )
 
+        self._draw_breadth_bar()
         self._draw_sector_bars()
 
+        if scale <= 0.3:
+            action_tip = (
+                f"💡 SARAN AKSI: Pasar sedang sangat defensif (skala {scale:.1f}x). "
+                "Utamakan proteksi modal, perkecil lot, dan hindari mengejar breakout."
+            )
+        elif scale < 0.99:
+            action_tip = (
+                f"💡 SARAN AKSI: Pasar berhati-hati (skala {scale:.1f}x). "
+                "Fokus hanya saham berperingkat atas dengan Stop-Loss ketat."
+            )
+        else:
+            action_tip = (
+                f"💡 SARAN AKSI: Rezim pasar konstruktif (skala {scale:.1f}x). "
+                "Eksekusi kandidat BELI berkualitas sesuai batas risiko modal."
+            )
+
         lines = [
-            f"KONDISI PASAR: {cond} ({data.get('as_of_label') or '-'})",
+            action_tip,
+            "",
+            f"KONDISI PASAR: {cond} ({as_of_txt})",
             f"Catatan Delay: {data.get('delay_note') or '-'}",
             "",
         ]
@@ -240,6 +294,48 @@ class PasarTabMixin:
             f"Pasar diperbarui ({datetime.now().strftime('%H:%M:%S')} WIB) · Rezim {reg_label}"
         )
 
+    def _market_quick_jump(self) -> None:
+        sym = self.var_quick_jump.get().strip().upper().replace(".JK", "")
+        if not sym:
+            return
+        self.var_quick_jump.set("")
+        self._open_cek_ticker(sym)
+
+    def _draw_breadth_bar(self) -> None:
+        if not hasattr(self, "canvas_breadth"):
+            return
+        cv = self.canvas_breadth
+        cv.delete("all")
+        w = max(240, cv.winfo_width())
+        br = (self._last_market_pulse or {}).get("breadth") or {}
+        if not br.get("ok"):
+            cv.create_text(
+                4, 13, text="Breadth /scan belum tersedia", anchor="w",
+                fill=THEME["dim"], font=FONT_SMALL,
+            )
+            return
+        adv = int(br.get("advancing") or 0)
+        dec = int(br.get("declining") or 0)
+        tot = max(1, int(br.get("total") or (adv + dec)))
+        flat = max(0, tot - adv - dec)
+        bar_y0, bar_y1 = 14, 24
+        x_adv = w * (adv / tot)
+        x_flat = x_adv + w * (flat / tot)
+        if adv > 0:
+            cv.create_rectangle(0, bar_y0, x_adv, bar_y1, fill=THEME["green"], outline="")
+        if flat > 0:
+            cv.create_rectangle(x_adv, bar_y0, x_flat, bar_y1, fill=THEME["dim"], outline="")
+        if dec > 0:
+            cv.create_rectangle(x_flat, bar_y0, w, bar_y1, fill=THEME["red"], outline="")
+        cv.create_text(
+            2, 6, text=f"▲ Naik {adv} ({adv / tot * 100:.0f}%)",
+            anchor="w", fill=THEME["green"], font=FONT_SMALL_BOLD,
+        )
+        cv.create_text(
+            w - 2, 6, text=f"▼ Turun {dec} ({dec / tot * 100:.0f}%)",
+            anchor="e", fill=THEME["red"], font=FONT_SMALL_BOLD,
+        )
+
     def _draw_sector_bars(self) -> None:
         cv = self.canvas_sectors
         cv.delete("all")
@@ -247,13 +343,30 @@ class PasarTabMixin:
         w = max(360, cv.winfo_width())
         h = max(260, cv.winfo_height())
 
-        sec_info = (self._last_market_pulse or {}).get("sectors") or {}
+        pulse = self._last_market_pulse or {}
+        sec_info = pulse.get("sectors") or {}
+        is_fallback = False
         if not sec_info.get("ok"):
-            msg = sec_info.get("reason") or "Data indeks sektor BEI tidak tersedia (atau diblokir IP)."
-            cv.create_text(
-                w // 2, h // 2, text=msg, fill=THEME["muted"], font=FONT_SMALL, width=w - 40,
+            fb = pulse.get("sectors_fallback") or {}
+            if fb.get("ok"):
+                sec_info = fb
+                is_fallback = True
+            else:
+                msg = (
+                    "Data rotasi sektor BEI belum tersedia.\n"
+                    "Jalankan '⚡ Scan BEI' di tab Sinyal Pasar untuk mengisi rotasi sektor lokal."
+                )
+                cv.create_text(
+                    w // 2, h // 2, text=msg, fill=THEME["muted"], font=FONT_SMALL,
+                    width=w - 40, justify="center",
+                )
+                return
+
+        if hasattr(self, "lbl_sector_title"):
+            src_note = "rata-rata 1H dari /scan lokal" if is_fallback else "IDX-IC 1 Hari"
+            self.lbl_sector_title.configure(
+                text=f"ROTASI SEKTOR BEI ({src_note}) — klik bar untuk filter Sinyal Pasar"
             )
-            return
 
         rows = list(sec_info.get("sectors") or [])
         if not rows:
@@ -280,10 +393,17 @@ class PasarTabMixin:
             ym = y0 + row_h / 2.0
             pct = _safe_float(row.get("pct"), 0.0) or 0.0
             full_name = str(row.get("name") or row.get("code") or "-")
-            name = full_name[:22]
+            n_cnt = row.get("n")
+            disp = f"{full_name[:19]} ({n_cnt})" if n_cnt else full_name[:22]
             clr = THEME["green"] if pct > 0 else (THEME["red"] if pct < 0 else THEME["muted"])
 
-            cv.create_text(8, ym, text=name, anchor="w", fill=THEME["fg"], font=FONT_SMALL)
+            if self._hover_sector_name == full_name:
+                cv.create_rectangle(
+                    2, y0 + 1, w - 2, y0 + row_h - 1,
+                    fill=THEME["card_hover"], outline=THEME["border"], width=1,
+                )
+
+            cv.create_text(8, ym, text=disp, anchor="w", fill=THEME["fg"], font=FONT_SMALL)
             bar_len = (abs(pct) / max_abs) * half_span
             if pct >= 0:
                 x0, x1 = center_x, center_x + max(2.0, bar_len)
@@ -298,10 +418,18 @@ class PasarTabMixin:
 
     def _on_sector_motion(self, event: tk.Event) -> None:
         hit = hit_test_rects(self._sector_rects, event.x, event.y)
+        if hit != getattr(self, "_hover_sector_name", None):
+            self._hover_sector_name = hit
+            self._draw_sector_bars()
         try:
             self.canvas_sectors.configure(cursor="hand2" if hit else "")
         except Exception:
             pass
+
+    def _on_sector_leave(self, _event: tk.Event) -> None:
+        if getattr(self, "_hover_sector_name", None) is not None:
+            self._hover_sector_name = None
+            self._draw_sector_bars()
 
     def _on_sector_click(self, event: tk.Event) -> None:
         name = hit_test_rects(self._sector_rects, event.x, event.y)

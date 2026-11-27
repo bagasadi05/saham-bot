@@ -249,13 +249,13 @@ class SahamBotDesktopApp(
             "TNotebook.Tab",
             background=THEME["card"],
             foreground=THEME["muted"],
-            padding=[14, 8],
+            padding=[15, 9],
             borderwidth=0,
             font=FONT_SMALL_BOLD,
         )
         style.map(
             "TNotebook.Tab",
-            background=[("selected", THEME["accent_soft"]), ("active", THEME["card_hover"])],
+            background=[("selected", "#102542"), ("active", THEME["card_hover"])],
             foreground=[("selected", THEME["accent"]), ("active", THEME["fg"])],
         )
 
@@ -266,7 +266,7 @@ class SahamBotDesktopApp(
             foreground=THEME["fg"],
             bordercolor=THEME["border"],
             borderwidth=1,
-            rowheight=27,
+            rowheight=30,
             font=FONT_MONO,
         )
         style.configure(
@@ -347,6 +347,21 @@ class SahamBotDesktopApp(
             selectbackground=[("readonly", THEME["card"])],
             selectforeground=[("readonly", THEME["fg"])],
         )
+        for orient in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
+            style.configure(
+                orient,
+                background=THEME["border"],
+                troughcolor=THEME["bg"],
+                bordercolor=THEME["bg"],
+                arrowcolor=THEME["muted"],
+                relief="flat",
+                borderwidth=0,
+            )
+            style.map(
+                orient,
+                background=[("active", THEME["accent_dark"]), ("pressed", THEME["accent"])],
+                arrowcolor=[("active", THEME["fg"])],
+            )
         self.root.option_add("*TCombobox*Listbox.background", THEME["card"])
         self.root.option_add("*TCombobox*Listbox.foreground", THEME["fg"])
         self.root.option_add("*TCombobox*Listbox.selectBackground", THEME["accent_soft"])

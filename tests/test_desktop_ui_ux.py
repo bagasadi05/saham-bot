@@ -201,3 +201,33 @@ def test_format_plan_levels_rencana_beli():
     # tanpa rencana valid -> semua "-" (jujur, bukan angka karang)
     for bad in (None, {}, {"ok": False}, "bukan dict"):
         assert set(dh.format_plan_levels(bad).values()) == {"-"}
+
+
+def test_format_stale_age_and_news_line_tags():
+    assert dh.format_stale_age(None) == ""
+    assert dh.format_stale_age(20) == "baru saja"
+    assert dh.format_stale_age(900) == "15 mnt lalu"
+    assert dh.format_stale_age(3802.7789) == "1 jam 3 mnt lalu"
+    assert dh.classify_line("💡 SARAN AKSI: Pasar sedang defensif") == "heading"
+    assert dh.classify_line("  - [POSITIF] IHSG menguat") == "good"
+    assert dh.classify_line("  - [NEGATIF] Asing lepas BBRI") == "bad"
+    assert dh.classify_line("  - [NETRAL] IHSG dibuka datar") == "muted"
+
+
+def test_compute_scan_sectors_fallback():
+    from core import desktop_monitor as dm
+
+    rows = [
+        {"ticker": "BBCA", "sector": "Keuangan", "ret1d": 1.5},
+        {"ticker": "BBRI", "sector": "Keuangan", "ret1d": 0.5},
+        {"ticker": "BMRI", "sector": "Keuangan", "ret1d": 1.0},
+        {"ticker": "ADRO", "sector": "Energi", "ret1d": -2.0},
+        {"ticker": "PTBA", "sector": "Energi", "ret1d": -1.0},
+        {"ticker": "ITMG", "sector": "Energi", "ret1d": -3.0},
+    ]
+    res = dm._compute_scan_sectors(rows)
+    assert res["ok"] is True
+    assert res["sectors"][0]["name"] == "Keuangan"
+    assert res["sectors"][0]["pct"] == 1.0
+    assert res["sectors"][1]["name"] == "Energi"
+    assert res["sectors"][1]["pct"] == -2.0

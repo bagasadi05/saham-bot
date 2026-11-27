@@ -134,6 +134,26 @@ def format_order_ticket_text(plans: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _compute_scan_sectors(scan_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Hitung rotasi sektor rata-rata 1H dari snapshot /scan lokal sebagai fallback."""
+    buckets: dict[str, list[float]] = {}
+    for r in scan_rows or []:
+        sym = str(r.get("ticker") or "").strip().upper().removesuffix(".JK")
+        sec = str(r.get("sector") or (universe.sector_of(sym) if sym else "") or "").strip()
+        ret = _num(r.get("ret1d"))
+        if sec and ret is not None:
+            buckets.setdefault(sec, []).append(ret)
+    rows = [
+        {"name": sec, "code": sec, "pct": round(sum(vals) / len(vals), 2), "n": len(vals)}
+        for sec, vals in buckets.items()
+        if len(vals) >= 3
+    ]
+    rows.sort(key=lambda x: x["pct"], reverse=True)
+    if not rows:
+        return {"ok": False, "sectors": [], "reason": "Snapshot /scan belum cukup untuk menghitung sektor."}
+    return {"ok": True, "sectors": rows, "source": "snapshot /scan"}
+
+
 def fetch_market_pulse(
     *,
     include_idx: bool = True,
@@ -212,6 +232,10 @@ def fetch_market_pulse(
     )
     if index_stale_age is not None:
         report["index_stale_age"] = index_stale_age
+    if not (report.get("sectors") or {}).get("ok") and scan_rows:
+        fb = _compute_scan_sectors(scan_rows)
+        if fb.get("ok"):
+            report["sectors_fallback"] = fb
     report["delay_note"] = DELAY_DISCLOSURE
     report["market_open"] = marketcal.market_open(now)
     return report

@@ -230,6 +230,21 @@ def busy_text(base: str, frame: int) -> str:
     return f"{spinner_frame(frame)} {base}…"
 
 
+def format_stale_age(age_sec: Any) -> str:
+    """Format umur cache dalam detik menjadi teks ramah pengguna (mis. '63 mnt lalu')."""
+    val = _safe_float(age_sec)
+    if val is None or val < 0:
+        return ""
+    mins = int(round(val / 60.0))
+    if mins < 1:
+        return "baru saja"
+    if mins < 60:
+        return f"{mins} mnt lalu"
+    hours = mins // 60
+    rem = mins % 60
+    return f"{hours} jam {rem} mnt lalu" if rem else f"{hours} jam lalu"
+
+
 def classify_line(line: str) -> str:
     """Klasifikasi satu baris teks penjelasan menjadi tag gaya agar enak dibaca.
 
@@ -239,9 +254,17 @@ def classify_line(line: str) -> str:
     s = str(line or "").strip()
     if not s:
         return "normal"
-    if s.startswith("===") or (s.startswith("---") and s.endswith("---")):
+    if s.startswith("===") or (s.startswith("---") and s.endswith("---")) or s.startswith("💡"):
         return "heading"
     up = s.upper()
+    if up.startswith("KONDISI PASAR:") or up.startswith("SENTIMEN BERITA PASAR:"):
+        return "heading"
+    if "[POSITIF]" in up:
+        return "good"
+    if "[NEGATIF]" in up:
+        return "bad"
+    if "[NETRAL]" in up:
+        return "muted"
     if "⛔" in s or "VETO" in up or "HINDARI" in up:
         return "bad"
     if "⚠" in s or "TUNGGU" in up or "STALE" in up:
@@ -250,7 +273,7 @@ def classify_line(line: str) -> str:
         return "bad"
     if s.startswith("PRO") or "LAYAK" in up or "PENDUKUNG" in up:
         return "good"
-    if s.startswith("🔎") or "TIDAK TERSEDIA" in up:
+    if s.startswith("🔎") or "TIDAK TERSEDIA" in up or s.startswith("Catatan Delay:"):
         return "muted"
     return "normal"
 
