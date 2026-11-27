@@ -596,3 +596,135 @@ def simulate_equity_backtest(
         "equity_curve": equity_curve,
         "trades": list(reversed(trades))[:100],
     }
+
+
+def parse_bulk_executions(raw_text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Parse daftar transaksi manual (CSV / tab / spasi) untuk impor cepat ke portofolio.
+
+    Format per baris: ``TICKER, BELI|JUAL, HARGA, LOT [, CATATAN]``
+    """
+    parsed: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for lineno, line in enumerate((raw_text or "").splitlines(), start=1):
+        txt = line.strip()
+        if not txt or txt.startswith("#"):
+            continue
+        if "," in txt or "\t" in txt or ";" in txt:
+            sep = "\t" if "\t" in txt else (";" if ";" in txt else ",")
+            parts = [p.strip() for p in txt.split(sep)]
+        else:
+            parts = txt.split()
+        if len(parts) < 4:
+            errors.append(f"Baris {lineno}: butuh minimal 4 kolom (Kode, BELI/JUAL, Harga, Lot).")
+            continue
+        first_low = parts[0].lower()
+        if first_low in ("ticker", "kode", "saham", "symbol"):
+            continue  # lewati baris header CSV
+        ticker = parts[0].upper().replace(".JK", "")
+        side_raw = parts[1].upper()
+        if side_raw in ("BUY", "B", "BELI"):
+            side = "BELI"
+        elif side_raw in ("SELL", "S", "JUAL"):
+            side = "JUAL"
+        else:
+            errors.append(f"Baris {lineno} ({ticker}): aksi '{parts[1]}' harus BELI atau JUAL.")
+            continue
+        px_clean = parts[2].replace("Rp", "").replace("rp", "").replace(".", "").replace(",", ".").strip()
+        lot_clean = parts[3].replace("lot", "").replace("LOT", "").replace(".", "").strip()
+        try:
+            price = float(px_clean)
+            lots = int(float(lot_clean))
+        except ValueError:
+            errors.append(f"Baris {lineno} ({ticker}): harga/lot tidak valid ({parts[2]}, {parts[3]}).")
+            continue
+        if price <= 0 or lots <= 0:
+            errors.append(f"Baris {lineno} ({ticker}): harga dan lot harus > 0.")
+            continue
+        notes = " ".join(parts[4:]).strip() if len(parts) > 4 else "Impor CSV Desktop"
+        parsed.append({"ticker": ticker, "side": side, "price": price, "lots": lots, "notes": notes})
+    return parsed, errors
+
+
+def compute_portfolio_vs_ihsg(
+    rows: list[dict[str, Any]],
+    *,
+    days: int = 45,
+    fetch_fn: Any = None,
+) -> dict[str, Any]:
+    """Hitung kurva kinerja relatif (%) bobot posisi portofolio saat ini vs IHSG (^JKSE)."""
+    from core import data as datamod
+
+    if not rows:
+        return {"ok": False, "reason": "Belum ada posisi portofolio terbuka."}
+
+    def _fetch(sym: str, raw: bool = False) -> Any:
+        if fetch_fn is not None:
+            return fetch_fn(sym, raw)
+        return datamod.fetch_history(sym, period="3mo", raw_symbol=raw)
+
+    ihsg_df = _fetch("^JKSE", True)
+    if ihsg_df is None or len(ihsg_df) < 5:
+        return {"ok": False, "reason": "Data historis IHSG (^JKSE) tidak tersedia."}
+
+    ihsg_sub = ihsg_df["close"].dropna().tail(max(10, min(90, days)))
+    if len(ihsg_sub) < 5:
+        return {"ok": False, "reason": "Riwayat IHSG terlalu pendek."}
+
+    date_keys = [idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10] for idx in ihsg_sub.index]
+    ihsg_vals = {d: float(v) for d, v in zip(date_keys, ihsg_sub.to_numpy(dtype=float), strict=True)}
+    ihsg_base = float(ihsg_sub.iloc[0])
+    if ihsg_base <= 0:
+        return {"ok": False, "reason": "Baseline IHSG tidak valid."}
+
+    # Ambil seri close tiap emiten yang dipegang
+    holdings_series: list[tuple[int, dict[str, float]]] = []
+    for r in rows:
+        sym = str(r.get("ticker") or "").strip().upper()
+        lots = int(r.get("lots") or 0)
+        if not sym or lots <= 0:
+            continue
+        df_s = _fetch(sym, False)
+        if df_s is None or df_s.empty:
+            continue
+        cl = df_s["close"].dropna()
+        dmap = {
+            (idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]): float(v)
+            for idx, v in zip(cl.index, cl.to_numpy(dtype=float), strict=True)
+        }
+        if dmap:
+            holdings_series.append((lots, dmap))
+
+    if not holdings_series:
+        return {"ok": False, "reason": "Data historis emiten portofolio tidak tersedia."}
+
+    series: list[dict[str, Any]] = []
+    port_base: float | None = None
+    last_known: list[float] = [0.0] * len(holdings_series)
+
+    for d in date_keys:
+        tot_val = 0.0
+        for idx_h, (lots, dmap) in enumerate(holdings_series):
+            px = dmap.get(d)
+            if px and px > 0:
+                last_known[idx_h] = px
+            tot_val += lots * 100.0 * last_known[idx_h]
+        if tot_val <= 0:
+            continue
+        if port_base is None:
+            port_base = tot_val
+        p_pct = round((tot_val / port_base - 1.0) * 100.0, 2)
+        i_pct = round((ihsg_vals[d] / ihsg_base - 1.0) * 100.0, 2)
+        series.append({"time": d, "portfolio_pct": p_pct, "ihsg_pct": i_pct})
+
+    if len(series) < 2:
+        return {"ok": False, "reason": "Overlap tanggal portofolio dan IHSG kurang panjang."}
+
+    last_pt = series[-1]
+    return {
+        "ok": True,
+        "days": len(series),
+        "portfolio_ret_pct": last_pt["portfolio_pct"],
+        "ihsg_ret_pct": last_pt["ihsg_pct"],
+        "alpha_pct": round(last_pt["portfolio_pct"] - last_pt["ihsg_pct"], 2),
+        "series": series,
+    }
