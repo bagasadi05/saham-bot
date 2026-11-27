@@ -1,8 +1,12 @@
 const state = {
   tab: 'pasar',
   chatId: 'desktop',
+  defaultProfileId: 'desktop',
   modal: 10000000,
+  defaultModal: 10000000,
   syariah: false,
+  refresh: '15m',
+  refreshOptions: { Manual: 0, '5m': 5, '15m': 15, '30m': 30 },
   sinyalFilter: 'ALL',
   sinyalRows: [],
   sinyalSort: { col: 'rel_pct', asc: false },
@@ -18,8 +22,8 @@ const state = {
 const fmtNum = (v, d=0) => v == null ? '—' : Number(v).toLocaleString('id-ID', { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmtRp = (v) => v == null ? '—' : 'Rp' + fmtNum(Math.round(v), 0);
 const fmtPct = (v) => v == null ? '—' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`;
-// --- Keamanan XSS: escape semua interpolasi data ke innerHTML ---
-const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// --- Keamanan XSS: gunakan helper window.esc dari index.html (fallback lokal) ---
+const esc = window.esc || (v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])));
 // san: seperti esc, tapi tetap mengizinkan markup inti <b>/<i>/<br> dari output core
 const san = v => esc(v).replace(/&lt;(\/?)(b|i|br)\s*\/?&gt;/gi, '<$1$2>');
 
@@ -62,11 +66,11 @@ function renderRecentTickers() {
   const list = getRecentTickers();
   const wrap = document.getElementById('recent-tickers-wrap');
   if (wrap) {
-    wrap.innerHTML = list.map(t => `<button onclick="openCek('${esc(t)}')" class="px-2 py-1 rounded-md bg-slate-900/90 hover:bg-sky-500/20 border border-slate-800 hover:border-sky-500/40 mono text-[11px] text-slate-300 hover:text-sky-300 transition cursor-pointer">${t}</button>`).join('');
+    wrap.innerHTML = list.map(t => `<button onclick="openCek('${esc(t)}')" class="px-2 py-1 rounded-md bg-slate-900/90 hover:bg-sky-500/20 border border-slate-800 hover:border-sky-500/40 mono text-[11px] text-slate-300 hover:text-sky-300 transition cursor-pointer">${esc(t)}</button>`).join('');
   }
   const cmdWrap = document.getElementById('cmd-tickers');
   if (cmdWrap) {
-    cmdWrap.innerHTML = list.map(t => `<button onclick="closeCmdPalette();openCek('${esc(t)}')" class="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-sky-600/30 border border-slate-700 mono text-xs text-sky-300 cursor-pointer transition">${t}</button>`).join('');
+    cmdWrap.innerHTML = list.map(t => `<button onclick="closeCmdPalette();openCek('${esc(t)}')" class="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-sky-600/30 border border-slate-700 mono text-xs text-sky-300 cursor-pointer transition">${esc(t)}</button>`).join('');
   }
 }
 
@@ -325,11 +329,36 @@ async function apiFetch(url, opts={}) {
   return data;
 }
 
+function syncRefreshSelectors() {
+  const opts = state.refreshOptions || { Manual: 0, '5m': 5, '15m': 15, '30m': 30 };
+  const keys = Object.keys(opts);
+  const topSel = document.getElementById('auto-refresh-sel');
+  if (topSel) {
+    topSel.innerHTML = keys.map(k => `<option value="${esc(k)}">Auto: ${esc(k)}</option>`).join('');
+    topSel.value = keys.includes(state.refresh) ? state.refresh : (keys[0] || 'Manual');
+  }
+  const modSel = document.getElementById('modal-refresh');
+  if (modSel) {
+    modSel.innerHTML = keys.map(k => {
+      const m = Number(opts[k]) || 0;
+      const lbl = m > 0 ? `Setiap ${m} menit` : 'Manual (Off)';
+      return `<option value="${esc(k)}">${esc(lbl)}</option>`;
+    }).join('');
+    modSel.value = keys.includes(state.refresh) ? state.refresh : (keys[0] || 'Manual');
+  }
+}
+
 async function loadProfile() {
   const p = await apiFetch(`/api/profile?chat_id=${encodeURIComponent(state.chatId)}`);
   state.chatId = p.chat_id;
   state.modal = p.modal;
   state.syariah = p.syariah;
+  if (p.default_profile_id) state.defaultProfileId = p.default_profile_id;
+  if (p.default_modal) state.defaultModal = Number(p.default_modal) || state.defaultModal;
+  if (p.refresh_options && typeof p.refresh_options === 'object') state.refreshOptions = p.refresh_options;
+  if (p.refresh) state.refresh = p.refresh;
+  syncRefreshSelectors();
+  applyAutoRefreshTimer(state.refresh, true);
   document.getElementById('top-modal-txt').textContent = p.modal >= 1e6 ? `Rp${(p.modal/1e6).toFixed(1).replace('.0','')} Jt` : fmtRp(p.modal);
   document.getElementById('syariah-dot').className = `w-2 h-2 rounded-full ${p.syariah ? 'bg-emerald-400' : 'bg-slate-600'}`;
   const syCb = document.getElementById('sinyal-syariah');
@@ -349,7 +378,7 @@ async function toggleSyariah() {
   await apiFetch('/api/profile', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ chat_id: state.chatId, modal: state.modal, syariah: state.syariah }),
+    body: JSON.stringify({ chat_id: state.chatId, modal: state.modal, syariah: state.syariah, refresh: state.refresh }),
   });
   document.getElementById('syariah-dot').className = `w-2 h-2 rounded-full ${state.syariah ? 'bg-emerald-400' : 'bg-slate-600'}`;
   const syCb = document.getElementById('sinyal-syariah');
@@ -369,16 +398,20 @@ async function toggleSinyalSyariah(checked) {
 function openProfileModal() {
   document.getElementById('modal-chat-id').value = state.chatId;
   document.getElementById('modal-amount').value = state.modal;
+  const modSel = document.getElementById('modal-refresh');
+  if (modSel) modSel.value = state.refresh || '15m';
   document.getElementById('profile-modal').classList.remove('hidden');
 }
 function closeProfileModal() { document.getElementById('profile-modal').classList.add('hidden'); }
 async function saveProfile() {
-  state.chatId = document.getElementById('modal-chat-id').value.trim() || 'desktop';
-  state.modal = Number(document.getElementById('modal-amount').value) || 10000000;
+  state.chatId = document.getElementById('modal-chat-id').value.trim() || state.defaultProfileId || 'desktop';
+  state.modal = Number(document.getElementById('modal-amount').value) || state.defaultModal || 10000000;
+  const modSel = document.getElementById('modal-refresh');
+  if (modSel && modSel.value) state.refresh = modSel.value;
   await apiFetch('/api/profile', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ chat_id: state.chatId, modal: state.modal, syariah: state.syariah }),
+    body: JSON.stringify({ chat_id: state.chatId, modal: state.modal, syariah: state.syariah, refresh: state.refresh }),
   });
   closeProfileModal();
   await loadProfile();
@@ -1186,12 +1219,8 @@ async function loadCek() {
         }).join('')
       : `<div class="text-slate-500">Tidak ada berita terbaru untuk ${d.ticker}.</div>`;
 
-    // Prefill Kalkulator Sizing Interaktif
-    document.getElementById('calc-modal').value = Math.round(state.modal || 10000000);
-    document.getElementById('calc-entry').value = plan.entry ? Math.round(plan.entry) : (snap.close ? Math.round(snap.close) : '');
-    document.getElementById('calc-sl').value = plan.sl ? Math.round(plan.sl) : '';
-    document.getElementById('calc-tp').value = plan.tp ? Math.round(plan.tp) : '';
-    recalcSizing();
+    // Prefill Kalkulator Sizing Interaktif (pastikan SL selalu valid di bawah Entry)
+    prefillCalcFromCek(d);
 
     document.getElementById('cek-bull').innerHTML = (cek.bull_points?.length ? cek.bull_points : ['Belum ada poin kuat']).map(x => `<li>${san(x)}</li>`).join('');
     document.getElementById('cek-bear').innerHTML = (cek.bear_points?.length ? cek.bear_points : ['Tidak ada risiko mayor']).map(x => `<li>${san(x)}</li>`).join('');
@@ -1617,53 +1646,193 @@ function renderTvChart(candles, plan, poc60d) {
   new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth })).observe(el);
 }
 
+function idxTickSize(p) {
+  if (p < 200) return 1;
+  if (p < 500) return 2;
+  if (p < 2000) return 5;
+  if (p < 5000) return 10;
+  return 25;
+}
+
+function roundIdxTick(p, mode = 'nearest') {
+  const num = Number(p);
+  if (!Number.isFinite(num) || num <= 1) return 1;
+  const t = idxTickSize(num);
+  const fn = mode === 'down' ? Math.floor : (mode === 'up' ? Math.ceil : Math.round);
+  return Math.max(1, fn(num / t) * t);
+}
+
+function parseCalcNum(raw) {
+  const s = String(raw ?? '').trim().replace(',', '.');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function copyTextSafe(txt) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(txt).catch(() => {
+      const ta = document.createElement('textarea');
+      ta.value = txt;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    });
+  }
+  const ta = document.createElement('textarea');
+  ta.value = txt;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  ta.remove();
+  return Promise.resolve();
+}
+
+function _calcRiskDist(entry) {
+  const plan = state.lastCek?.plan || {};
+  const snap = state.lastCek?.res?.snap || {};
+  const atr = Number(plan.atr || snap.atr || 0);
+  if (atr > 0) return atr;
+  if (plan.entry && plan.sl && plan.entry > plan.sl) return plan.entry - plan.sl;
+  return Math.max(idxTickSize(entry), entry * 0.04);
+}
+
+function prefillCalcFromCek(d) {
+  const plan = d?.plan || {};
+  const snap = d?.res?.snap || {};
+  const entry = plan.entry ? roundIdxTick(plan.entry) : (snap.close ? roundIdxTick(snap.close) : 0);
+  const dist = _calcRiskDist(entry || 100);
+  let sl = plan.sl ? roundIdxTick(plan.sl) : 0;
+  if (entry > 0 && (!sl || sl >= entry)) {
+    sl = roundIdxTick(Math.max(1, entry - dist), 'down');
+    if (sl >= entry) sl = Math.max(1, entry - idxTickSize(Math.max(1, entry - 1)));
+  }
+  let tp = plan.tp ? roundIdxTick(plan.tp) : 0;
+  if (entry > 0 && (!tp || tp <= entry)) {
+    tp = roundIdxTick(entry + 2 * Math.max(entry - sl, dist), 'up');
+  }
+  document.getElementById('calc-modal').value = Math.round(state.modal || state.defaultModal || 10000000);
+  document.getElementById('calc-entry').value = entry || '';
+  document.getElementById('calc-sl').value = sl || '';
+  document.getElementById('calc-tp').value = tp || '';
+  recalcSizing();
+}
+
+function resetCalcDefault() {
+  if (!state.lastCek) return;
+  document.getElementById('calc-riskpct').value = '1.5';
+  prefillCalcFromCek(state.lastCek);
+  showToast('Kalkulator direset ke level rencana default');
+}
+
+function autoFixCalcSl() {
+  const entry = parseCalcNum(document.getElementById('calc-entry').value);
+  if (entry <= 0) return;
+  const dist = _calcRiskDist(entry);
+  let newSl = roundIdxTick(Math.max(1, entry - dist), 'down');
+  if (newSl >= entry) newSl = Math.max(1, entry - idxTickSize(Math.max(1, entry - 1)));
+  document.getElementById('calc-sl').value = newSl;
+  const curTp = parseCalcNum(document.getElementById('calc-tp').value);
+  if (curTp <= entry) {
+    document.getElementById('calc-tp').value = roundIdxTick(entry + 2 * (entry - newSl), 'up');
+  }
+  recalcSizing();
+  showToast(`Stop-Loss disesuaikan otomatis ke Rp${fmtNum(newSl)}`);
+}
+
+function applyCalcRiskForOneLot(pct) {
+  const clean = Math.max(0.25, Math.ceil(Number(pct) * 20) / 20);
+  document.getElementById('calc-riskpct').value = clean.toFixed(2);
+  recalcSizing();
+  showToast(`Risiko Maks disesuaikan ke ${clean.toFixed(2)}% (1 lot)`);
+}
+
 function recalcSizing() {
-  const modal = Number(document.getElementById('calc-modal').value) || 0;
-  const entry = Number(document.getElementById('calc-entry').value) || 0;
-  const sl = Number(document.getElementById('calc-sl').value) || 0;
-  const tp = Number(document.getElementById('calc-tp').value) || 0;
-  const riskPct = Number(document.getElementById('calc-riskpct').value) || 1.5;
+  const modal = parseCalcNum(document.getElementById('calc-modal').value);
+  const entry = parseCalcNum(document.getElementById('calc-entry').value);
+  const sl = parseCalcNum(document.getElementById('calc-sl').value);
+  const tp = parseCalcNum(document.getElementById('calc-tp').value);
+  const riskPct = parseCalcNum(document.getElementById('calc-riskpct').value) || 1.5;
   const out = document.getElementById('calc-output');
   if (modal <= 0 || entry <= 0 || sl <= 0 || sl >= entry) {
-    out.innerHTML = `<div class="col-span-full text-xs text-slate-500 py-1">Masukkan Modal, Entry, dan SL (SL harus di bawah Entry) untuk menghitung lot &amp; risiko.</div>`;
+    const fixBtn = (entry > 0 && sl >= entry)
+      ? `<button onclick="autoFixCalcSl()" class="ml-2 px-2.5 py-1 rounded-md border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-[11px] font-semibold text-amber-300 cursor-pointer">Sesuaikan SL di bawah Entry</button>`
+      : '';
+    out.innerHTML = `<div class="col-span-full flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200/90"><span>Masukkan Modal, Entry, dan SL (<b>SL harus di bawah Entry</b>) untuk menghitung lot &amp; risiko.</span>${fixBtn}</div>`;
     window._lastCalc = null;
     return;
   }
   const riskRpMax = modal * (riskPct / 100);
-  const lossPerLot = (entry - sl) * 100;
   const costPerLot = entry * 100 * 1.0015;
-  const maxLotsByRisk = Math.floor(riskRpMax / lossPerLot);
-  const maxLotsByCash = Math.floor(modal / costPerLot);
+  const lossPerLotNet = (entry - sl) * 100 + (entry * 100 * 0.0015) + (sl * 100 * 0.0025);
+  const profitPerLotNet = tp > entry ? ((tp - entry) * 100 - (entry * 100 * 0.0015) - (tp * 100 * 0.0025)) : 0;
+  const maxLotsByRisk = Math.floor(riskRpMax / Math.max(1, lossPerLotNet));
+  const maxLotsByCash = Math.floor(modal / Math.max(1, costPerLot));
   const lots = Math.max(0, Math.min(maxLotsByRisk, maxLotsByCash));
   const totalCost = lots * costPerLot;
-  const totalLoss = lots * lossPerLot + (lots * sl * 100 * 0.0025);
-  const netProfit = tp > entry ? (lots * (tp - entry) * 100 - lots * entry * 100 * 0.0015 - lots * tp * 100 * 0.0025) : 0;
+  const totalLoss = lots * lossPerLotNet;
+  const netProfit = lots * profitPerLotNet;
   const rr = tp > entry ? ((tp - entry) / (entry - sl)) : 0;
-  window._lastCalc = { entry, sl, tp, lots, totalCost, totalLoss, netProfit, rr };
+  window._lastCalc = { entry, sl, tp, lots, totalCost, totalLoss, netProfit, rr, costPerLot, lossPerLotNet };
+
+  let noteHtml = '';
+  if (lots === 0) {
+    if (maxLotsByCash < 1) {
+      noteHtml = `<div class="col-span-full rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-200">Harga 1 lot (${fmtRp(costPerLot)}) melebihi modal (${fmtRp(modal)}). Naikkan Modal minimal ke <b>${fmtRp(Math.ceil(costPerLot))}</b> untuk beli 1 lot.</div>`;
+    } else {
+      const needRiskPct = (lossPerLotNet / modal) * 100;
+      noteHtml = `<div class="col-span-full flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-200"><span>Batas risiko ${riskPct}% (${fmtRp(riskRpMax)}) &lt; rugi 1 lot ke SL (${fmtRp(lossPerLotNet)} · ${needRiskPct.toFixed(2)}% modal).</span><button onclick="applyCalcRiskForOneLot(${needRiskPct.toFixed(3)})" class="px-2.5 py-1 rounded-md border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 font-semibold text-amber-300 cursor-pointer">Simulasi 1 Lot (${needRiskPct.toFixed(2)}%)</button></div>`;
+    }
+  }
+
+  const refLot = lots > 0 ? lots : 1;
+  const dispCost = lots > 0 ? totalCost : costPerLot;
+  const dispLoss = lots > 0 ? totalLoss : lossPerLotNet;
+  const dispProfit = lots > 0 ? netProfit : profitPerLotNet;
+  const refSuffix = lots > 0 ? '' : ' (ref. 1 lot)';
+
   out.innerHTML = [
-    ['Rekomendasi Lot', `${lots} lot`, `${lots * 100} lembar`, lots > 0 ? 'text-white' : 'text-amber-400'],
-    ['Est. Modal Beli', fmtRp(totalCost), `${((totalCost/modal)*100).toFixed(1)}% dari modal`, 'text-sky-300'],
-    ['Rugi Maks (SL)', fmtRp(totalLoss), `-${((totalLoss/modal)*100).toFixed(2)}% modal`, 'text-rose-400'],
-    ['Profit Net (TP)', tp > entry ? fmtRp(netProfit) : '—', tp > entry ? `+${((netProfit/Math.max(1,totalCost))*100).toFixed(1)}%` : 'Isi TP > Entry', 'text-emerald-400'],
+    ['Rekomendasi Lot', `${lots} lot`, lots > 0 ? `${lots * 100} lembar` : `0 lot sesuai batas risiko`, lots > 0 ? 'text-white' : 'text-amber-400'],
+    ['Est. Modal Beli' + refSuffix, fmtRp(dispCost), `${((dispCost/modal)*100).toFixed(1)}% dari modal (${refLot} lot)`, 'text-sky-300'],
+    ['Rugi Maks (SL)' + refSuffix, fmtRp(dispLoss), `-${((dispLoss/modal)*100).toFixed(2)}% modal`, 'text-rose-400'],
+    ['Profit Net (TP)' + refSuffix, tp > entry ? fmtRp(dispProfit) : '—', tp > entry ? `+${((dispProfit/Math.max(1,dispCost))*100).toFixed(1)}%` : 'Isi TP > Entry', 'text-emerald-400'],
     ['Risk : Reward', rr > 0 ? `1 : ${rr.toFixed(2)}` : '—', rr >= 2 ? 'Ideal (≥ 1:2)' : 'Ketat (< 1:2)', rr >= 2 ? 'text-emerald-400' : 'text-amber-400'],
-  ].map(([t,v,s,c]) => `<div class="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2"><div class="text-[10px] uppercase text-slate-500">${t}</div><div class="mono text-xs font-bold mt-0.5 ${c}">${v}</div><div class="text-[10px] text-slate-400">${s}</div></div>`).join('');
+  ].map(([t,v,s,c]) => `<div class="rounded-lg bg-slate-900/80 border border-slate-800 px-3 py-2"><div class="text-[10px] uppercase text-slate-500">${t}</div><div class="mono text-xs font-bold mt-0.5 ${c}">${v}</div><div class="text-[10px] text-slate-400">${s}</div></div>`).join('') + noteHtml;
 }
 
 function applyCalcPullback() {
-  const pb = state.lastCek?.plan?.entry_pullback;
-  if (!pb) return showToast('Level pullback tidak tersedia');
-  document.getElementById('calc-entry').value = Math.round(pb);
+  const plan = state.lastCek?.plan || {};
+  const pbRaw = plan.entry_pullback;
+  if (!pbRaw) return showToast('Level pullback tidak tersedia untuk emiten ini');
+  const pb = roundIdxTick(pbRaw);
+  const dist = _calcRiskDist(pb);
+  let newSl = roundIdxTick(Math.max(1, pb - dist), 'down');
+  if (newSl >= pb) newSl = Math.max(1, pb - idxTickSize(Math.max(1, pb - 1)));
+  document.getElementById('calc-entry').value = pb;
+  document.getElementById('calc-sl').value = newSl;
+  const curTp = parseCalcNum(document.getElementById('calc-tp').value);
+  if (curTp <= pb) {
+    document.getElementById('calc-tp').value = roundIdxTick(pb + 2 * (pb - newSl), 'up');
+  }
   recalcSizing();
-  showToast(`Entry simulasi diubah ke Pullback Rp${fmtNum(pb)}`);
+  showToast(`Entry diubah ke Pullback Rp${fmtNum(pb)} & SL disesuaikan ke Rp${fmtNum(newSl)}`);
 }
 
 function copyCalcOrder() {
   const c = window._lastCalc;
   const sym = state.lastCek?.ticker || document.getElementById('cek-input').value.trim().toUpperCase();
-  if (!c || !c.lots) return showToast('Lot simulasi masih 0 — naikkan modal atau sesuaikan SL');
-  const txt = `ORDER MANUAL STOCKBIT — ${sym}\nBUY LIMIT: Rp${fmtNum(c.entry)} × ${c.lots} lot (${fmtRp(c.totalCost)})\nSTOP-LOSS: Rp${fmtNum(c.sl)} (risiko ${fmtRp(c.totalLoss)})\nTARGET TP: Rp${fmtNum(c.tp)} (R:R 1:${c.rr.toFixed(2)})`;
-  navigator.clipboard.writeText(txt);
-  showToast('Tiket order simulasi disalin ke clipboard');
+  if (!c) return showToast('Periksa Entry & SL terlebih dahulu (SL harus di bawah Entry)');
+  const useLots = c.lots > 0 ? c.lots : 1;
+  const cost = c.lots > 0 ? c.totalCost : c.costPerLot;
+  const loss = c.lots > 0 ? c.totalLoss : c.lossPerLotNet;
+  const note = c.lots > 0 ? '' : ' [CATATAN: melebihi batas risiko %, gunakan 1 lot saja bila sadar risiko]';
+  const txt = `ORDER MANUAL STOCKBIT — ${sym}\nBUY LIMIT: Rp${fmtNum(c.entry)} × ${useLots} lot (${fmtRp(cost)})\nSTOP-LOSS: Rp${fmtNum(c.sl)} (risiko ${fmtRp(loss)})\nTARGET TP: Rp${fmtNum(c.tp)} (R:R 1:${c.rr.toFixed(2)})${note}`;
+  copyTextSafe(txt);
+  showToast(c.lots > 0 ? 'Tiket order simulasi disalin ke clipboard' : 'Tiket referensi 1 lot disalin (perhatikan catatan risiko)');
 }
 
 function prefillCalcBuy() {
@@ -1794,17 +1963,37 @@ async function checkAlertsNow(silent = false) {
 }
 
 // AUTO-REFRESH & CSV EXPORT
-function setAutoRefresh(secStr) {
+function applyAutoRefreshTimer(val, silent = false) {
   clearInterval(window._autoRefTimer);
-  const sec = Number(secStr) || 0;
-  if (sec > 0) {
+  const opts = state.refreshOptions || { Manual: 0, '5m': 5, '15m': 15, '30m': 30 };
+  let mins = 0;
+  if (Object.prototype.hasOwnProperty.call(opts, val)) {
+    mins = Number(opts[val]) || 0;
+  } else {
+    const sec = Number(val) || 0;
+    mins = sec > 0 ? sec / 60 : 0;
+  }
+  if (mins > 0) {
     window._autoRefTimer = setInterval(() => {
       if (state.tab !== 'compare') refreshCurrent();
-    }, sec * 1000);
-    showToast(`Auto-refresh aktif setiap ${sec / 60} menit`);
-  } else {
-    showToast('Auto-refresh dimatikan');
+    }, mins * 60 * 1000);
+    if (!silent) showToast(`Auto-refresh aktif setiap ${mins} menit`);
+  } else if (!silent) {
+    showToast('Auto-refresh dimatikan (Manual)');
   }
+}
+
+async function setAutoRefresh(val) {
+  state.refresh = val;
+  syncRefreshSelectors();
+  applyAutoRefreshTimer(val, false);
+  try {
+    await apiFetch('/api/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: state.chatId, modal: state.modal, syariah: state.syariah, refresh: state.refresh }),
+    });
+  } catch (_) {}
 }
 
 function downloadCsv(filename, headers, rows) {
@@ -2105,7 +2294,7 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') {
     closeCmdPalette();
     closeProfileModal();
-  } else if (e.key === 'F5') {
+  } else if (e.key === 'F5' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     refreshCurrent();
   }
@@ -2117,8 +2306,8 @@ document.getElementById('cmd-input')?.addEventListener('input', (e) => {
   if (!q) { renderRecentTickers(); return; }
   const hits = _matchUniverse(q, 10);
   cmdWrap.innerHTML = hits.length
-    ? hits.map(s => `<button onclick="closeCmdPalette();openCek('${esc(s.code)}')" class="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-sky-600/30 border border-slate-700 text-xs text-slate-200 cursor-pointer transition"><b class="mono text-sky-300">${esc(s.code)}</b> <span class="text-slate-400 text-[10px]">${(s.name||'').slice(0,22)}</span></button>`).join('')
-    : `<span class="text-xs text-slate-500">Tekan Enter untuk langsung cek "${q.toUpperCase()}"</span>`;
+    ? hits.map(s => `<button onclick="closeCmdPalette();openCek('${esc(s.code)}')" class="px-2.5 py-1 rounded-md bg-slate-900 hover:bg-sky-600/30 border border-slate-700 text-xs text-slate-200 cursor-pointer transition"><b class="mono text-sky-300">${esc(s.code)}</b> <span class="text-slate-400 text-[10px]">${esc((s.name||'').slice(0,22))}</span></button>`).join('')
+    : `<span class="text-xs text-slate-500">Tekan Enter untuk langsung cek "${esc(q.toUpperCase())}"</span>`;
 });
 document.getElementById('cmd-input')?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.value.trim()) {

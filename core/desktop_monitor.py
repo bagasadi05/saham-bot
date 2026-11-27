@@ -14,6 +14,8 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import math
+import threading
+import time
 from typing import Any
 
 import pandas as pd
@@ -1006,13 +1008,76 @@ def load_sinyal_rows(
     }
 
 
+_SCAN_LOCK = threading.Lock()
+_SCAN_STATE: dict[str, Any] = {
+    "running": False,
+    "started_at": None,
+    "last_result": None,
+    "error": None,
+}
+
+
+def get_scan_state() -> dict[str, Any]:
+    """Ambil snapshot status scan pasar BEI bersama (dipakai desktop Tkinter & web API)."""
+    with _SCAN_LOCK:
+        return dict(_SCAN_STATE)
+
+
+def try_begin_market_scan(started_at: float | None = None) -> tuple[bool, dict[str, Any]]:
+    """Klaim lock scan pasar secara atomik; False jika scan lain sedang berjalan."""
+    ts = float(started_at) if started_at is not None else time.time()
+    with _SCAN_LOCK:
+        if _SCAN_STATE["running"]:
+            return False, dict(_SCAN_STATE)
+        _SCAN_STATE.update({"running": True, "started_at": ts, "error": None})
+        return True, dict(_SCAN_STATE)
+
+
+def finish_market_scan(
+    *,
+    result: Any = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """Lepas lock scan pasar dan simpan hasil/galat terakhir secara atomik."""
+    with _SCAN_LOCK:
+        _SCAN_STATE["running"] = False
+        _SCAN_STATE["started_at"] = None
+        if error is not None:
+            _SCAN_STATE["error"] = str(error)
+        else:
+            _SCAN_STATE["error"] = None
+            if result is not None:
+                _SCAN_STATE["last_result"] = result
+        return dict(_SCAN_STATE)
+
+
 def run_full_market_scan(
     *,
     force: bool = True,
     screener_mod=screener,
+    _lock_acquired: bool = False,
 ) -> dict[str, Any]:
-    """Jalankan scan penuh seluruh pasar BEI (~944 emiten) ke snapshot SQLite."""
-    return screener_mod.scan(force=force)
+    """Jalankan scan penuh seluruh pasar BEI (~944 emiten) ke snapshot SQLite.
+
+    Tersinkronisasi lewat ``_SCAN_LOCK`` agar pemanggilan paralel dari UI desktop
+    maupun ``POST /api/scan`` tidak menjalankan dua scan pasar sekaligus.
+    """
+    if not _lock_acquired:
+        ok, st = try_begin_market_scan()
+        if not ok:
+            return {
+                "ok": False,
+                "running": True,
+                "started_at": st.get("started_at"),
+                "reason": "Scan BEI sedang berjalan.",
+            }
+    try:
+        res = screener_mod.scan(force=force)
+    except Exception as exc:
+        finish_market_scan(error=str(exc))
+        raise
+    finish_market_scan(result=res)
+    return res
 
 
 def build_paket_picks(

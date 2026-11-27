@@ -205,6 +205,17 @@ def test_desktop_gui_class_available_when_tk_installed():
     assert desktop._fmt_rp is dh._fmt_rp
 
 
+def test_desktop_tray_helper_available_when_pystray_installed(monkeypatch):
+    pystray = pytest.importorskip("pystray")
+    import desktop_modern
+
+    ran: list[str] = []
+    monkeypatch.setattr(pystray.Icon, "run", lambda self: ran.append(self.name))
+    ok = desktop_modern._run_with_tray(None, "http://127.0.0.1:18765/")
+    assert ok is True
+    assert ran == ["SahamBotModern"]
+
+
 def test_load_sinyal_paket_jurnal_and_scan(tmp_store, tmp_path):
     class FakeScanStore:
         @staticmethod

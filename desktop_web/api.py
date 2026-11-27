@@ -171,6 +171,59 @@ def _is_local_request(request: Request) -> bool:
     return host in ("127.0.0.1", "::1", "localhost", "testclient")
 
 
+_UNLOCK_MAX_ATTEMPTS = 5
+_UNLOCK_WINDOW_S = 300
+_UNLOCK_LOCKOUT_S = 300
+_unlock_lock = threading.Lock()
+_unlock_failures: dict[str, list[float]] = {}
+_unlock_locked_until: dict[str, float] = {}
+
+
+def _client_ip(request: Request) -> str:
+    """Identitas IP sumber langsung dari koneksi socket (tidak percaya X-Forwarded-For)."""
+    return ((request.client.host if request.client else "") or "unknown").strip()
+
+
+def _reset_unlock_rate_limit() -> None:
+    """Bersihkan seluruh catatan gagal & lockout unlock PIN."""
+    with _unlock_lock:
+        _unlock_failures.clear()
+        _unlock_locked_until.clear()
+
+
+def _unlock_lockout_remaining(ip: str, now: float | None = None) -> int:
+    """Kembalikan sisa detik lockout untuk IP ini (0 bila tidak terkunci)."""
+    ts = time.time() if now is None else float(now)
+    with _unlock_lock:
+        until = _unlock_locked_until.get(ip, 0.0)
+        if until > ts:
+            return max(1, math.ceil(until - ts))
+        _unlock_locked_until.pop(ip, None)
+        return 0
+
+
+def _record_unlock_failure(ip: str, now: float | None = None) -> tuple[int, int]:
+    """Catat kegagalan PIN; kembalikan ``(sisa_percobaan, detik_lockout)``."""
+    ts = time.time() if now is None else float(now)
+    cutoff = ts - _UNLOCK_WINDOW_S
+    with _unlock_lock:
+        recent = [t for t in _unlock_failures.get(ip, []) if t > cutoff]
+        recent.append(ts)
+        if len(recent) >= _UNLOCK_MAX_ATTEMPTS:
+            _unlock_failures.pop(ip, None)
+            _unlock_locked_until[ip] = ts + _UNLOCK_LOCKOUT_S
+            return 0, _UNLOCK_LOCKOUT_S
+        _unlock_failures[ip] = recent
+        return _UNLOCK_MAX_ATTEMPTS - len(recent), 0
+
+
+def _clear_unlock_failures(ip: str) -> None:
+    """Hapus catatan gagal & lockout IP setelah PIN valid."""
+    with _unlock_lock:
+        _unlock_failures.pop(ip, None)
+        _unlock_locked_until.pop(ip, None)
+
+
 def _detect_lan_urls(port: int) -> list[dict[str, str]]:
     """Deteksi alamat IPv4 LAN (Wi-Fi) dan Tailscale (100.x.x.x) untuk akses HP."""
     ips: list[str] = []
@@ -221,10 +274,13 @@ async def _mobile_pin_guard(request: Request, call_next: Any) -> Any:
                 cookie = request.cookies.get(_AUTH_COOKIE, "")
                 if not _valid_session(cookie):
                     return JSONResponse(status_code=401, content={"detail": "PIN akses HP diperlukan."})
-    return await call_next(request)
+    resp = await call_next(request)
+    if path == "/" or path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
 
-_scan_lock = threading.Lock()
-_scan_state: dict[str, Any] = {"running": False, "started_at": None, "last_result": None, "error": None}
+_scan_lock = dm._SCAN_LOCK
+_scan_state = dm._SCAN_STATE
 _last_regime_cache: dict[str, Any] | None = None
 
 
@@ -315,8 +371,9 @@ def _calc_poc_60d(candles: list[dict[str, Any]]) -> float | None:
 
 class ProfilePayload(BaseModel):
     chat_id: str = dm.DEFAULT_PROFILE_ID
-    modal: float = 10_000_000.0
+    modal: float = float(dh.DEFAULT_MODAL_RP)
     syariah: bool = False
+    refresh: str | None = None
 
 
 class WatchPayload(BaseModel):
@@ -363,7 +420,10 @@ class BulkImportPayload(BaseModel):
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 @app.get("/manifest.json")
@@ -414,15 +474,38 @@ async def set_mobile_pin(body: PinPayload, request: Request) -> dict[str, Any]:
     if pin and (len(pin) < 4 or len(pin) > 16):
         raise HTTPException(status_code=400, detail="PIN minimal 4 karakter (atau kosongkan untuk mematikan PIN).")
     enabled = _save_pin_hash(pin)
+    _reset_unlock_rate_limit()
     return {"ok": True, "pin_enabled": enabled}
 
 
 @app.post("/api/auth/unlock")
-async def unlock_mobile(body: PinPayload) -> JSONResponse:
+async def unlock_mobile(body: PinPayload, request: Request) -> JSONResponse:
+    ip = _client_ip(request)
+    wait_s = _unlock_lockout_remaining(ip)
+    if wait_s > 0:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": f"Terlalu banyak percobaan PIN salah. Coba lagi dalam {wait_s} detik.",
+                "retry_after": wait_s,
+            },
+            headers={"Retry-After": str(wait_s)},
+        )
     if not _load_pin_hash():
         return JSONResponse({"ok": True})
     if not _verify_pin(body.pin.strip()):
-        raise HTTPException(status_code=401, detail="PIN salah.")
+        remaining, locked_s = _record_unlock_failure(ip)
+        if locked_s > 0:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": f"Terlalu banyak percobaan PIN salah. Akses dikunci sementara selama {locked_s} detik.",
+                    "retry_after": locked_s,
+                },
+                headers={"Retry-After": str(locked_s)},
+            )
+        raise HTTPException(status_code=401, detail=f"PIN salah. Sisa percobaan: {remaining}.")
+    _clear_unlock_failures(ip)
     token = _create_session()
     resp = JSONResponse({"ok": True})
     resp.set_cookie(
@@ -498,7 +581,7 @@ async def get_backtest_5y(ticker: str) -> dict[str, Any]:
 async def simulate_backtest(
     ticker: str,
     period: str = Query("3y"),
-    modal: float = Query(10_000_000.0),
+    modal: float = Query(float(dh.DEFAULT_MODAL_RP)),
     sl_pct: float = Query(5.0),
     tp_pct: float = Query(10.0),
     max_hold: int = Query(20),
@@ -524,7 +607,7 @@ async def simulate_backtest(
 async def compare_tickers(
     tickers: str = Query("BBCA,BBRI,BRIS"),
     chat_id: str = Query(dm.DEFAULT_PROFILE_ID),
-    modal: float = Query(10_000_000.0),
+    modal: float = Query(float(dh.DEFAULT_MODAL_RP)),
 ) -> dict[str, Any]:
     raw_list = [t.strip().upper().replace(".JK", "") for t in tickers.replace(" ", ",").split(",") if t.strip()]
     uniq: list[str] = []
@@ -634,10 +717,15 @@ async def get_profile(chat_id: str = Query(dm.DEFAULT_PROFILE_ID)) -> dict[str, 
     syariah = await asyncio.to_thread(store_profile.get_syariah_mode, cid)
     ui_state = await asyncio.to_thread(store_profile.get_desktop_ui_state, cid)
     clock_txt, market_status = dh.market_clock_text()
+    refresh_val = str(ui_state.get("refresh") or store_profile.DEFAULT_DESKTOP_UI_STATE["refresh"])
     return {
         "chat_id": cid,
-        "modal": int(modal or 10_000_000),
+        "modal": int(modal or dh.DEFAULT_MODAL_RP),
         "syariah": bool(syariah),
+        "refresh": refresh_val,
+        "refresh_options": dict(dh.VALID_REFRESH_MIN),
+        "default_profile_id": dm.DEFAULT_PROFILE_ID,
+        "default_modal": dh.DEFAULT_MODAL_RP,
         "recent_tickers": list(ui_state.get("recent_tickers") or []),
         "clock": clock_txt,
         "market_status": market_status,
@@ -651,7 +739,18 @@ async def save_profile(body: ProfilePayload) -> dict[str, Any]:
     if modal > 0:
         await asyncio.to_thread(store_watchlist.set_modal, cid, modal)
     await asyncio.to_thread(store_profile.set_syariah_mode, cid, bool(body.syariah))
-    return {"ok": True, "chat_id": cid, "modal": modal, "syariah": bool(body.syariah)}
+    if body.refresh is not None:
+        ui_state = await asyncio.to_thread(store_profile.set_desktop_ui_state, cid, refresh=body.refresh)
+    else:
+        ui_state = await asyncio.to_thread(store_profile.get_desktop_ui_state, cid)
+    return {
+        "ok": True,
+        "chat_id": cid,
+        "modal": modal or dh.DEFAULT_MODAL_RP,
+        "syariah": bool(body.syariah),
+        "refresh": str(ui_state.get("refresh") or store_profile.DEFAULT_DESKTOP_UI_STATE["refresh"]),
+        "refresh_options": dict(dh.VALID_REFRESH_MIN),
+    }
 
 
 @app.get("/api/market")
@@ -684,7 +783,7 @@ async def get_market() -> dict[str, Any]:
 @app.get("/api/watchlist")
 async def get_watchlist(
     chat_id: str = Query(dm.DEFAULT_PROFILE_ID),
-    modal: float = Query(10_000_000.0),
+    modal: float = Query(float(dh.DEFAULT_MODAL_RP)),
     syariah: bool = Query(False),
 ) -> dict[str, Any]:
     cid = chat_id.strip() or dm.DEFAULT_PROFILE_ID
@@ -746,25 +845,23 @@ async def get_sinyal(
 
 @app.post("/api/scan")
 async def trigger_scan() -> dict[str, Any]:
-    with _scan_lock:
-        if _scan_state["running"]:
-            return {
-                "ok": True,
-                "running": True,
-                "started_at": _scan_state.get("started_at"),
-                "message": "Scan BEI sedang berjalan.",
-            }
-        started_at = dt.datetime.now(dt.timezone.utc).timestamp()
-        _scan_state.update({"running": True, "started_at": started_at, "error": None})
+    started_at = dt.datetime.now(dt.timezone.utc).timestamp()
+    acquired, st = dm.try_begin_market_scan(started_at=started_at)
+    if not acquired:
+        return {
+            "ok": True,
+            "running": True,
+            "started_at": st.get("started_at"),
+            "message": "Scan BEI sedang berjalan.",
+        }
 
     def _run() -> None:
         try:
-            res = dm.run_full_market_scan(force=True)
-            with _scan_lock:
-                _scan_state.update({"running": False, "started_at": None, "last_result": _json_safe(res), "error": None})
+            res = dm.run_full_market_scan(force=True, _lock_acquired=True)
+            with dm._SCAN_LOCK:
+                dm._SCAN_STATE["last_result"] = _json_safe(res)
         except Exception as exc:
-            with _scan_lock:
-                _scan_state.update({"running": False, "started_at": None, "error": str(exc)})
+            dm.finish_market_scan(error=str(exc))
 
     threading.Thread(target=_run, daemon=True).start()
     return {"ok": True, "running": True, "started_at": started_at, "message": "Scan ~944 emiten dimulai di background."}
@@ -772,14 +869,13 @@ async def trigger_scan() -> dict[str, Any]:
 
 @app.get("/api/scan/status")
 async def get_scan_status() -> dict[str, Any]:
-    with _scan_lock:
-        return dict(_scan_state)
+    return _json_safe(dm.get_scan_state())
 
 
 @app.get("/api/paket")
 async def get_paket(
     chat_id: str = Query(dm.DEFAULT_PROFILE_ID),
-    modal: float = Query(10_000_000.0),
+    modal: float = Query(float(dh.DEFAULT_MODAL_RP)),
     max_plans: int = Query(5),
     syariah: bool = Query(False),
 ) -> dict[str, Any]:
@@ -1047,7 +1143,7 @@ async def check_alerts_now(chat_id: str = Query(dm.DEFAULT_PROFILE_ID)) -> dict[
 async def get_cek(
     ticker: str,
     chat_id: str = Query(dm.DEFAULT_PROFILE_ID),
-    modal: float = Query(10_000_000.0),
+    modal: float = Query(float(dh.DEFAULT_MODAL_RP)),
     period: str = Query("1y"),
     bandar: bool = Query(False),
 ) -> dict[str, Any]:

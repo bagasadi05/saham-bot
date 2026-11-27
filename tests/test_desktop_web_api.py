@@ -454,3 +454,122 @@ def test_desktop_web_static_import_benchmark_and_alert_scanner(tmp_store, monkey
     r_chk = client.post("/api/alerts/check?chat_id=modern-import-test")
     assert r_chk.status_code == 200
     assert any(h["ticker"] == "BRIS" and h["severity"] == "danger" for h in r_chk.json()["triggered"])
+
+
+def test_unlock_rate_limit_dan_lockout(tmp_store, tmp_path, monkeypatch):
+    """Brute-force /api/auth/unlock dibatasi 5 gagal lalu lockout HTTP 429 + Retry-After."""
+    monkeypatch.delenv("SAHAMBOT_WEB_PIN", raising=False)
+    monkeypatch.setattr(web_api, "_PIN_FILE", tmp_path / "mobile_pin.json")
+    monkeypatch.setattr(web_api, "_is_local_request", lambda req: True)
+    web_api._reset_unlock_rate_limit()
+    client = TestClient(web_api.app)
+
+    assert client.post("/api/mobile-pin", json={"pin": "4321"}).status_code == 200
+    monkeypatch.setattr(web_api, "_is_local_request", lambda req: False)
+
+    # 4 percobaan salah pertama -> 401 dengan sisa percobaan
+    for idx in range(1, web_api._UNLOCK_MAX_ATTEMPTS):
+        r = client.post("/api/auth/unlock", json={"pin": "0000"})
+        assert r.status_code == 401
+        assert f"Sisa percobaan: {web_api._UNLOCK_MAX_ATTEMPTS - idx}" in r.json()["detail"]
+
+    # Percobaan salah ke-5 -> 429 + Retry-After
+    r_lock = client.post("/api/auth/unlock", json={"pin": "0000"})
+    assert r_lock.status_code == 429
+    assert int(r_lock.headers.get("Retry-After", "0")) > 0
+    assert r_lock.json()["retry_after"] > 0
+
+    # Selama lockout, PIN yang benar sekalipun tetap ditolak 429
+    r_blocked = client.post("/api/auth/unlock", json={"pin": "4321"})
+    assert r_blocked.status_code == 429
+
+    # Reset lockout (mis. waktu lockout habis atau PIN diperbarui dari PC) -> sukses 200
+    web_api._reset_unlock_rate_limit()
+    r_ok = client.post("/api/auth/unlock", json={"pin": "4321"})
+    assert r_ok.status_code == 200
+    assert r_ok.cookies.get(web_api._AUTH_COOKIE)
+
+
+def test_index_esc_helper_dan_sinkronisasi_profil_default(tmp_store):
+    """index.html menyediakan helper esc() dan /api/profile sinkron dengan opsi default core."""
+    from core import desktop_helpers as dh
+    from core import desktop_monitor as dm
+    from core import store_profile
+
+    client = TestClient(web_api.app)
+    r_root = client.get("/")
+    assert r_root.status_code == 200
+    assert "window.esc" in r_root.text
+    assert "function esc(" in r_root.text
+
+    r_prof = client.get("/api/profile")
+    assert r_prof.status_code == 200
+    body = r_prof.json()
+    assert body["chat_id"] == dm.DEFAULT_PROFILE_ID
+    assert body["default_profile_id"] == dm.DEFAULT_PROFILE_ID
+    assert body["modal"] == dh.DEFAULT_MODAL_RP
+    assert body["default_modal"] == dh.DEFAULT_MODAL_RP
+    assert body["refresh"] == store_profile.DEFAULT_DESKTOP_UI_STATE["refresh"]
+    assert body["refresh_options"] == dict(dh.VALID_REFRESH_MIN)
+
+    # Persistensi refresh valid + sanitasi nilai invalid
+    r_save = client.post(
+        "/api/profile",
+        json={"chat_id": "sync-test", "modal": 15_000_000, "syariah": True, "refresh": "30m"},
+    )
+    assert r_save.status_code == 200
+    assert r_save.json()["refresh"] == "30m"
+    assert client.get("/api/profile?chat_id=sync-test").json()["refresh"] == "30m"
+
+    r_bad = client.post(
+        "/api/profile",
+        json={"chat_id": "sync-test", "modal": 15_000_000, "syariah": True, "refresh": "999m"},
+    )
+    assert r_bad.status_code == 200
+    assert r_bad.json()["refresh"] == store_profile.DEFAULT_DESKTOP_UI_STATE["refresh"]
+
+
+def test_scan_lock_tersinkronisasi_antara_api_dan_core(tmp_store, monkeypatch):
+    """Lock /api/scan berbagi _SCAN_LOCK/_SCAN_STATE yang sama dengan core.desktop_monitor."""
+    import time
+    from core import desktop_monitor as dm
+
+    assert web_api._scan_lock is dm._SCAN_LOCK
+    assert web_api._scan_state is dm._SCAN_STATE
+    dm.finish_market_scan()
+
+    client = TestClient(web_api.app)
+
+    # 1. Jika core sudah mengklaim lock scan, POST /api/scan tidak memulai scan ganda
+    acquired, st = dm.try_begin_market_scan(started_at=12345.0)
+    assert acquired is True
+    try:
+        r_dup = client.post("/api/scan")
+        assert r_dup.status_code == 200
+        assert r_dup.json()["running"] is True
+        assert r_dup.json()["started_at"] == 12345.0
+
+        r_core_dup = dm.run_full_market_scan(force=True)
+        assert r_core_dup["ok"] is False and r_core_dup["running"] is True
+
+        r_st = client.get("/api/scan/status")
+        assert r_st.status_code == 200 and r_st.json()["running"] is True
+    finally:
+        dm.finish_market_scan(result={"scanned": 944})
+
+    # 2. Setelah dilepas, POST /api/scan menjalankan scan background dan merilis lock
+    called: list[bool] = []
+    monkeypatch.setattr(dm.screener, "scan", lambda force=True: (called.append(force), {"scanned": 12, "beli": 2})[1])
+    r_go = client.post("/api/scan")
+    assert r_go.status_code == 200
+    assert r_go.json()["running"] is True
+
+    for _ in range(50):
+        st_now = client.get("/api/scan/status").json()
+        if not st_now["running"]:
+            break
+        time.sleep(0.02)
+    assert called == [True]
+    st_final = client.get("/api/scan/status").json()
+    assert st_final["running"] is False
+    assert st_final["last_result"]["scanned"] == 12

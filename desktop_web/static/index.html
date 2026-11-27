@@ -91,9 +91,10 @@
 
       <select id="auto-refresh-sel" onchange="setAutoRefresh(this.value)" title="Auto-Refresh Berkala"
         class="hidden md:block px-2 py-1.5 rounded-lg border border-slate-700/80 bg-slate-900 text-xs text-slate-300 cursor-pointer focus:outline-none focus:border-sky-500">
-        <option value="0">Auto: Off</option>
-        <option value="60">Auto: 1m</option>
-        <option value="300">Auto: 5m</option>
+        <option value="Manual">Auto: Manual</option>
+        <option value="5m">Auto: 5m</option>
+        <option value="15m">Auto: 15m</option>
+        <option value="30m">Auto: 30m</option>
       </select>
 
       <button id="btn-refresh" onclick="refreshCurrent()" title="Segarkan Data (F5)"
@@ -684,6 +685,7 @@
                 </div>
                 <div class="flex items-center gap-1.5">
                   <button onclick="applyCalcPullback()" class="px-2.5 py-1 rounded-md border border-slate-700 bg-slate-900 hover:bg-slate-800 text-[11px] text-sky-300 cursor-pointer">Pakai Entry Pullback</button>
+                  <button onclick="resetCalcDefault()" class="px-2.5 py-1 rounded-md border border-slate-700 bg-slate-900 hover:bg-slate-800 text-[11px] text-slate-300 cursor-pointer">Reset</button>
                   <button onclick="copyCalcOrder()" class="px-2.5 py-1 rounded-md border border-slate-700 bg-slate-900 hover:bg-slate-800 text-[11px] text-slate-200 cursor-pointer">Salin Order</button>
                   <button onclick="prefillCalcBuy()" class="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-[11px] text-white font-semibold cursor-pointer">Catat Beli</button>
                 </div>
@@ -1001,11 +1003,20 @@
       <div class="space-y-3">
         <div>
           <label class="block text-xs text-slate-400 mb-1">ID Profil (sama dengan chat_id Telegram bila ingin sinkron)</label>
-          <input id="modal-chat-id" type="text" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm mono text-white" />
+          <input id="modal-chat-id" type="text" placeholder="desktop" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm mono text-white" />
         </div>
         <div>
           <label class="block text-xs text-slate-400 mb-1">Modal Investasi (Rp)</label>
-          <input id="modal-amount" type="number" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm mono text-white" />
+          <input id="modal-amount" type="number" placeholder="10000000" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm mono text-white" />
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Interval Auto-Refresh Default</label>
+          <select id="modal-refresh" class="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-sm text-white">
+            <option value="Manual">Manual (Off)</option>
+            <option value="5m">Setiap 5 menit</option>
+            <option value="15m">Setiap 15 menit (Default)</option>
+            <option value="30m">Setiap 30 menit</option>
+          </select>
         </div>
       </div>
       <div class="flex justify-end gap-2 pt-2">
@@ -1051,6 +1062,13 @@
   <!-- TOAST -->
   <div id="toast" class="fixed bottom-5 right-5 z-50 hidden flex items-center gap-2 px-4 py-3 rounded-xl bg-slate-900/95 backdrop-blur border border-sky-500/45 text-xs text-slate-100 shadow-2xl"></div>
 
-<script src="/static/app.js"></script>
+<script>
+  window.esc = window.esc || function esc(v) {
+    return String(v ?? '').replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  };
+</script>
+<script src="/static/app.js?v=20261128b"></script>
 </body>
 </html>
