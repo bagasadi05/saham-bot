@@ -137,7 +137,15 @@ class IDXTidakTersedia(Exception):
     """Semua cara melewati Cloudflare gagal — jangan bohong ke user, laporkan."""
 
 
+def _direct_fetch_enabled() -> bool:
+    """Kontrol env IDX_DIRECT_FETCH (0/off/false/no mematikan scraping idx.co.id)."""
+    raw = os.getenv("IDX_DIRECT_FETCH", "1").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
 def _get(url: str, scraper, params: dict | None = None, tries: int = 3, pause: float = 4.0):
+    if not _direct_fetch_enabled():
+        raise IDXTidakTersedia("Fetch langsung idx.co.id dimatikan (IDX_DIRECT_FETCH=0)")
     last_exc: Exception | None = None
     for attempt in range(tries):
         try:
@@ -178,6 +186,8 @@ def get_stock_summary(trade_date: str | None = None, max_stocks: int = 1000,
 def _fetch_stock_summary(trade_date: str | None, max_stocks: int,
                          page_len: int, cooldown: float,
                          until: str | None = None) -> list[dict]:
+    if not _direct_fetch_enabled():
+        raise IDXTidakTersedia("Fetch langsung idx.co.id dimatikan (IDX_DIRECT_FETCH=0)")
     s = _scraper()
     params = {"start": 0, "length": page_len, "language": "en-us"}
     if trade_date:
@@ -205,6 +215,8 @@ def get_index_summary(ttl: float | None = None) -> list[dict]:
 
 
 def _fetch_index_summary() -> list[dict]:
+    if not _direct_fetch_enabled():
+        raise IDXTidakTersedia("Fetch langsung idx.co.id dimatikan (IDX_DIRECT_FETCH=0)")
     return _get(f"{BASE}/TradingSummary/GetIndexSummary", _scraper()).get("data", [])
 
 

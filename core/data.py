@@ -36,6 +36,7 @@ _MAX_RETRIES = int(os.getenv("YF_RETRIES", "3"))
 _TTL_SECONDS = int(os.getenv("SAHAMBOT_TTL", "300") or 0)
 _EODHD_COOLDOWN_SEC = max(0, int(os.getenv("EODHD_COOLDOWN_SECONDS", "900") or 0))
 _AV_COOLDOWN_SEC = max(0, int(os.getenv("ALPHAVANTAGE_COOLDOWN_SECONDS", "900") or 0))
+_YF_COOLDOWN_SEC = max(0, int(os.getenv("YF_COOLDOWN_SECONDS", "120") or 0))
 
 # yfinance dipanggil dengan auto_adjust=True: OHLC sudah disesuaikan split
 # dan dividen. Penanda ini disimpan bersama cache agar data tidak tercampur.
@@ -54,10 +55,40 @@ _stats = {"hit": 0, "miss": 0}
 _fallback_cooldown_until: dict[str, float] = {}
 
 
+def is_yahoo_cooled_down() -> bool:
+    """True bila circuit-breaker Yahoo 429 sedang aktif."""
+    return _is_fallback_cooled_down("yfinance")
+
+
+def is_rate_limit_error(exc: BaseException | str | None) -> bool:
+    """Deteksi galat rate-limit / 429 / Invalid Crumb dari Yahoo Finance."""
+    if exc is None:
+        return False
+    msg = str(exc).lower()
+    return any(k in msg for k in ("429", "too many requests", "rate limit", "invalid crumb"))
+
+
+def mark_yahoo_rate_limited(exc: BaseException | str | None = None) -> None:
+    """Aktifkan jeda sementara Yahoo saat terkena 429 agar tidak membanjiri retry."""
+    if _YF_COOLDOWN_SEC <= 0:
+        return
+    if exc is None or is_rate_limit_error(exc):
+        _mark_fallback_cooldown("yfinance", _YF_COOLDOWN_SEC)
+        log.warning("Yahoo rate-limit (429/crumb) — circuit-breaker aktif %ds", _YF_COOLDOWN_SEC)
+
+
 def cache_stats() -> dict:
     with _mem_lock:
-        return {"hit": _stats["hit"], "miss": _stats["miss"],
-                "entries": len(_mem), "ttl_seconds": _TTL_SECONDS}
+        entries = len(_mem)
+        hit = _stats["hit"]
+        miss = _stats["miss"]
+    return {
+        "hit": hit,
+        "miss": miss,
+        "entries": entries,
+        "ttl_seconds": _TTL_SECONDS,
+        "yahoo_cooled_down": is_yahoo_cooled_down(),
+    }
 
 
 def clear_cache():
@@ -610,20 +641,24 @@ def _fetch_bars(ticker: str, period: str = DEFAULT_PERIOD,
 
     df = None
     last_exc = None
-    for attempt in range(_MAX_RETRIES):
-        try:
-            with _yf_dl_lock:
-                df = download_yf_with_safe_repair(
-                    yf.download, symbol, period=period, interval=interval,
-                    auto_adjust=True, progress=False,
-                )
-            if df is not None and not df.empty:
-                last_exc = None
-                break
-        except Exception as e:  # jaringan/rate-limit
-            last_exc = e
-        if attempt < _MAX_RETRIES - 1:
-            time.sleep(5 * (2 ** attempt))  # 5, 10 detik — tanpa tidur sia-sia di akhir
+    if not is_yahoo_cooled_down():
+        for attempt in range(_MAX_RETRIES):
+            try:
+                with _yf_dl_lock:
+                    df = download_yf_with_safe_repair(
+                        yf.download, symbol, period=period, interval=interval,
+                        auto_adjust=True, progress=False,
+                    )
+                if df is not None and not df.empty:
+                    last_exc = None
+                    break
+            except Exception as e:  # jaringan/rate-limit
+                last_exc = e
+                if is_rate_limit_error(e):
+                    mark_yahoo_rate_limited(e)
+                    break
+            if attempt < _MAX_RETRIES - 1:
+                time.sleep(5 * (2 ** attempt))  # 5, 10 detik — tanpa tidur sia-sia di akhir
 
     if df is None or df.empty:
         fb = _fetch_fallback_provider(symbol, period, interval)
@@ -679,10 +714,10 @@ def fetch_cached_history(ticker: str, period: str = DEFAULT_PERIOD,
                          raw_symbol: bool = False):
     """Ambil OHLCV harian hanya dari cache memori/disk tanpa panggilan jaringan."""
     symbol = ticker.strip().upper() if raw_symbol else normalize_ticker(ticker)
-    key = (symbol, "1d", period)
-    mem_hit = _mem_get(key)
-    if mem_hit is not None:
-        return mem_hit
+    for key in ((symbol, "1d", period), (symbol, period)):
+        mem_hit = _mem_get(key)
+        if mem_hit is not None:
+            return mem_hit
     return _load_cache(symbol, "1d", period=period)
 
 

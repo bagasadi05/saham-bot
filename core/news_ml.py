@@ -48,6 +48,30 @@ _lock = threading.Lock()
 _cache: dict[str, dict | None] = {}
 _cache_lock = threading.Lock()
 _CACHE_MAX = 500
+_usage_counts = {"ml": 0, "lexicon": 0}
+_usage_lock = threading.Lock()
+
+
+def _local_only() -> bool:
+    return os.environ.get("SAHAMBOT_LOCAL_ONLY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def record_usage(engine: str, n: int = 1) -> None:
+    """Catat jumlah judul yang dinilai memakai ML vs lexicon fallback."""
+    if n <= 0:
+        return
+    key = "ml" if engine in ("ml", "onnxruntime", "pytorch") else "lexicon"
+    with _usage_lock:
+        _usage_counts[key] = _usage_counts.get(key, 0) + int(n)
+
+
+def clear_usage() -> None:
+    """Reset penghitung penggunaan engine sentimen (untuk test)."""
+    with _usage_lock:
+        _usage_counts["ml"] = 0
+        _usage_counts["lexicon"] = 0
 
 
 def _want_quantize() -> bool:
@@ -58,12 +82,16 @@ def _want_quantize() -> bool:
 
 def model_info() -> dict:
     """Metadata ringkas status model ML sentimen untuk diagnostik /status."""
+    with _usage_lock:
+        usage = dict(_usage_counts)
     return {
         "loaded": _state["model"] is not None,
         "failed": bool(_state["failed"]),
         "engine": _state.get("engine"),
         "quantized": bool(_state.get("quantized")),
         "local_dir": LOCAL_MODEL_DIR,
+        "local_only": _local_only(),
+        "usage": usage,
     }
 
 
@@ -119,12 +147,16 @@ def get_model():
             return sess, tok
 
         try:
-            import torch
-            from transformers import (AutoModelForSequenceClassification,
-                                      AutoTokenizer)
             use_local = (os.path.isdir(LOCAL_MODEL_DIR)
                          and os.path.exists(os.path.join(LOCAL_MODEL_DIR, "config.json"))
                          and os.path.exists(os.path.join(LOCAL_MODEL_DIR, "model.safetensors")))
+            if not use_local and _local_only():
+                _state["failed"] = True
+                log.info("model ML lokal tidak ditemukan & SAHAMBOT_LOCAL_ONLY aktif — pakai lexicon")
+                return None, None
+            import torch
+            from transformers import (AutoModelForSequenceClassification,
+                                      AutoTokenizer)
             src = LOCAL_MODEL_DIR if use_local else MODEL_ID
             kw = {"local_files_only": True} if use_local else ({"revision": MODEL_REVISION} if MODEL_REVISION else {})
             tok = AutoTokenizer.from_pretrained(src, **kw)

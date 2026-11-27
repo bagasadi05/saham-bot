@@ -102,6 +102,16 @@ When evaluating an existing holding (`/portofolio`, `/jual`, or `/saran` hold re
   - `store.add_real_position` and `store.reduce_real_position` keep `/portofolio` and `/jurnal` (`real_executions`) synchronized with `0.40%` fee accounting, while `signal_context` isolates `intent="beli"` vs `intent="jual"`.
   - Audit closed trades in `/jurnal` (`core/jurnal.py` `compute_trade_excursions` & `jurnal_diagnostics`) for realized slippage, **MAE (`mae_r`)**, **MFE (`mfe_r`)**, capture ratio, and net R-multiple after `0.40%` BEI fees.
 
+## Hybrid Research Protocol (SahamBot + Stockbit MCP)
+
+When the `stockbit` MCP server is available and authenticated in the user's session, combine both sources in parallel for every deep-dive ticker check or portfolio review (without ever committing credentials or scrapers into SahamBot's `core/`):
+
+1. **SahamBot Quantitative & Forensic Layer (`core/`):** PowerScore + vetoes, 6-point checklist (`LAYAK`/`TUNGGU`/`HINDARI`), 4Q cashflow forensics (`OCF/NI`, `FCF Yield`, `EV/EBITDA`, dividend-trap flags), IHSG regime scaling, 1×ATR SL / Chandelier trailing stop, and real portfolio thesis status (`MENGUAT`/`TETAP`/`MELEMAH`/`GUGUR`).
+2. **Stockbit MCP Real-Time Microstructure Layer (`quote`, `orderbook`, `bandar_detector` `LATEST` + `LAST_7_DAYS`, `keystats`):**
+   - **Orderbook & Liquidity Depth:** Bid vs Offer ratio (`bid_percent`), key support/resistance walls (note: `orderbook.volume` is in shares → divide by 100 for lots), and daily net foreign flow (`fnet`).
+   - **Bandarmologi (Reguler, `resolve_names: true`):** Compare 1-day (`LATEST`) vs 7-day (`LAST_7_DAYS`) accumulation/distribution (`top3` concentration, top buyers/sellers & average price vs current/entry price). Always state honestly that broker codes aggregate many clients and are flow evidence, not certainty.
+   - **Alignment Check:** Explicitly highlight whether broker flow **confirms** or **diverges from** SahamBot's technical & fundamental verdict before recommending Hold / Scale-Out / Wait / Cut-Loss levels.
+
 ## Offline Verification Commands
 Always run the offline verification suite after updating rules or documentation (never call live network endpoints in tests):
 ```powershell

@@ -147,7 +147,7 @@ dipanggil via `to_thread`.
 | Fase 2.3 (survivorship, faktor non-teknikal, end-to-end) | ⛔ di luar cakupan (butuh data historis) |
 | Fase 3 (P12–P18) | selesai, termasuk `/sektor` |
 | Fase 4 (modularisasi, CI, backup, log, LICENSE) | selesai |
-| Uji chat di host | ⛔ diblokir akses token (lihat `deploy.md`) |
+| Uji chat di host | ⛔ diblokir akses token (lihat `docs/deploy.md`) |
 | P23/P24 (risiko portofolio) | selesai; batas kustom (`/portofolio batas`), bobot *inv-vol* dua lapis (posisi+sektor), VaR historis + ES |
 | P28 (jurnal eksekusi Stockbit & slippage) | selesai (tanpa auto-trading / kredensial; + MAE/MFE, R-multiple & alpha vs IHSG) |
 | Audit forensik kas + Pro/Risiko (`/cek`, `/fundamental`) | selesai (`.agents/skills/idx-equity-research/`, penalti skor & mata uang non-IDR) |
@@ -168,7 +168,7 @@ IC skor `t_hac` **0,85** (tidak signifikan).
 1. Menambah bobot faktor karena `t` naif 2,68 — yang bertahan hanya `t_hac`
    0,85.
 2. Mengklaim angka survivorship tanpa `universe_membership`/`delistings`.
-3. Menambah scraper IDX/Stockbit (ToS melarang; lihat `KENDALA.md`).
+3. Menambah scraper IDX/Stockbit (ToS melarang; lihat `docs/KENDALA.md`).
 4. Mengganti label sinyal menjadi janji probabilitas.
 5. Menghapus/melemahkan tes atau `cooldown_ok` saat menambah rate limiter.
 6. Refactor `bot.py` sekaligus — satu domain per commit, wrapper dipertahankan.
@@ -192,7 +192,7 @@ IC skor `t_hac` **0,85** (tidak signifikan).
 ## 8. Langkah berikutnya yang disarankan
 
 1. Jalankan checklist chat di host (`/status`, `/sektor`, `/cek BBCA`,
-   `/sinyal beli bagus`) dan tempel hasilnya ke `deploy.md`.
+   `/sinyal beli bagus`) dan tempel hasilnya ke `docs/deploy.md`.
 2. Rekam fixture asli sekali di mesin berjaringan:
    `python tools/record_fixtures.py --ticker BBCA --ohlcv-rows 120 --rows 5`
    lalu verifikasi dengan `python tools/record_fixtures.py --verify` dan

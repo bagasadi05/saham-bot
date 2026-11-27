@@ -17,8 +17,14 @@ from telegram.ext import ContextTypes
 
 import backtest as btmod
 from core import syariah
-from core import (analysis, btcache, data, fundamental, marketcal, news,
+from core import (analysis, btcache, data, fundamental, guards, marketcal, news,
                   pricing, regime, reports, saran as saranmod, store)
+
+
+def _heavy_sem(deps) -> asyncio.Semaphore:
+    """Ambil semaphore global batas request berat (bisa dioverride di deps)."""
+    fn = getattr(deps, "global_heavy_semaphore", None)
+    return fn() if callable(fn) else guards.global_heavy_semaphore()
 
 log = logging.getLogger("sahambuddy")
 
@@ -131,7 +137,8 @@ async def do_saran(update: Update, deps, sub: str = "",
             except Exception:
                 pass
 
-        txt = await deps.saran_scan_text(chat_id, saranmod.LQ45, _prog)
+        async with _heavy_sem(deps):
+            txt = await deps.saran_scan_text(chat_id, saranmod.LQ45, _prog)
     else:
         _LAST_SARAN_META.pop(int(chat_id), None)
         real_pos = await asyncio.to_thread(store.real_positions, chat_id)
@@ -147,7 +154,8 @@ async def do_saran(update: Update, deps, sub: str = "",
             await msg.reply_text(
                 f"🔍 Memindai {len(universe)} emiten (teknikal+fundamental+berita), 1-2 menit..."
             )
-        txt = await deps.saran_scan_text(chat_id, universe)
+        async with _heavy_sem(deps):
+            txt = await deps.saran_scan_text(chat_id, universe)
     scan_meta = _LAST_SARAN_META.pop(int(chat_id), None) or {}
     if txt is None:
         await msg.reply_text(

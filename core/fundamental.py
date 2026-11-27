@@ -7,6 +7,8 @@ Tanpa cache, satu `/saran` 12 emiten = 24 permintaan jaringan yang sama persis.
 """
 from __future__ import annotations
 
+import copy
+import json
 import math
 import os
 import threading
@@ -18,6 +20,14 @@ import yfinance as yf
 from core import data as datamod
 
 _FUND_TTL = int(os.getenv("SAHAMBOT_FUND_TTL", "21600") or 0)  # 6 jam
+_STALE_MAX_SEC = max(
+    0, int(os.getenv("SAHAMBOT_FUND_STALE_SECONDS", str(48 * 3600)) or 0)
+)
+_DEFAULT_CACHE_BASE = os.getenv("SAHAMBOT_CACHE", os.path.join("temp", "cache"))
+CACHE_DIR = (
+    os.getenv("FUND_CACHE_DIR")
+    or (os.path.join(_DEFAULT_CACHE_BASE, "fundamental") if _DEFAULT_CACHE_BASE else "")
+)
 CACHE_VERSION = 2
 _fund_cache: dict[str, tuple[float, dict]] = {}
 _fund_lock = threading.Lock()
@@ -118,19 +128,116 @@ def is_financial_sector(sector: str | None) -> bool:
                                 "perbankan", "keuangan", "asuransi"))
 
 
+def _disk_path(symbol: str) -> str | None:
+    if not CACHE_DIR:
+        return None
+    clean = "".join(ch for ch in str(symbol or "").upper() if ch.isalnum() or ch in (".", "_", "-"))
+    return os.path.join(CACHE_DIR, f"{clean}.json") if clean else None
+
+
+def _disk_save(symbol: str, fields: dict) -> None:
+    path = _disk_path(symbol)
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+        payload = {"ts": time.time(), "v": CACHE_VERSION, "fields": fields}
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _disk_load(symbol: str, max_age: float | None = None) -> tuple[dict, float] | None:
+    path = _disk_path(symbol)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict) or payload.get("v") != CACHE_VERSION:
+            return None
+        fields = payload.get("fields")
+        if not isinstance(fields, dict):
+            return None
+        ts = float(payload.get("ts", 0))
+        age = time.time() - ts
+        if age < 0 or (max_age is not None and max_age >= 0 and age > max_age):
+            return None
+        return copy.deepcopy(fields), age
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _annotate_stale_cache(fields: dict, age_sec: float) -> dict:
+    out = copy.deepcopy(fields)
+    out["fund_stale"] = True
+    out["fund_cache_age_sec"] = round(float(age_sec), 1)
+    hrs = max(1, int(round(age_sec / 3600.0)))
+    base_note = out.get("filing_note") or build_filing_note(out)
+    out["filing_note"] = f"Cache lokal fundamental (~{hrs} jam lalu saat Yahoo gagal): {base_note}"
+    return out
+
+
 def fetch_fundamentals(ticker: str) -> dict | None:
-    """Return dict fundamental atau None kalau data tidak tersedia (cache 6 jam)."""
+    """Return dict fundamental atau None kalau data tidak tersedia (cache 6 jam + disk fallback)."""
     symbol = datamod.normalize_ticker(ticker)
     if _FUND_TTL > 0:
         with _fund_lock:
             hit = _fund_cache.get(symbol)
             if hit and time.time() - hit[0] < _FUND_TTL:
-                return dict(hit[1])
-    fields = _fetch_uncached(symbol)
-    if fields is not None and _FUND_TTL > 0:
-        with _fund_lock:
-            _fund_cache[symbol] = (time.time(), fields)
-    return fields
+                return copy.deepcopy(hit[1])
+        disk_fresh = _disk_load(symbol, max_age=float(_FUND_TTL))
+        if disk_fresh is not None:
+            cached_fields, _age = disk_fresh
+            with _fund_lock:
+                _fund_cache[symbol] = (time.time(), copy.deepcopy(cached_fields))
+            return copy.deepcopy(cached_fields)
+
+    if datamod.is_yahoo_cooled_down():
+        stale_hit = _disk_load(symbol, max_age=float(_STALE_MAX_SEC))
+        return _annotate_stale_cache(*stale_hit) if stale_hit is not None else None
+
+    fields = None
+    try:
+        fields = _fetch_uncached(symbol)
+    except Exception as exc:
+        is_rl = datamod.is_rate_limit_error(exc)
+        if is_rl:
+            datamod.mark_yahoo_rate_limited(exc)
+        stale_hit = _disk_load(symbol, max_age=float(_STALE_MAX_SEC))
+        if stale_hit is not None:
+            return _annotate_stale_cache(*stale_hit)
+        if is_rl:
+            return None
+        raise
+
+    if fields is not None:
+        if _FUND_TTL > 0:
+            with _fund_lock:
+                _fund_cache[symbol] = (time.time(), copy.deepcopy(fields))
+        _disk_save(symbol, fields)
+        return fields
+
+    stale_hit = _disk_load(symbol, max_age=float(_STALE_MAX_SEC))
+    return _annotate_stale_cache(*stale_hit) if stale_hit is not None else None
+
+
+def fetch_cached_fundamentals(ticker: str, max_age: float | None = None) -> dict | None:
+    """Ambil fundamental hanya dari cache memori/disk tanpa panggilan jaringan."""
+    symbol = datamod.normalize_ticker(ticker)
+    with _fund_lock:
+        hit = _fund_cache.get(symbol)
+        if hit:
+            age = time.time() - hit[0]
+            if max_age is None or age <= max_age:
+                return copy.deepcopy(hit[1])
+    disk_hit = _disk_load(symbol, max_age=max_age)
+    if disk_hit is not None:
+        return copy.deepcopy(disk_hit[0])
+    return None
 
 
 def clear_cache():

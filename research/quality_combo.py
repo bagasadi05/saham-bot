@@ -29,7 +29,16 @@ from research import train_lgbm  # noqa: E402
 def summarize_combo(rows: list[dict]) -> dict:
     """Ringkas statistik kualitas & return 20h untuk seluruh kandidat vs lolos saringan."""
     if not rows:
-        return {"n": 0, "pass_rate_pct": 0.0, "avg_ret20d_all": None, "avg_ret20d_pass": None}
+        return {
+            "n": 0,
+            "n_pass": 0,
+            "n_fail": 0,
+            "pass_rate_pct": 0.0,
+            "avg_ret20d_all": None,
+            "avg_ret20d_pass": None,
+            "avg_ret20d_fail": None,
+            "top_quality_syariah": [],
+        }
 
     passed = [r for r in rows if r.get("quality_ok")]
     failed = [r for r in rows if not r.get("quality_ok")]
@@ -56,16 +65,37 @@ def summarize_combo(rows: list[dict]) -> dict:
     }
 
 
-def _fetch_one(ticker: str) -> dict | None:
+def _load_regime_context(path: Path) -> dict | None:
+    """Muat konteks evaluasi rezim secara read-only bila file hasil riset tersedia."""
+    if not path or not path.exists():
+        return None
     try:
-        df = datamod.fetch_history(ticker, period="1y")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        return {
+            "source": path.name,
+            "best_variant": data.get("best_variant") or data.get("recommended"),
+            "modes": data.get("modes") if isinstance(data.get("modes"), dict) else None,
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _fetch_one(ticker: str, *, offline: bool = False) -> dict | None:
+    try:
+        df = (datamod.fetch_cached_history(ticker, period="1y")
+              if offline else datamod.fetch_history(ticker, period="1y"))
         if df is None or len(df) < 60:
             return None
         from core import analysis
 
         ind = analysis.compute_indicators(df)
         f_map = relatif.factors_from_ind(ind)
-        fund = fundamental.fetch_fundamentals(ticker)
+        fund = (fundamental.fetch_cached_fundamentals(ticker)
+                if offline else fundamental.fetch_fundamentals(ticker))
+        if offline and fund is None:
+            return None
         q = kualitas.judge(fund)
         ret20d = float(ind["ret20d"].iloc[-1]) if "ret20d" in ind.columns else None
         return {
@@ -85,12 +115,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--universe", default="expanded", choices=("lq45", "syariah", "expanded"))
     ap.add_argument("--max-tickers", type=int, default=60)
     ap.add_argument("--out", default="data/quality_combo.json")
+    ap.add_argument("--offline", action="store_true",
+                    help="Hanya baca cache lokal OHLCV & fundamental tanpa jaringan.")
+    ap.add_argument("--regime-file", default="data/regime_eval.json",
+                    help="Path opsional ringkasan evaluasi rezim read-only.")
     args = ap.parse_args(argv)
 
     tickers = train_lgbm.select_universe(args.universe, max_tickers=args.max_tickers)
-    print(f"[quality_combo] Mengevaluasi {len(tickers)} emiten ({args.universe})...", flush=True)
+    mode_lbl = "offline/cache" if args.offline else "live"
+    print(
+        f"[quality_combo] Mengevaluasi {len(tickers)} emiten ({args.universe}, {mode_lbl})...",
+        flush=True,
+    )
     with ThreadPoolExecutor(max_workers=6) as pool:
-        fetched = [r for r in pool.map(_fetch_one, tickers) if r is not None]
+        fetched = [
+            r for r in pool.map(lambda t: _fetch_one(t, offline=args.offline), tickers)
+            if r is not None
+        ]
 
     if len(fetched) >= relatif.MIN_UNIVERSE:
         scored = relatif.rank_universe({r["ticker"]: r["factors"] for r in fetched})
@@ -105,12 +146,16 @@ def main(argv: list[str] | None = None) -> int:
 
     report = {
         "universe": args.universe,
+        "offline": bool(args.offline),
         "n_evaluated": len(fetched),
         "all_stocks": summarize_combo(fetched),
         "top_quintiles_q4_q5": summarize_combo(top_q),
         "syariah_all": summarize_combo(sy_rows),
         "syariah_top_quintiles_q4_q5": summarize_combo(sy_top_q),
     }
+    reg_ctx = _load_regime_context(ROOT / args.regime_file)
+    if reg_ctx is not None:
+        report["regime_context"] = reg_ctx
 
     out_path = ROOT / args.out
     out_path.parent.mkdir(parents=True, exist_ok=True)

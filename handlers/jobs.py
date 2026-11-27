@@ -335,16 +335,33 @@ async def fill_open(app: Application, deps):
             log.exception("gagal isi posisi pending chat %s", chat_id)
 
 
-async def heartbeat(app: Application, deps):
-    """Tulis timestamp tiap 5 menit — dipakai HEALTHCHECK Docker."""
-    path = deps.config.HEARTBEAT_FILE
-    if not path:
+def _ping_healthcheck_url(url: str) -> None:
+    """Ping URL dead-man-switch/watchdog opsional (timeout 4 dtk, fail-soft)."""
+    import urllib.request
+
+    u = (url or "").strip()
+    if not (u.startswith("http://") or u.startswith("https://")):
         return
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(marketcal.now_wib().isoformat(timespec="seconds"))
-    except OSError:
-        log.warning("gagal menulis heartbeat ke %s", path)
+        req = urllib.request.Request(u, method="GET", headers={"User-Agent": "sahambuddy-heartbeat/1"})
+        with urllib.request.urlopen(req, timeout=4):
+            pass
+    except Exception:
+        log.warning("ping HEALTHCHECK_PING_URL gagal")
+
+
+async def heartbeat(app: Application, deps):
+    """Tulis timestamp tiap 5 menit — dipakai HEALTHCHECK Docker + watchdog opsional."""
+    path = deps.config.HEARTBEAT_FILE
+    if path:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(marketcal.now_wib().isoformat(timespec="seconds"))
+        except OSError:
+            log.warning("gagal menulis heartbeat ke %s", path)
+    ping_url = str(getattr(deps.config, "HEALTHCHECK_PING_URL", "") or "").strip()
+    if ping_url:
+        await asyncio.to_thread(_ping_healthcheck_url, ping_url)
 
 
 async def check_zone_alerts(app: Application, bars, deps) -> None:

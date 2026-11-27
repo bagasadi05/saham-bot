@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import os
 import time
 from datetime import timedelta
 
@@ -17,8 +18,8 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
 
 from core import syariah
-from core import (data, fundamental, learn, marketcal, news,
-                  scorecard, store)
+from core import (data, fundamental, learn, marketcal, news, news_ml,
+                  pricing, scorecard, store)
 from core.reports import _trend_line, esc, fmt_compact_amount
 from handlers import menu as menu_handler
 
@@ -195,9 +196,36 @@ def jobs_status_line(job_status: dict | None) -> str:
     return ""
 
 
+def _status_ml_line() -> str:
+    """Baris diagnostik mesin sentimen ML vs lexicon fallback untuk /status."""
+    try:
+        info = news_ml.model_info() or {}
+    except Exception:
+        return ""
+    usage = info.get("usage") or {}
+    n_ml = int(usage.get("ml") or 0)
+    n_lex = int(usage.get("lexicon") or 0)
+    if info.get("loaded"):
+        eng = info.get("engine") or "ml"
+        q_tag = " INT8" if info.get("quantized") else ""
+        mode = f"aktif ({esc(str(eng))}{q_tag})"
+    elif info.get("failed"):
+        mode = "lexicon fallback (model ML lokal tidak tersedia)"
+    else:
+        lo = "lokal-saja" if info.get("local_only") else "lazy-load"
+        mode = f"belum dimuat ({lo})"
+    return f"Sentimen: {mode} | pakai ML {n_ml}, lexicon {n_lex}\n"
+
+
 async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     """Kesehatan bot: uptime, error, isi store, cache, status bursa."""
     user = update.effective_user
+    allow_public = os.getenv("ALLOW_PUBLIC", "").strip().lower() in ("1", "true", "yes")
+    if allow_public and not deps.ADMIN_IDS:
+        await update.effective_message.reply_text(
+            "❌ /status dinonaktifkan di mode publik tanpa ADMIN_IDS."
+        )
+        return
     if deps.ADMIN_IDS and (not user or user.id not in deps.ADMIN_IDS):
         await update.effective_message.reply_text("❌ /status hanya untuk admin bot.")
         return
@@ -226,6 +254,14 @@ async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
             f"(dilewati basi {st_n}, kualitas {ql_n}, perbaikan bar {fl_n})\n"
         )
     jobs_ln = jobs_status_line(getattr(deps, "JOB_STATUS", {}) or {})
+    ml_ln = _status_ml_line()
+    yf_ln = (
+        "Yahoo circuit-breaker: ⏸️ jeda sementara (429/rate-limit → cache/fallback)\n"
+        if cache.get("yahoo_cooled_down")
+        else ""
+    )
+    bei_warn = pricing.window_expiry_warning()
+    bei_ln = f"⚠️ {esc(bei_warn)}\n" if bei_warn else ""
     await update.effective_message.reply_text(
         "🩺 <b>Status SahamBuddy</b>\n"
         f"Uptime: {jam}j {menit}m | perintah: {deps.STATS['commands']} | "
@@ -233,13 +269,16 @@ async def do_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
         f"Cache harga: {cache.get('entries', 0)} emiten "
         f"(hit {cache.get('hit', 0)}, miss {cache.get('miss', 0)}, "
         f"TTL {cache.get('ttl_seconds', 0)} dtk)\n"
+        f"{yf_ln}"
         f"Store: {c.get('chats', 0)} chat | {c.get('watchlist', 0)} watchlist | "
         f"{c.get('alerts', 0)} alert | {c.get('paper_open', 0)} posisi terbuka "
         f"dari {c.get('paper_total', 0)}\n"
         f"Histori sinyal: {h.get('total', 0)} baris "
         f"({h.get('pending', 0)} menunggu hasil)\n"
         f"{scan_ln}"
+        f"{ml_ln}"
         f"{jobs_ln}"
+        f"{bei_ln}"
         f"Bursa: {'BUKA' if marketcal.market_open() else 'tutup'} | "
         f"hari ini {'hari bursa' if marketcal.is_trading_day(marketcal.now_wib().date()) else 'libur'}",
         parse_mode=ParseMode.HTML)

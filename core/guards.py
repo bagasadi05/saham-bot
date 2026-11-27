@@ -35,6 +35,7 @@ def global_heavy_semaphore() -> asyncio.Semaphore:
         _global_heavy_sem = asyncio.Semaphore(GLOBAL_MAX_HEAVY)
     return _global_heavy_sem
 _last_used: dict[tuple[int, str], float] = {}
+_burst_hits: dict[tuple[int, str], list[float]] = {}
 # Lock agar check-and-set cooldown atomik meski ada await di masa depan
 # (CWE-367: dengan concurrent_updates(4), dua coroutine bisa interleave
 # между check dan write kalau ada await di antaranya).
@@ -46,6 +47,63 @@ def _get_cooldown_lock() -> asyncio.Lock:
     if _cooldown_lock is None:
         _cooldown_lock = asyncio.Lock()
     return _cooldown_lock
+
+
+def clear_state() -> None:
+    """Bersihkan seluruh state cooldown, burst limiter, & PENDING (untuk test)."""
+    _last_used.clear()
+    _burst_hits.clear()
+    PENDING.clear()
+    _pending_ts.clear()
+    _pending_owners.clear()
+
+
+async def burst_ok(
+    update,
+    bucket: str = "burst",
+    *,
+    limit: int = 12,
+    window: float = 10.0,
+) -> bool:
+    """Batas burst per pengguna di atas callback/pesan bebas (atomik)."""
+    if limit <= 0 or window <= 0:
+        return True
+    user = getattr(update, "effective_user", None)
+    key = (user.id if user else 0, bucket)
+    allowed = True
+    retry_after = 1
+    async with _get_cooldown_lock():
+        now = time.monotonic()
+        cutoff = now - window
+        hits = [t for t in _burst_hits.get(key, ()) if t > cutoff]
+        if len(hits) >= limit:
+            allowed = False
+            retry_after = max(1, int(hits[0] + window - now) + 1)
+            _burst_hits[key] = hits
+        else:
+            hits.append(now)
+            _burst_hits[key] = hits
+            if len(_burst_hits) > 512:
+                for k, arr in list(_burst_hits.items()):
+                    if not any(t > cutoff for t in arr):
+                        _burst_hits.pop(k, None)
+    if not allowed:
+        q = getattr(update, "callback_query", None)
+        if q is not None and hasattr(q, "answer"):
+            try:
+                await q.answer(
+                    f"⏳ Terlalu cepat — tunggu {retry_after} detik.",
+                    show_alert=False,
+                )
+            except Exception:
+                pass
+        else:
+            msg = getattr(update, "effective_message", None)
+            if msg is not None:
+                await msg.reply_text(
+                    f"⏳ Terlalu cepat — coba lagi dalam {retry_after} detik."
+                )
+    return allowed
 
 
 async def cooldown_ok(update, name: str) -> bool:

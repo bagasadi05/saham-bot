@@ -16,10 +16,23 @@ if ROOT not in sys.path:
 from core import store  # noqa: E402
 
 
+def verify_backup(path: str) -> str:
+    """Verifikasi integritas SQLite hasil backup via PRAGMA quick_check."""
+    import sqlite3
+
+    with sqlite3.connect(path, timeout=10) as conn:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+    res = str(row[0] if row else "")
+    if res.lower() != "ok":
+        raise RuntimeError(f"integritas backup gagal ({path}): {res}")
+    return res
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Cadangan SQLite SahamBuddy")
     ap.add_argument("dest", nargs="?", default=os.getenv("BACKUP_DIR", "backups"))
     ap.add_argument("--keep", type=int, default=None, help="jumlah cadangan terakhir yang disimpan")
+    ap.add_argument("--verify", action="store_true", help="uji PRAGMA integrity_check pada hasil cadangan")
     args = ap.parse_args(argv)
     if args.keep is not None:
         keep = max(1, int(args.keep))
@@ -29,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             keep = 7
     path = store.backup_to(args.dest, keep)
+    if args.verify:
+        verify_backup(path)
     print(path)
     return 0
 

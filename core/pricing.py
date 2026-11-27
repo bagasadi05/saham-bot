@@ -132,6 +132,23 @@ def auto_reject_status(day: _dt.date | None = None) -> dict:
     }
 
 
+def window_expiry_warning(days_warn: int = 21, day: _dt.date | None = None) -> str | None:
+    """Peringatan dini saat mendekati atau melewati akhir jendela aturan BEI."""
+    d = _coerce_date(day) or _today_wib()
+    st = auto_reject_status(d)
+    if st.get("expired"):
+        return st.get("note")
+    if st.get("active"):
+        a_end = st["window"][1]
+        rem = (a_end - d).days
+        if 0 <= rem <= max(0, int(days_warn)):
+            return (
+                f"Jendela aturan ARA/ARB BEI ({st.get('rule')}) berakhir {a_end.isoformat()} "
+                f"({rem} hari lagi) — verifikasi pengumuman BEI terbaru sebelum {a_end.isoformat()}."
+            )
+    return None
+
+
 def tick_size(price: float) -> float:
     """Fraksi harga IDX untuk satu harga."""
     p = float(price)

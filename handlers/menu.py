@@ -17,7 +17,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
 import config
-from core import alerts, learn, saran as saranmod, store, textutil
+from core import alerts, guards as core_guards, learn, saran as saranmod, store, textutil
 from core.reports import esc
 
 POPULAR_TICKERS = ["BBCA", "BBRI", "TLKM", "BMRI", "ANTM", "ASII"]
@@ -122,12 +122,12 @@ def menu_text(mode: str = "pemula") -> str:
         return (
             f"⚡ <b>{brand}</b> · <i>Mode Expert</i>\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "Terminal cepat analisis teknikal, kualitas fundamental, "
-            "sizing risiko, portofolio &amp; jurnal eksekusi BEI.\n\n"
-            "⌘ <code>/cek</code> · <code>/analisis</code> · <code>/rencana</code> · "
-            "<code>/sinyal</code> · <code>/saran</code> · <code>/jurnal</code>\n\n"
-            "<blockquote>⚠️ Alat bantu analisis berbasis data, bukan ajakan beli/jual "
-            "&amp; tidak terhubung ke akun sekuritas. Selalu DYOR.</blockquote>"
+            "• <b>Alat Analisis &amp; Kontrol Risiko</b>: <code>/cek</code> · <code>/analisis</code> · "
+            "<code>/rencana</code> · <code>/portofolio</code> · <code>/jurnal</code>\n"
+            "• <b>Penyaring Kandidat Statistik Tipis</b>: <code>/sinyal</code> · <code>/saran</code> · "
+            "<code>/paket</code> <i>(edge OOS tipis, wajib lolos <code>/cek</code>)</i>\n\n"
+            "<blockquote>⚠️ Alat bantu analisis &amp; manajemen risiko berbasis data, bukan penasihat "
+            "investasi maupun auto-trading. Selalu DYOR.</blockquote>"
         )
     return (
         f"✨ <b>{brand}</b> · <i>Asisten Saham BEI</i>\n"
@@ -552,7 +552,9 @@ def _modal_saved_markup() -> InlineKeyboardMarkup:
 def _submenu_content(group: str, modal: int) -> tuple[str, InlineKeyboardMarkup] | None:
     if group == "ide":
         return (
-            "💡 <b>Ide Saham &amp; Sinyal Pasar</b>\n\n"
+            "💡 <b>Penyaring Kandidat &amp; Sinyal Pasar</b>\n"
+            "<i>Edge statistik sinyal tipis — pakai sebagai penyaring awal, lalu uji "
+            "ulang dengan <b>Cek 6 Poin</b> &amp; kontrol risiko sebelum eksekusi.</i>\n\n"
             "• <b>Kondisi Pasar</b>: ringkasan IHSG, rezim, luas pasar, sektor &amp; berita.\n"
             "• <b>Ide Hari Ini</b>: scan kandidat teratas + ukuran lot aman.\n"
             "• <b>Beli Berkualitas</b>: khusus sinyal BELI yang labanya sehat.\n"
@@ -1017,13 +1019,31 @@ async def _handle_onboard_cb(msg, chat_id: int, step_raw: str, deps) -> None:
     )
 
 
+_HEAVY_RUN_ACTIONS = frozenset({
+    "saran", "paket", "pasar", "sektor", "bandar", "scan",
+    "sinyal", "sinyal_bagus", "validasi", "jejak",
+})
+
+
+def _is_heavy_callback(cb_data: str) -> bool:
+    if cb_data.startswith(("tick:", "refresh:", "sg:")):
+        return True
+    if cb_data.startswith("run:"):
+        return cb_data.split(":", 1)[1] in _HEAVY_RUN_ACTIONS
+    return False
+
+
 async def menu_callback(update: Update, ctx, deps):
     q = update.callback_query
     if deps.ALLOWED_IDS and (not q.from_user or q.from_user.id not in deps.ALLOWED_IDS):
         await q.answer("⛔ Bot ini privat.", show_alert=True)
         return
-    await q.answer()
     cb_data = q.data or ""
+    if _is_heavy_callback(cb_data):
+        burst_fn = getattr(deps, "burst_ok", core_guards.burst_ok)
+        if not await burst_fn(update, "menu_heavy", limit=30, window=10.0):
+            return
+    await q.answer()
     msg = q.message
     if not msg:
         return
@@ -1312,6 +1332,9 @@ async def menu_text_input(update: Update, ctx, deps):
             return
         parsed = deps.parse_tanya(update.effective_message.text or "")
         if parsed:
+            burst_fn = getattr(deps, "burst_ok", core_guards.burst_ok)
+            if not await burst_fn(update, "text_tanya", limit=8, window=10.0):
+                return
             focus, ticker = parsed
             if ticker:
                 await deps._do_tanya(update, ticker, focus)

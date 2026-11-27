@@ -49,6 +49,7 @@ TMP_DIR = os.getenv("TMP_DIR", "temp")
 
 # File heartbeat (dibuat tiap 5 menit) — dipakai HEALTHCHECK Docker. Kosong = nonaktif
 HEARTBEAT_FILE = os.getenv("HEARTBEAT_FILE", "heartbeat.txt")
+HEALTHCHECK_PING_URL = os.getenv("HEALTHCHECK_PING_URL", "").strip()
 
 # Sumber data: yfinance dengan suffix .JK (Bursa Efek Indonesia)
 TICKER_SUFFIX = ".JK"

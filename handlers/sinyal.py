@@ -52,6 +52,18 @@ def _sort_sells(rows: list[dict]) -> list[dict]:
     return sells
 
 
+def _is_thin_liquidity(r: dict) -> bool:
+    """True bila rata-rata nilai transaksi 20h tercatat < Rp2 M/hari (di luar LQ45)."""
+    val20 = r.get("value_avg20")
+    if val20 is None:
+        return False
+    try:
+        v = float(val20)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(v) and v < 2_000_000_000
+
+
 def _sinyal_row(i: int, r: dict, kval: dict | None = None) -> str:
     parts = [f"{i}. <b>{esc(r['ticker'])}</b> {_rp(r.get('price'))}"]
     if r.get("rel_pct") is not None:
@@ -62,6 +74,8 @@ def _sinyal_row(i: int, r: dict, kval: dict | None = None) -> str:
         parts.append(f"20h {r['ret20d']:+.1f}%")
     if r.get("stale"):
         parts.append("⚠️stale")
+    if _is_thin_liquidity(r):
+        parts.append("⚠️likuiditas tipis (&lt;Rp2M/h · di luar sampel LQ45)")
     line = " · ".join(parts)
     if kval:
         line += f" · {kvalmod.mark(kval)} {esc(kval.get('label') or '')}"
@@ -213,6 +227,11 @@ def _sinyal_detail(r: dict, meta: dict, deps,
     qn = data_quality.plain_note(r.get("quality_note"))
     if qn:
         lines.append(f"⚠️ <i>Catatan data: {esc(qn)}</i>")
+    if _is_thin_liquidity(r):
+        lines.append(
+            "⚠️ <i>Likuiditas tipis (&lt;Rp2 M/hari) — di luar sampel LQ45 uji riset; "
+            "risiko spread &amp; slippage tinggi.</i>"
+        )
     if kval:
         lines.append(f"Kualitas fundamental: {kvalmod.mark(kval)} "
                      f"<b>{esc(kval.get('label') or '—')}</b>"

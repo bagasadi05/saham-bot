@@ -17,8 +17,14 @@ from telegram.ext import ContextTypes
 from telegram.constants import ChatAction, ParseMode
 
 from core import syariah
-from core import (bandar, data_quality, marketcal, regime, rencana, reports,
+from core import (bandar, data_quality, guards, marketcal, regime, rencana, reports,
                   risk as riskmod, saran as saranmod, screener, store, universe)
+
+
+def _heavy_sem(deps) -> asyncio.Semaphore:
+    """Ambil semaphore global batas request berat (bisa dioverride di deps)."""
+    fn = getattr(deps, "global_heavy_semaphore", None)
+    return fn() if callable(fn) else guards.global_heavy_semaphore()
 from core.reports import esc
 from core.textutil import parse_rupiah, split_message
 from handlers import jurnal as jurnal_handler
@@ -504,7 +510,8 @@ async def do_paket(update: Update, args: list[str], deps,
             f"⏳ Menyusun rencana dari <b>{len(cands)} kandidat</b> teratas "
             "(fundamental + berita). Sekali per scan, ±20–60 detik…",
             parse_mode=ParseMode.HTML)
-        payload = await deps._build_plan_payload(rows, meta)
+        async with _heavy_sem(deps):
+            payload = await deps._build_plan_payload(rows, meta)
         if not payload.get("enriched"):
             await update.effective_message.reply_text(
                 "❌ Gagal mengambil data fundamental/berita untuk kandidat. "
@@ -988,7 +995,8 @@ async def scan_with_guard(force: bool, deps, *,
         # lebih aman melewati scan daripada berjalan bersamaan tanpa sadar.
         return None
     try:
-        return await asyncio.to_thread(screener.scan, force)
+        async with _heavy_sem(deps):
+            return await asyncio.to_thread(screener.scan, force)
     finally:
         deps._screener_running = False
 

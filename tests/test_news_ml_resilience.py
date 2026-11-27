@@ -50,3 +50,40 @@ def test_missing_torch_marks_unavailable(monkeypatch):
 
     assert out == [None]
     assert news_ml._state["failed"] is True   # lingkungan memang tanpa torch
+
+
+def test_local_only_skips_hub_when_model_dir_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAHAMBOT_LOCAL_ONLY", "1")
+    monkeypatch.setattr(news_ml, "LOCAL_MODEL_DIR", str(tmp_path / "missing_model"))
+    monkeypatch.setattr(
+        news_ml,
+        "_state",
+        {"model": None, "tokenizer": None, "failed": False, "engine": None, "quantized": False},
+    )
+    info = news_ml.model_info()
+    assert info["local_only"] is True
+    model, tok = news_ml.get_model()
+    assert (model, tok) == (None, None)
+    assert news_ml._state["failed"] is True
+
+
+def test_news_sentiment_records_ml_and_lexicon_usage(monkeypatch):
+    from datetime import datetime, timezone
+    from core import news
+
+    news_ml.clear_usage()
+    monkeypatch.setattr(
+        news_ml,
+        "classify_batch",
+        lambda titles: [None, {"label": "positive", "score": 0.92}],
+    )
+    now = datetime.now(timezone.utc)
+    items = [
+        {"title": "Laba BBCA tumbuh kuat", "date": now, "source": "Test", "link": "https://x.invalid/1"},
+        {"title": "Ekspansi kredit sehat", "date": now, "source": "Test", "link": "https://x.invalid/2"},
+    ]
+    res = news.news_sentiment(items)
+    assert res["engine_coverage"]["ml"] == 1
+    assert res["engine_coverage"]["lexicon"] == 1
+    usage = news_ml.model_info()["usage"]
+    assert usage == {"ml": 1, "lexicon": 1}

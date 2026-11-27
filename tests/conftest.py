@@ -45,7 +45,7 @@ def downtrend_df():
 
 @pytest.fixture(autouse=True)
 def _isolated_caches(monkeypatch):
-    from core import bandar, banding, data, fundamental, news, regime
+    from core import bandar, banding, data, fundamental, guards, news, news_ml, regime
 
     # Jaga suite test tetap 100% offline meski `.env` lokal menyimpan API key live.
     monkeypatch.delenv("EODHD_API_KEY", raising=False)
@@ -57,14 +57,18 @@ def _isolated_caches(monkeypatch):
     if "bot" in sys.modules:
         monkeypatch.setattr(sys.modules["bot"], "ADMIN_IDS", set(), raising=False)
     data.clear_cache()
+    monkeypatch.setattr(fundamental, "CACHE_DIR", "")
     fundamental.clear_cache()
     news.clear_cache()
+    news_ml.clear_usage()
+    guards.clear_state()
     monkeypatch.setattr(bandar, "CACHE_DIR", "")
     bandar.clear_cache()
     banding._mkt_cache.update({"ts": 0.0, "val": None})
     regime.clear_cache()
     yield
     data.clear_cache()
+    guards.clear_state()
 
 
 @pytest.fixture

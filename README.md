@@ -133,7 +133,7 @@ Untuk terminal pemantauan lokal Windows (8 tab: Pasar & Rezim + Rotasi Sektor ID
 BOT_TOKEN="123456:ABC-DEF..." python bot.py
 ```
 
-Deployment 24/7 (Docker/systemd/supervisor) → lihat **[deploy.md](deploy.md)**.
+Deployment 24/7 (Docker/systemd/supervisor) → lihat **[docs/deploy.md](docs/deploy.md)**.
 
 ### Mengaktifkan Allowlist (disarankan untuk bot pribadi)
 

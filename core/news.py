@@ -659,6 +659,16 @@ def news_sentiment(items: list[dict]) -> dict:
 
     n_ml = sum(1 for d in details if d.get("engine") == "ml")
     n_lex = sum(1 for d in details if d.get("engine") == "lexicon")
+    if n_ml or n_lex:
+        try:
+            from core import news_ml
+            if hasattr(news_ml, "record_usage"):
+                if n_ml:
+                    news_ml.record_usage("ml", n_ml)
+                if n_lex:
+                    news_ml.record_usage("lexicon", n_lex)
+        except Exception:
+            pass
     n_scored = sum(
         1 for d in details
         if d.get("engine") == "ml" or abs(float(d.get("sent") or 0.0)) >= ITEM_SENT_THRESHOLD

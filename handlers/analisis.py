@@ -21,6 +21,7 @@ from core import (
     banding,
     data,
     fundamental,
+    guards,
     marketcal,
     news,
     powerscore,
@@ -30,6 +31,12 @@ from core import (
 from core.reports import esc
 
 log = logging.getLogger("sahambuddy")
+
+
+def _heavy_sem(deps) -> asyncio.Semaphore:
+    """Ambil semaphore global batas request berat (bisa dioverride di deps)."""
+    fn = getattr(deps, "global_heavy_semaphore", None)
+    return fn() if callable(fn) else guards.global_heavy_semaphore()
 
 _CB_TICKER_RE = re.compile(r"[A-Z0-9]{2,10}")
 
@@ -236,51 +243,55 @@ async def do_analisis(update: Update, tickers: list[str], deps):
           if chat_id is not None else [])
     mkt = await asyncio.to_thread(banding.market_context)
     for t in tickers[:5]:
-        try:
-            res = await deps.fetch_and_analyze(t)
-        except ValueError as e:
+        err_msg = None
+        async with _heavy_sem(deps):
+            try:
+                res = await deps.fetch_and_analyze(t)
+            except ValueError as e:
+                err_msg = e
+            else:
+                sym = res["ticker"]
+                cb_sym = _clean_cb_ticker(sym) or _clean_cb_ticker(t)
+                fund_f = asyncio.to_thread(fundamental.fetch_fundamentals, t)
+                news_f = asyncio.to_thread(news.fetch_news, t)
+                weekly_f = asyncio.to_thread(data.fetch_weekly, t)
+                try:
+                    fund, items, weekly_df = await asyncio.gather(
+                        fund_f, news_f, weekly_f, return_exceptions=True)
+                except Exception:
+                    fund, items, weekly_df = None, None, None
+                if isinstance(fund, Exception) or fund is None:
+                    fund, fsc = None, None
+                else:
+                    fsc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
+                if isinstance(items, Exception) or not items:
+                    nsent = None
+                else:
+                    nsent = await asyncio.to_thread(news.news_sentiment, items)
+                if isinstance(weekly_df, Exception) or weekly_df is None:
+                    res["weekly"] = None
+                else:
+                    res["weekly"] = analysis.weekly_trend(weekly_df, res["score"]["pct"])
+                try:
+                    res["ret1y"] = banding.year_return(res["ind"]["close"])
+                except Exception:
+                    res["ret1y"] = None
+                try:
+                    sector_ctx = await asyncio.to_thread(
+                        banding.sector_context, sym, (fund or {}).get("sector"), wl)
+                except Exception:
+                    sector_ctx = None
+                res["sector_ctx"] = sector_ctx
+                mkt_ctx = {**mkt, "peers": sector_ctx} if (mkt and sector_ctx) else mkt
+                res["mkt"] = mkt_ctx
+                pw = _analisis_powerscore(res, fsc, nsent)
+        if err_msg is not None:
             await msg.reply_text(
-                f"❌ {esc(e)}",
+                f"❌ {esc(err_msg)}",
                 parse_mode=ParseMode.HTML,
                 reply_markup=_home_kb(deps),
             )
             continue
-        sym = res["ticker"]
-        cb_sym = _clean_cb_ticker(sym) or _clean_cb_ticker(t)
-        fund_f = asyncio.to_thread(fundamental.fetch_fundamentals, t)
-        news_f = asyncio.to_thread(news.fetch_news, t)
-        weekly_f = asyncio.to_thread(data.fetch_weekly, t)
-        try:
-            fund, items, weekly_df = await asyncio.gather(
-                fund_f, news_f, weekly_f, return_exceptions=True)
-        except Exception:
-            fund, items, weekly_df = None, None, None
-        if isinstance(fund, Exception) or fund is None:
-            fund, fsc = None, None
-        else:
-            fsc = await asyncio.to_thread(fundamental.score_fundamentals, fund)
-        if isinstance(items, Exception) or not items:
-            nsent = None
-        else:
-            nsent = await asyncio.to_thread(news.news_sentiment, items)
-        if isinstance(weekly_df, Exception) or weekly_df is None:
-            res["weekly"] = None
-        else:
-            res["weekly"] = analysis.weekly_trend(weekly_df, res["score"]["pct"])
-        try:
-            res["ret1y"] = banding.year_return(res["ind"]["close"])
-        except Exception:
-            res["ret1y"] = None
-        try:
-            sector_ctx = await asyncio.to_thread(
-                banding.sector_context, sym, (fund or {}).get("sector"), wl)
-        except Exception:
-            sector_ctx = None
-        res["sector_ctx"] = sector_ctx
-        mkt_ctx = {**mkt, "peers": sector_ctx} if (mkt and sector_ctx) else mkt
-        res["mkt"] = mkt_ctx
-
-        pw = _analisis_powerscore(res, fsc, nsent)
         close_px, atr_px = _extract_price_atr(res)
         allow_buy = _analisis_allow_buy(res, pw, close_px)
         if allow_buy and chat_id is not None and cb_sym:
@@ -452,26 +463,27 @@ async def cmd_banding(update: Update, ctx: ContextTypes.DEFAULT_TYPE, deps):
     as_ofs: list[str] = []
     stale_syms: list[str] = []
     fx_notes: list[str] = []
-    for t in emiten:
-        try:
-            res = await deps.fetch_and_analyze(t)
-        except ValueError:
-            res = None
-        if isinstance(res, dict):
-            if res.get("as_of"):
-                as_ofs.append(str(res["as_of"]))
-            if res.get("stale") or res.get("stale_note"):
-                stale_syms.append(t)
-        try:
-            fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
-        except Exception:
-            fund = None
-        if isinstance(fund, dict):
-            ccy = str(fund.get("currency") or "").upper()
-            if ccy and ccy not in ("IDR", "TIDAK TERSEDIA"):
-                fx_notes.append(f"{t} ({ccy})")
-        rows.append(banding.compare_row(t, res, fund))
-        await asyncio.sleep(.2)
+    async with _heavy_sem(deps):
+        for t in emiten:
+            try:
+                res = await deps.fetch_and_analyze(t)
+            except ValueError:
+                res = None
+            if isinstance(res, dict):
+                if res.get("as_of"):
+                    as_ofs.append(str(res["as_of"]))
+                if res.get("stale") or res.get("stale_note"):
+                    stale_syms.append(t)
+            try:
+                fund = await asyncio.to_thread(fundamental.fetch_fundamentals, t)
+            except Exception:
+                fund = None
+            if isinstance(fund, dict):
+                ccy = str(fund.get("currency") or "").upper()
+                if ccy and ccy not in ("IDR", "TIDAK TERSEDIA"):
+                    fx_notes.append(f"{t} ({ccy})")
+            rows.append(banding.compare_row(t, res, fund))
+            await asyncio.sleep(.2)
 
     if all(row["power"] is None for row in rows):
         await update.effective_message.reply_text(

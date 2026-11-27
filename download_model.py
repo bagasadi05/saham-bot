@@ -6,7 +6,8 @@ import os
 import sys
 import time
 
-BASE = "https://huggingface.co/will702/indo-roBERTa-financial-sentiment-v2/resolve/main"
+MODEL_REVISION = os.environ.get("SAHAMBOT_MODEL_REVISION", "").strip() or "main"
+BASE = f"https://huggingface.co/will702/indo-roBERTa-financial-sentiment-v2/resolve/{MODEL_REVISION}"
 DEST = os.environ.get("SAHAMBOT_LOCAL_MODEL", "/app/models/indo-fin-roberta")
 CHUNK = int(os.environ.get("DOWNLOAD_CHUNK", "4")) * 1024 * 1024
 FILES = ["config.json", "tokenizer_config.json", "special_tokens_map.json",
@@ -40,7 +41,19 @@ def verify_sha256(path: str, expected: str | None = None) -> bool:
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 | saham-bot-deploy"
 
 
-def fetch(url: str, out: str, tries: int = 60):
+def _finalize_file(part: str, out: str, expected_sha256: str | None = None) -> None:
+    os.replace(part, out)
+    if expected_sha256 and not verify_sha256(out, expected_sha256):
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        raise SystemExit(
+            f"checksum SHA-256 tidak cocok untuk {os.path.basename(out)} — file korup dihapus"
+        )
+
+
+def fetch(url: str, out: str, tries: int = 60, *, expected_sha256: str | None = None):
     os.makedirs(os.path.dirname(out), exist_ok=True)
     part = out + ".part"
     # ukuran total
@@ -61,7 +74,7 @@ def fetch(url: str, out: str, tries: int = 60):
     while failures < tries:
         have = os.path.getsize(part) if os.path.exists(part) else 0
         if have >= total:
-            os.replace(part, out)
+            _finalize_file(part, out, expected_sha256)
             print(f"  ✓ {os.path.basename(out)} ({total:,} B)", flush=True)
             return
         end = min(have + CHUNK, total) - 1
@@ -99,7 +112,7 @@ def fetch(url: str, out: str, tries: int = 60):
     # resume terakhir: kalau sudah >= total, finalkan
     have = os.path.getsize(part) if os.path.exists(part) else 0
     if have >= total:
-        os.replace(part, out)
+        _finalize_file(part, out, expected_sha256)
         print(f"  ✓ {os.path.basename(out)}", flush=True)
     else:
         raise SystemExit(f"unduhan tidak tuntas: {os.path.basename(out)} {have:,}/{total:,}")
@@ -111,11 +124,15 @@ def main():
     if len(sys.argv) == 3:
         targets = [(sys.argv[1], sys.argv[2])]
     for url, out in targets:
+        exp_hash = EXPECTED_SHA256.get(os.path.basename(out))
         if os.path.exists(out) and os.path.getsize(out) > 0:
-            print(f"  = {os.path.basename(out)} sudah ada", flush=True)
-            continue
+            if verify_sha256(out, exp_hash):
+                print(f"  = {os.path.basename(out)} sudah ada (SHA-256 valid)", flush=True)
+                continue
+            print(f"  ! {os.path.basename(out)} gagal verifikasi SHA-256 — unduh ulang", flush=True)
+            os.remove(out)
         print(f"unduh {os.path.basename(out)} ...", flush=True)
-        fetch(url, out)
+        fetch(url, out, expected_sha256=exp_hash)
     print("model siap di", DEST, flush=True)
 
 

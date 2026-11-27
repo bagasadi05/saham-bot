@@ -52,6 +52,8 @@ from core.textutil import split_message
 from core import guards as core_guards
 # Alias state yang sama: tes memanipulasi bot.PENDING / bot._last_used.
 cooldown_ok = core_guards.cooldown_ok
+burst_ok = core_guards.burst_ok
+global_heavy_semaphore = core_guards.global_heavy_semaphore
 PENDING = core_guards.PENDING
 PENDING_TTL = core_guards.PENDING_TTL
 _pending_clear = core_guards._pending_clear
@@ -545,6 +547,15 @@ def format_validasi(v: dict) -> str:
          f"{m.get('start')} → {m.get('end')} · {m.get('n_tickers')} emiten · "
          f"{m.get('n_rows', 0):,} observasi · horizon {m.get('horizon')} hari bursa",
          ""]
+    embargo = m.get("embargo_days")
+    if embargo in (None, 0):
+        L.insert(
+            2,
+            "⚠️ <i>Catatan uji: embargo=0 hari — horizon antar-fase masih berpotensi "
+            "overlap label (perlu audit --embargo ≥28).</i>",
+        )
+    elif isinstance(embargo, (int, float)) and embargo > 0:
+        L.insert(2, f"⏳ Embargo antar-fase: {int(embargo)} hari bursa.")
 
     def verdict(val, hi=0.03):
         if val is None:
