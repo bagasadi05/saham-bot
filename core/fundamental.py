@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import os
 import threading
+from pathlib import Path
 import time
 
 import yfinance as yf
@@ -138,6 +139,48 @@ def clear_cache():
         _fund_cache.clear()
 
 
+
+_FX_CACHE: dict[str, tuple[float, float]] = {}
+
+
+def _get_usdidr_rate(fallback: float = 18364.0) -> float:
+    """Ambil kurs USD/IDR dari Yahoo (cache 1 jam, fallback konservatif bila offline)."""
+    now = time.time()
+    cached = _FX_CACHE.get("USDIDR")
+    if cached and (now - cached[0]) < 3600:
+        return cached[1]
+    rate = None
+    try:
+        hist = yf.Ticker("USDIDR=X").history(period="5d")
+        if hist is not None and not hist.empty and "Close" in hist.columns:
+            v = _finite_float(hist["Close"].dropna().iloc[-1])
+            if v is not None and 10000.0 <= v <= 30000.0:
+                rate = v
+    except Exception:
+        pass
+    final = rate if rate is not None else fallback
+    _FX_CACHE["USDIDR"] = (now, final)
+    return final
+
+
+
+def load_corp_action_override(symbol: str | None) -> dict | None:
+    """Muat catatan aksi korporasi & rasio bank terverifikasi dari data/corp_action_overrides.json."""
+    if not symbol:
+        return None
+    code = str(symbol).strip().upper().replace(".JK", "")
+    p = Path(__file__).resolve().parent.parent / "data" / "corp_action_overrides.json"
+    if not p.is_file():
+        return None
+    try:
+        import json
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        val = raw.get(code)
+        return val if isinstance(val, dict) else None
+    except Exception:
+        return None
+
+
 def _fetch_uncached(symbol: str) -> dict | None:
     yft = yf.Ticker(symbol)
     info = yft.info or {}
@@ -163,16 +206,30 @@ def _fetch_uncached(symbol: str) -> dict | None:
     raw_roe = _finite_float(g("returnOnEquity"))
     roe_pct = raw_roe * 100.0 if raw_roe is not None else None
     fin_currency = normalize_currency(g("financialCurrency", "currency"))
+    px_currency = normalize_currency(g("currency"))
+    raw_pbv = _finite_float(g("priceToBook"))
+    fx_usdidr = None
+    if fin_currency == "USD" and px_currency == "IDR":
+        fx_usdidr = _get_usdidr_rate()
+        if raw_pbv is not None and raw_pbv > 100.0:
+            bvps = _finite_float(g("bookValue"))
+            cur_px = _finite_float(g("currentPrice", "regularMarketPrice"))
+            if bvps is not None and bvps > 0 and cur_px is not None and cur_px > 0:
+                raw_pbv = round(cur_px / (bvps * fx_usdidr), 4)
+            else:
+                raw_pbv = round(raw_pbv / fx_usdidr, 4)
 
     fields = {
         "_v": CACHE_VERSION,
+        "symbol": symbol.replace(".JK", "").upper(),
         "name": g("longName", "shortName") or symbol.replace(".JK", ""),
         "sector": g("sector", "industry"),
         "currency": fin_currency,
-        "price_currency": normalize_currency(g("currency")),
+        "price_currency": px_currency,
+        "fx_usdidr": fx_usdidr,
         "market_cap": g("marketCap"),
         "per": _finite_float(g("trailingPE")),
-        "pbv": _finite_float(g("priceToBook")),
+        "pbv": raw_pbv,
         "eps": _finite_float(g("trailingEps")),
         "div_yield": dy_val,
         "roe": roe_pct,
@@ -403,9 +460,13 @@ def compute_fcf_yield(f: dict | None) -> float | None:
     raw = f or {}
     fin_cur = normalize_currency(raw.get("currency"))
     px_cur = normalize_currency(raw.get("price_currency")) if raw.get("price_currency") else "IDR"
-    if fin_cur.upper() != "TIDAK TERSEDIA" and px_cur.upper() != "TIDAK TERSEDIA" and fin_cur.upper() != px_cur.upper():
-        return None
+    fx = _finite_float(raw.get("fx_usdidr"))
     fcf = _finite_float(raw.get("fcf"))
+    if fin_cur.upper() != "TIDAK TERSEDIA" and px_cur.upper() != "TIDAK TERSEDIA" and fin_cur.upper() != px_cur.upper():
+        if fin_cur.upper() == "USD" and px_cur.upper() == "IDR" and fx is not None and fx > 0 and fcf is not None:
+            fcf = fcf * fx
+        else:
+            return None
     mcap = _finite_float(raw.get("market_cap"))
     if fcf is None or mcap is None or mcap <= 0:
         return None
@@ -592,7 +653,10 @@ def score_fundamentals(f: dict) -> dict:
     base_raw = max(-40, min(40, sum(points))) * 2.5  # skala -100..100
     cf = analyze_cashflow_quality(f)
     qt = analyze_quarterly_trend(f)
-    forensic_penalty = min(90, int(cf.get("forensic_penalty") or 0) + int(qt.get("penalty") or 0))
+    ov = f.get("corp_override") or load_corp_action_override(f.get("symbol"))
+    ov_flags = list((ov or {}).get("corp_action_flags") or [])
+    ov_pen = int((ov or {}).get("extra_penalty") or 0)
+    forensic_penalty = min(90, int(cf.get("forensic_penalty") or 0) + int(qt.get("penalty") or 0) + ov_pen)
     raw = max(-100.0, min(100.0, base_raw - forensic_penalty))
     if raw >= 50:
         label, emoji = "FUNDAMENTAL KUAT", "💪"
@@ -602,8 +666,14 @@ def score_fundamentals(f: dict) -> dict:
         label, emoji = "MIX", "🤷"
     else:
         label, emoji = "LEMAH", "🫤"
-    for flg in cf["flags"] + qt["flags"]:
+    for flg in cf["flags"] + qt["flags"] + ov_flags:
         verdicts.append(f"⚠️ {flg}")
+    if ov and ov.get("bank_ratios"):
+        br = ov["bank_ratios"]
+        verdicts.append(
+            f"🏦 Rasio Bank ({ov.get('as_of', 'lokal')}): NIM {br.get('nim_pct', 'n/a')}% | "
+            f"NPF {br.get('npf_gross_pct', 'n/a')}% | CAR {br.get('car_pct', 'n/a')}% | CASA {br.get('casa_pct', 'n/a')}%"
+        )
     for ok_q in qt["strengths"]:
         verdicts.append(f"📈 {ok_q}")
     if forensic_penalty > 0:
@@ -642,7 +712,8 @@ def score_fundamentals(f: dict) -> dict:
         "forensic": cf,
         "quarterly": qt,
         "forensic_penalty": forensic_penalty,
-        "forensic_flags": list(cf.get("forensic_flags") or []) + list(qt.get("forensic_flags") or []),
+        "forensic_flags": list(cf.get("forensic_flags") or []) + list(qt.get("forensic_flags") or []) + (["corp_action_override"] if ov_flags else []),
+        "corp_override": ov,
         "currency": normalize_currency(f.get("currency")),
         "filing_note": filing_note,
         "sector_rel": sector_rel,

@@ -241,3 +241,30 @@ def test_handler_cek_dan_fundamental_menampilkan_bagian_baru(monkeypatch, tmp_st
     assert "OCF" in fund_txt and "FCF" in fund_txt
     assert "Kas bersih" in fund_txt and "CR 2.10" in fund_txt
     assert "Payout 45%" in fund_txt
+
+
+def test_usd_idr_pbv_dan_fcf_yield_terkonversi(monkeypatch):
+    """Emiten laporan USD (ADRO/ITMG) tidak boleh menghasilkan PBV 13.000x akibat mismatch kurs."""
+    class _FakeTicker:
+        info = {
+            "longName": "Adaro Energy",
+            "sector": "Energy",
+            "financialCurrency": "USD",
+            "currency": "IDR",
+            "marketCap": 75_000_000_000_000,
+            "trailingPE": 6.1,
+            "priceToBook": 13942.85,
+            "bookValue": 0.175,
+            "currentPrice": 2440.0,
+            "returnOnEquity": 0.142,
+            "freeCashflow": 116_605_504.0,
+        }
+        quarterly_income_stmt = None
+
+    monkeypatch.setattr(fundamental.yf, "Ticker", lambda _s: _FakeTicker())
+    monkeypatch.setattr(fundamental, "_get_usdidr_rate", lambda fallback=18364.0: 18364.0)
+    res = fundamental._fetch_uncached("ADRO.JK")
+    assert res is not None
+    assert 0.5 <= res["pbv"] <= 1.2
+    fcf_y = fundamental.compute_fcf_yield(res)
+    assert fcf_y is not None and 2.0 <= fcf_y <= 4.0

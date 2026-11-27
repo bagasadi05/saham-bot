@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 import types
 from datetime import datetime
 
@@ -178,7 +179,8 @@ def test_store_thesis_roundtrip_isolasi_dan_hapus_saat_tutup():
 # ----------------------------------------------------------- /portofolio integration
 
 def test_portofolio_menampilkan_status_tesis_dan_perubahan(monkeypatch, uptrend_df):
-    store.add_real_position(100, "BBCA", 4, 2500.0, "2026-11-01", "Financials")
+    recent_entry = (date.today() - timedelta(days=5)).isoformat()
+    store.add_real_position(100, "BBCA", 4, 2500.0, recent_entry, "Financials")
     # Simulasikan sebelumnya berstatus MELEMAH agar perubahan (dari MELEMAH) tampil
     store.set_position_thesis(100, "BBCA", status=tesis.MELEMAH, score=-2, reasons=["lama"])
     store.save_market_scan(

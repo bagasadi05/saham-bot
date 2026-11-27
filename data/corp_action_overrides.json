@@ -1,0 +1,21 @@
+{
+  "BRIS": {
+    "as_of": "9M26 / Q3 2026 (26 Nov 2026)",
+    "source": "Laporan Keuangan 9M26 & Keterbukaan Kontan/Bareksa",
+    "rev_growth_yoy_pct": 10.0,
+    "profit_growth_yoy_pct": 10.02,
+    "bank_ratios": {
+      "nim_pct": 5.29,
+      "npf_gross_pct": 1.80,
+      "npf_net_pct": 0.35,
+      "car_pct": 20.38,
+      "casa_pct": 65.7,
+      "roe_pct": 18.14
+    },
+    "corp_action_flags": [
+      "Rights Issue maks 6,8 miliar saham tanpa pembeli siaga (dilusi maks 12,85%, 26 Nov 2026)",
+      "Risiko outflow pasif: eksklusi HSC dari ISSI/JII (1 Des 2026) & penghapusan FTSE Russell (21 Des 2026)"
+    ],
+    "extra_penalty": 20
+  }
+}
