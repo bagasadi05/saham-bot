@@ -26,6 +26,10 @@ _CACHE_TTL_FAST = 30.0
 _CACHE_TTL_BANDAR = 120.0
 _CACHE_TTL_KEYSTATS = 600.0
 
+# Whitelist ketat: bridge hanya boleh memanggil tool READ-ONLY ini.
+# Jangan tambahkan tool apa pun yang bisa memindahkan dana / memasang order.
+ALLOWED_TOOLS = frozenset({"quote", "orderbook", "bandar_detector", "keystats"})
+
 
 def is_enabled() -> bool:
     """Aktif hanya jika SAHAMBOT_STOCKBIT_MCP=1 dan skrip MCP lokal tersedia."""
@@ -144,6 +148,9 @@ class _StockbitMcpClient:
         ttl: float = _CACHE_TTL_FAST,
         timeout: float = 18.0,
     ) -> dict[str, Any] | None:
+        if name not in ALLOWED_TOOLS:
+            # Defense-in-depth: tool di luar whitelist read-only ditolak mentah.
+            return None
         cache_key = (name, json.dumps(arguments, sort_keys=True))
         now = time.time()
         cached = self._cache.get(cache_key)

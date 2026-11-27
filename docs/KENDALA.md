@@ -5,6 +5,15 @@
 > melarang scraping/crawling; jangan menambah scraper Stockbit/IDX. Rincian
 > ada di README bagian "Batasan data & lisensi".
 
+> **Bridge Stockbit MCP (`desktop_web/stockbit_bridge.py`, 2026-11-27):**
+> di luar cakupan audit repo — paket eksternal `stockbit-mcp` (di luar repo,
+> dijalankan via `node`) dipercaya apa adanya (risiko supply-chain & ToS
+> Stockbit ada pada pengguna yang mengaktifkan sendiri). Pengaman di repo:
+> default OFF (`SAHAMBOT_STOCKBIT_MCP=1`), whitelist tool read-only
+> (`quote`/`orderbook`/`bandar_detector`/`keystats`), tanpa penyimpanan
+> kredensial (sesi milik `stockbit-auth login` pengguna), dan tidak pernah
+> untuk order/auto-trading.
+
 > **STATUS PERBAIKAN — 2026-11-06 ~09:35 WIB (commit `fa71f24` "Hardening
 > produksi", sudah di-pull dan diverifikasi di mesin ini):**
 > - ✅ 1. Yahoo 429 — **sudah bisa lagi**: fetch BBCA live 240 baris, `stale: False`,

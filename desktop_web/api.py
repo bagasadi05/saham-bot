@@ -14,6 +14,8 @@ import io
 import json
 import math
 import os
+import secrets
+import time
 from pathlib import Path
 import socket
 import threading
@@ -21,12 +23,16 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 import pandas as pd
 from pydantic import BaseModel
 
 from core import (
     accuracy_tracker,
+    alerts as alertsmod,
+    analysis as analysismod,
     banding,
+    data as datamod,
     desktop_helpers as dh,
     desktop_monitor as dm,
     store_profile,
@@ -41,22 +47,71 @@ _PIN_FILE = Path(__file__).resolve().parent.parent / "temp" / "mobile_pin.json"
 _AUTH_COOKIE = "sahambot_pin_auth"
 
 app = FastAPI(title="SahamBot Desktop API", docs_url=None, redoc_url=None)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-def _load_pin_hash() -> str:
-    env_pin = os.environ.get("SAHAMBOT_WEB_PIN", "").strip()
-    if env_pin:
-        return hashlib.sha256(f"sahambot:{env_pin}".encode()).hexdigest()
+_PIN_KDF_ITER = 120_000
+_PIN_FILE_SCHEMA = 2
+_SESSION_TTL_S = 30 * 24 * 3600
+_ENV_SALT = hashlib.sha256(b"sahambot-pin-salt").hexdigest()
+
+
+def _hash_pin(pin: str, salt_hex: str) -> str:
+    """Hash PIN dengan PBKDF2-HMAC-SHA256 (KDF), bukan SHA-256 polos."""
+    return hashlib.pbkdf2_hmac(
+        "sha256", f"sahambot:{pin}".encode(), bytes.fromhex(salt_hex), _PIN_KDF_ITER,
+    ).hex()
+
+
+def _load_pin_record() -> dict:
     try:
         if _PIN_FILE.is_file():
             data = json.loads(_PIN_FILE.read_text(encoding="utf-8"))
-            return str(data.get("pin_hash") or "").strip()
+            if isinstance(data, dict):
+                return data
     except Exception:
         pass
-    return ""
+    return {}
+
+
+def _env_pin_hash() -> str:
+    """Hash PIN dari env (KDF dengan salt aplikasi agar deterministik)."""
+    env_pin = os.environ.get("SAHAMBOT_WEB_PIN", "").strip()
+    if not env_pin:
+        return ""
+    return _hash_pin(env_pin, _ENV_SALT)
+
+
+def _load_pin_hash() -> str:
+    """Hash PIN aktif: dari env (KDF) atau file lokal (KDF baru / legacy sha256)."""
+    env_h = _env_pin_hash()
+    if env_h:
+        return env_h
+    rec = _load_pin_record()
+    return str(rec.get("pin_kdf") or rec.get("pin_hash") or "").strip()
+
+
+def _pin_file_salt() -> str:
+    salt = str(_load_pin_record().get("salt") or "")
+    return salt if len(salt) == 64 else ""
+
+
+def _verify_pin(pin: str) -> bool:
+    """Verifikasi PIN terhadap env atau file (mendukung legacy sha256)."""
+    if _env_pin_hash():
+        return hmac.compare_digest(_env_pin_hash(), _hash_pin(pin, _ENV_SALT))
+    rec = _load_pin_record()
+    kdf = str(rec.get("pin_kdf") or "")
+    if kdf and _pin_file_salt():
+        return hmac.compare_digest(kdf, _hash_pin(pin, _pin_file_salt()))
+    legacy = str(rec.get("pin_hash") or "")
+    if legacy:
+        return hmac.compare_digest(legacy, hashlib.sha256(f"sahambot:{pin}".encode()).hexdigest())
+    return False
 
 
 def _save_pin_hash(pin: str) -> bool:
+    """Simpan PIN sebagai salt + PBKDF2; PIN kosong = hapus file (PIN mati)."""
     clean = pin.strip()
     if not clean:
         try:
@@ -65,10 +120,50 @@ def _save_pin_hash(pin: str) -> bool:
         except OSError:
             pass
         return False
+    salt = secrets.token_hex(32)
+    rec = {
+        "schema": _PIN_FILE_SCHEMA,
+        "salt": salt,
+        "pin_kdf": _hash_pin(clean, salt),
+        "sessions": {},
+    }
     _PIN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    h = hashlib.sha256(f"sahambot:{clean}".encode()).hexdigest()
-    _PIN_FILE.write_text(json.dumps({"pin_hash": h}), encoding="utf-8")
+    _PIN_FILE.write_text(json.dumps(rec), encoding="utf-8")
     return True
+
+
+def _create_session() -> str:
+    """Buat session token acak; server hanya menyimpan hash-nya di file PIN."""
+    token = secrets.token_urlsafe(32)
+    rec = _load_pin_record()
+    sessions = rec.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+    now = time.time()
+    sessions = {k: v for k, v in sessions.items() if isinstance(v, (int, float)) and v > now}
+    sessions[hashlib.sha256(token.encode()).hexdigest()] = now + _SESSION_TTL_S
+    rec["sessions"] = sessions
+    try:
+        _PIN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _PIN_FILE.write_text(json.dumps(rec), encoding="utf-8")
+    except OSError:
+        pass
+    return token
+
+
+def _valid_session(cookie: str) -> bool:
+    """Cookie valid bila hash-nya terdaftar & belum kedaluwarsa (constant-time)."""
+    if not cookie:
+        return False
+    sessions = _load_pin_record().get("sessions")
+    if not isinstance(sessions, dict):
+        return False
+    now = time.time()
+    token_hash = hashlib.sha256(cookie.encode()).hexdigest()
+    for k, v in sessions.items():
+        if isinstance(v, (int, float)) and v > now and hmac.compare_digest(k, token_hash):
+            return True
+    return False
 
 
 def _is_local_request(request: Request) -> bool:
@@ -106,15 +201,26 @@ def _detect_lan_urls(port: int) -> list[dict[str, str]]:
     return urls
 
 
+def _lan_enabled() -> bool:
+    return os.environ.get("SAHAMBOT_LAN", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 @app.middleware("http")
 async def _mobile_pin_guard(request: Request, call_next: Any) -> Any:
     path = request.url.path
     if path.startswith("/api/") and path not in ("/api/health", "/api/auth/unlock", "/api/mobile-info"):
-        pin_hash = _load_pin_hash()
-        if pin_hash and not _is_local_request(request):
-            cookie = request.cookies.get(_AUTH_COOKIE, "")
-            if not cookie or not hmac.compare_digest(cookie, pin_hash):
-                return JSONResponse(status_code=401, content={"detail": "PIN akses HP diperlukan."})
+        if not _is_local_request(request):
+            pin_set = bool(_load_pin_hash())
+            if _lan_enabled() and not pin_set:
+                # Mode LAN tanpa PIN: tolak akses, jangan buka API ke jaringan.
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "Mode LAN aktif tanpa PIN. Set PIN dari PC (ikon gembok) untuk membuka akses HP."},
+                )
+            if pin_set:
+                cookie = request.cookies.get(_AUTH_COOKIE, "")
+                if not _valid_session(cookie):
+                    return JSONResponse(status_code=401, content={"detail": "PIN akses HP diperlukan."})
     return await call_next(request)
 
 _scan_lock = threading.Lock()
@@ -250,6 +356,11 @@ class PinPayload(BaseModel):
     pin: str = ""
 
 
+class BulkImportPayload(BaseModel):
+    chat_id: str = dm.DEFAULT_PROFILE_ID
+    raw_text: str
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -283,7 +394,7 @@ async def get_mobile_info(request: Request) -> dict[str, Any]:
     pin_hash = _load_pin_hash()
     is_local = _is_local_request(request)
     cookie = request.cookies.get(_AUTH_COOKIE, "")
-    unlocked = is_local or (not pin_hash) or (bool(cookie) and hmac.compare_digest(cookie, pin_hash))
+    unlocked = is_local or (not pin_hash) or _valid_session(cookie)
     return {
         "ok": True,
         "lan_enabled": lan_on,
@@ -308,17 +419,16 @@ async def set_mobile_pin(body: PinPayload, request: Request) -> dict[str, Any]:
 
 @app.post("/api/auth/unlock")
 async def unlock_mobile(body: PinPayload) -> JSONResponse:
-    pin_hash = _load_pin_hash()
-    if not pin_hash:
+    if not _load_pin_hash():
         return JSONResponse({"ok": True})
-    given = hashlib.sha256(f"sahambot:{body.pin.strip()}".encode()).hexdigest()
-    if not hmac.compare_digest(given, pin_hash):
+    if not _verify_pin(body.pin.strip()):
         raise HTTPException(status_code=401, detail="PIN salah.")
+    token = _create_session()
     resp = JSONResponse({"ok": True})
     resp.set_cookie(
         _AUTH_COOKIE,
-        pin_hash,
-        max_age=30 * 24 * 3600,
+        token,
+        max_age=_SESSION_TTL_S,
         httponly=True,
         samesite="lax",
     )
@@ -684,6 +794,33 @@ async def get_paket(
     )
     plans = res.get("plans") or []
     res["order_ticket"] = dm.format_order_ticket_text(plans) if plans else ""
+    # Tambahkan kandidat BELI terdekat agar transparan saat modal kecil / rezim defensif
+    near: list[dict[str, Any]] = []
+    try:
+        top_beli = await asyncio.to_thread(dm.load_sinyal_rows, "BELI", syariah_only=syariah, limit=6)
+        scale = float((_last_regime_cache or {}).get("exposure_scale") or 1.0)
+        eff_budget = modal * scale
+        for row in (top_beli or {}).get("rows") or []:
+            px = dh._safe_float(row.get("price"))
+            if not px or px <= 0:
+                continue
+            min_lot = round(px * 100.0 * 1.0015)
+            # Perkiraan modal minimal agar 1 lot masuk batas 10-20% posisi
+            min_modal_est = round(min_lot / max(0.05, 0.20 * scale))
+            near.append({
+                "ticker": row.get("ticker"),
+                "name": row.get("name"),
+                "sector": row.get("sector"),
+                "price": px,
+                "rel_pct": row.get("rel_pct"),
+                "syariah": bool(row.get("syariah")),
+                "min_lot_cost": min_lot,
+                "fits_budget": eff_budget >= min_lot,
+                "min_modal_est": min_modal_est,
+            })
+    except Exception:
+        near = []
+    res["near_candidates"] = near
     return _json_safe(res)
 
 
@@ -723,18 +860,61 @@ async def get_portfolio(chat_id: str = Query(dm.DEFAULT_PROFILE_ID)) -> dict[str
 @app.post("/api/execution")
 async def post_execution(body: ExecutionPayload) -> dict[str, Any]:
     cid = body.chat_id.strip() or dm.DEFAULT_PROFILE_ID
-    ok, msg = await asyncio.to_thread(
-        dh.record_desktop_execution,
-        cid,
-        body.ticker,
-        body.side,
-        body.price,
-        body.lots,
-        notes=body.notes,
-    )
-    if not ok:
-        raise HTTPException(status_code=400, detail=msg)
-    return {"ok": True, "message": msg}
+    try:
+        res = await asyncio.to_thread(
+            dh.record_desktop_execution,
+            cid,
+            body.ticker,
+            body.side,
+            body.lots,
+            body.price,
+            note=body.notes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(res, dict) and res.get("error"):
+        raise HTTPException(status_code=400, detail=str(res["error"]))
+    return _json_safe({
+        "ok": True,
+        "message": f"Eksekusi {body.side.upper()} {body.ticker.upper()} {body.lots} lot @ {dh._fmt_rp(body.price)} tersimpan.",
+        "result": res,
+    })
+
+
+@app.post("/api/execution/import")
+async def import_executions(body: BulkImportPayload) -> dict[str, Any]:
+    cid = body.chat_id.strip() or dm.DEFAULT_PROFILE_ID
+    parsed, errors = analysis_enhancer.parse_bulk_executions(body.raw_text)
+    imported = 0
+    for item in parsed:
+        try:
+            res = await asyncio.to_thread(
+                dh.record_desktop_execution,
+                cid,
+                item["ticker"],
+                item["side"],
+                item["lots"],
+                item["price"],
+                note=item["notes"],
+            )
+            if isinstance(res, dict) and res.get("error"):
+                errors.append(f"{item['ticker']}: {res['error']}")
+            else:
+                imported += 1
+        except Exception as exc:
+            errors.append(f"{item['ticker']}: {exc}")
+    return {"ok": imported > 0, "imported": imported, "errors": errors}
+
+
+@app.get("/api/portfolio/benchmark")
+async def get_portfolio_benchmark(
+    chat_id: str = Query(dm.DEFAULT_PROFILE_ID),
+    days: int = Query(45),
+) -> dict[str, Any]:
+    cid = chat_id.strip() or dm.DEFAULT_PROFILE_ID
+    rows = await asyncio.to_thread(dm.evaluate_portfolio_rows, cid, market_regime=_last_regime_cache)
+    res = await asyncio.to_thread(analysis_enhancer.compute_portfolio_vs_ihsg, rows, days=days)
+    return _json_safe(res)
 
 
 @app.get("/api/jurnal")
@@ -779,6 +959,88 @@ async def delete_alert(
     cid = chat_id.strip() or dm.DEFAULT_PROFILE_ID
     ok = await asyncio.to_thread(store_watchlist.remove_alert, cid, sym)
     return {"ok": ok, "ticker": sym}
+
+
+@app.post("/api/alerts/check")
+async def check_alerts_now(chat_id: str = Query(dm.DEFAULT_PROFILE_ID)) -> dict[str, Any]:
+    """Pindai semua alert teknikal aktif & ambang SL/TP1/Tesis posisi portofolio."""
+    cid = chat_id.strip() or dm.DEFAULT_PROFILE_ID
+    raw_alerts = await asyncio.to_thread(store_watchlist.get_alerts, cid)
+    porto_rows = await asyncio.to_thread(dm.evaluate_portfolio_rows, cid, market_regime=_last_regime_cache)
+    triggered: list[dict[str, Any]] = []
+
+    # 1. Cek pemicu SL / TP1 / TP / Tesis Gugur di portofolio nyata
+    for r in porto_rows:
+        sym = r.get("ticker")
+        px = dh._safe_float(r.get("price"))
+        sl = dh._safe_float(r.get("effective_sl"))
+        tp1 = dh._safe_float(r.get("scale_out_tp1"))
+        tp = dh._safe_float(r.get("tp"))
+        th = str(r.get("thesis") or "").upper()
+        if px and sl and px <= sl:
+            triggered.append({
+                "source": "portfolio", "ticker": sym, "severity": "danger",
+                "title": f"CUT LOSS — {sym} menyentuh SL",
+                "detail": f"Harga {dh._fmt_rp(px)} <= SL efektif {dh._fmt_rp(sl)} ({r.get('lots', 0)} lot).",
+                "price": px,
+            })
+        elif px and tp and px >= tp:
+            triggered.append({
+                "source": "portfolio", "ticker": sym, "severity": "ok",
+                "title": f"AMBIL PROFIT — {sym} mencapai TP",
+                "detail": f"Harga {dh._fmt_rp(px)} >= Target TP {dh._fmt_rp(tp)}.",
+                "price": px,
+            })
+        elif px and tp1 and px >= tp1:
+            triggered.append({
+                "source": "portfolio", "ticker": sym, "severity": "ok",
+                "title": f"TP1 TERCAPAI — {sym}",
+                "detail": f"Harga {dh._fmt_rp(px)} >= TP1 {dh._fmt_rp(tp1)} (pertimbangkan jual 50% / naikkan SL ke BEP).",
+                "price": px,
+            })
+        elif th == "GUGUR":
+            triggered.append({
+                "source": "portfolio", "ticker": sym, "severity": "danger",
+                "title": f"TESIS GUGUR — {sym}",
+                "detail": "; ".join(r.get("reasons") or []) or "Tesis posisi melemah/gugur.",
+                "price": px,
+            })
+
+    # 2. Cek alert teknikal terdaftar
+    def _scan_one_alert(sym: str, kinds: list[str]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        try:
+            df = datamod.fetch_history(sym, period="6mo")
+            if df is None or len(df) < 30:
+                return out
+            ind = analysismod.compute_indicators(df)
+            hits = alertsmod.match_kinds(alertsmod.check_triggers(ind), kinds)
+            if hits:
+                px = float(ind["close"].iloc[-1])
+                labels = [alertsmod.KIND_LABEL.get(k, k) for k in sorted(hits)]
+                out.append({
+                    "source": "alert", "ticker": sym, "severity": "info",
+                    "title": f"ALERT TERPICU — {sym}",
+                    "detail": ", ".join(labels) + f" (Harga {dh._fmt_rp(px)})",
+                    "price": px,
+                })
+        except Exception:
+            pass
+        return out
+
+    for sym, kinds in sorted(raw_alerts.items()):
+        if kinds:
+            found = await asyncio.to_thread(_scan_one_alert, sym, list(kinds))
+            triggered.extend(found)
+
+    now_wib = dt.datetime.now(dt.timezone(dt.timedelta(hours=7))).strftime("%d %b %Y %H:%M WIB")
+    return _json_safe({
+        "ok": True,
+        "checked_at": now_wib,
+        "alerts_checked": len(raw_alerts),
+        "positions_checked": len(porto_rows),
+        "triggered": triggered,
+    })
 
 
 @app.get("/api/cek/{ticker}")

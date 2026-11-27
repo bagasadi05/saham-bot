@@ -14,7 +14,10 @@ def test_desktop_web_root_and_profile_endpoints(tmp_store):
     r_root = client.get("/")
     assert r_root.status_code == 200
     assert "SAHAMBOT" in r_root.text
-    assert "LightweightCharts" in r_root.text
+    # "LightweightCharts" bisa inline di index.html atau di /static/app.js (split)
+    r_js = client.get("/static/app.js")
+    combined = r_root.text + (r_js.text if r_js.status_code == 200 else "")
+    assert "LightweightCharts" in combined
 
     r_prof = client.get("/api/profile?chat_id=modern-test")
     assert r_prof.status_code == 200
@@ -340,3 +343,114 @@ def test_desktop_web_compare_and_accuracy_offline(tmp_store, tmp_path, monkeypat
     r_sim = client.get("/api/backtest/BBCA/simulate?period=3y&modal=10000000&strategy=ma_trend")
     assert r_sim.status_code == 200
     assert r_sim.json()["metrics"]["trades_count"] >= 1
+
+
+def test_web_pin_kdf_session_dan_lan_wajib_pin(tmp_store, tmp_path, monkeypatch):
+    """PIN disimpan sebagai salt+PBKDF2, session token acak, dan LAN tanpa PIN ditolak."""
+    monkeypatch.delenv("SAHAMBOT_WEB_PIN", raising=False)
+    monkeypatch.setattr(web_api, "_PIN_FILE", tmp_path / "mobile_pin.json")
+    monkeypatch.setattr(web_api, "_is_local_request", lambda req: True)  # mulai sebagai lokal
+    client = TestClient(web_api.app)
+
+    # set PIN dari lokal -> file berisi salt + pin_kdf (bukan hash polos / PIN mentah)
+    r = client.post("/api/mobile-pin", json={"pin": "1234"})
+    assert r.status_code == 200 and r.json()["pin_enabled"] is True
+    rec = __import__("json").loads((tmp_path / "mobile_pin.json").read_text(encoding="utf-8"))
+    assert "salt" in rec and "pin_kdf" in rec and "pin_hash" not in rec
+    assert "1234" not in (tmp_path / "mobile_pin.json").read_text(encoding="utf-8")
+    assert web_api._verify_pin("1234") and not web_api._verify_pin("9999")
+
+    # simulasi request non-lokal
+    monkeypatch.setattr(web_api, "_is_local_request", lambda req: False)
+    # tanpa LAN pun, non-lokal tanpa session ditolak 401
+    r = client.get("/api/profile?chat_id=x")
+    assert r.status_code == 401
+    # PIN salah ditolak
+    r = client.post("/api/auth/unlock", json={"pin": "0000"})
+    assert r.status_code == 401
+    # PIN benar -> cookie session token (bukan hash PIN)
+    r = client.post("/api/auth/unlock", json={"pin": "1234"})
+    assert r.status_code == 200
+    cookie = r.cookies.get(web_api._AUTH_COOKIE)
+    assert cookie and cookie != rec["pin_kdf"]
+    client.cookies.set(web_api._AUTH_COOKIE, cookie)
+    r = client.get("/api/profile?chat_id=x")
+    assert r.status_code == 200
+
+    # LAN aktif TANPA PIN -> non-lokal 503 (API tidak dibuka ke jaringan)
+    monkeypatch.setattr(web_api, "_PIN_FILE", tmp_path / "kosong.json")
+    monkeypatch.setenv("SAHAMBOT_LAN", "1")
+    client.cookies.clear()
+    r = client.get("/api/profile?chat_id=x")
+    assert r.status_code == 503
+    monkeypatch.delenv("SAHAMBOT_LAN", raising=False)
+
+
+def test_stockbit_bridge_whitelist_read_only(tmp_store):
+    """Bridge Stockbit hanya mengizinkan tool read-only; nama lain ditolak."""
+    from desktop_web import stockbit_bridge
+
+    assert stockbit_bridge.ALLOWED_TOOLS == frozenset(
+        {"quote", "orderbook", "bandar_detector", "keystats"}
+    )
+    # tool non-whitelist (mis. order) ditolak tanpa menjalankan proses
+    assert stockbit_bridge._client.call_tool("place_order", {"side": "BUY"}) is None
+    assert stockbit_bridge._client.call_tool("withdraw", {}) is None
+    # bridge default nonaktif tanpa env opt-in
+    import os
+
+    os.environ.pop("SAHAMBOT_STOCKBIT_MCP", None)
+    snap = stockbit_bridge.fetch_stockbit_snapshot("BBCA")
+    assert snap["available"] is False
+
+
+def test_desktop_web_static_import_benchmark_and_alert_scanner(tmp_store, monkeypatch):
+    client = TestClient(web_api.app)
+
+    # Modular static assets (/static/styles.css & /static/app.js)
+    assert client.get("/static/styles.css").status_code == 200
+    assert client.get("/static/app.js").status_code == 200
+
+    # Bulk CSV/Paste execution import
+    r_imp = client.post(
+        "/api/execution/import",
+        json={
+            "chat_id": "modern-import-test",
+            "raw_text": "ticker,side,price,lots\nBBCA, BELI, 5900, 1, uji impor\nBADLINE",
+        },
+    )
+    assert r_imp.status_code == 200
+    assert r_imp.json()["imported"] == 1
+    assert len(r_imp.json()["errors"]) == 1
+
+    # Portfolio vs IHSG benchmark (offline mocked)
+    df_ihsg = make_prices([5000.0 + i * 5 for i in range(40)], volume=10_000_000)
+    df_bbca = make_prices([5800.0 + i * 10 for i in range(40)], volume=2_000_000)
+    bm = web_api.analysis_enhancer.compute_portfolio_vs_ihsg(
+        [{"ticker": "BBCA", "lots": 2}],
+        days=30,
+        fetch_fn=lambda sym, raw=False: df_ihsg if raw else df_bbca,
+    )
+    assert bm["ok"] is True
+    assert len(bm["series"]) >= 20
+
+    # Live alerts + portfolio SL/TP scanner (offline mocked)
+    monkeypatch.setattr(
+        web_api.dm,
+        "evaluate_portfolio_rows",
+        lambda cid, **kw: [
+            {
+                "ticker": "BRIS",
+                "lots": 1,
+                "price": 1090.0,
+                "effective_sl": 1100.0,
+                "scale_out_tp1": 1245.0,
+                "tp": 1275.0,
+                "thesis": "MELEMAH",
+                "reasons": [],
+            },
+        ],
+    )
+    r_chk = client.post("/api/alerts/check?chat_id=modern-import-test")
+    assert r_chk.status_code == 200
+    assert any(h["ticker"] == "BRIS" and h["severity"] == "danger" for h in r_chk.json()["triggered"])

@@ -84,7 +84,24 @@ def _lan_enabled() -> bool:
 
 
 def _start_server(port: int) -> uvicorn.Server:
-    host = "0.0.0.0" if _lan_enabled() else "127.0.0.1"
+    lan_wanted = _lan_enabled()
+    host = "127.0.0.1"
+    if lan_wanted:
+        # Mode LAN hanya boleh aktif bila PIN sudah di-set; jika belum, fallback ke localhost.
+        try:
+            from desktop_web.api import _load_pin_hash
+
+            if _load_pin_hash():
+                host = "0.0.0.0"
+            else:
+                os.environ["SAHAMBOT_LAN"] = "0"
+                print(
+                    "[PERINGATAN] SAHAMBOT_LAN=1 tetapi PIN belum di-set — server dikunci ke 127.0.0.1. "
+                    "Set PIN lewat ikon gembok di UI (dari PC) untuk membuka akses LAN/HP.",
+                    file=sys.stderr,
+                )
+        except Exception:
+            host = "127.0.0.1"
     os.environ["SAHAMBOT_ACTIVE_PORT"] = str(port)
     cfg = uvicorn.Config(
         fastapi_app,

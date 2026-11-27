@@ -8,6 +8,15 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
 
 ---
 
+## [Unreleased] — 2026-11-27
+
+- **Hardening keamanan desktop web (`397d578`)** — 5 perbaikan dari review, 2 tes baru (total **1011 tes**):
+  - **LAN tanpa PIN kini ditolak**: `SAHAMBOT_LAN=1` tanpa PIN → request non-lokal mendapat 503 (middleware) dan server fallback ke `127.0.0.1` dengan peringatan (`desktop_modern.py`). Sebelumnya seluruh `/api/*` (termasuk `/api/stockbit/*`, `/api/execution`) terbuka ke jaringan tanpa auth.
+  - **PIN disimpan sebagai salt + PBKDF2-HMAC-SHA256** (bukan SHA-256 polos), dan cookie auth kini **session token acak** yang hanya disimpan sebagai hash di server — bukan nilai hash PIN itu sendiri (`desktop_web/api.py`). Legacy hash tetap bisa diverifikasi.
+  - **XSS diperbaiki**: semua interpolasi data ke `innerHTML` di UI web kini di-escape via helper `esc()` (data murni) / `san()` (mengizinkan markup inti `<b>/<i>/<br>` dari core) — termasuk ticker pada atribut `onclick`, nama emiten dari `/api/universe`, catatan kondisi/berita, bull/bear points, dan pesan error. Diverifikasi dengan `node --check` (sintax OK) dan audit baris tersisa = 0.
+  - **Whitelist tool read-only di bridge Stockbit**: `ALLOWED_TOOLS = {quote, orderbook, bandar_detector, keystats}`; `call_tool` menolak nama lain (defense-in-depth agar tidak pernah ada jalur order).
+  - Risiko supply-chain/ToS paket eksternal `stockbit-mcp` dicatat di `docs/KENDALA.md`.
+
 ## [Unreleased] — 2026-11-26
 
 - **Perbaikan robustness aplikasi Desktop hasil fuzz audit** (10 crash ditemukan & diperbaiki, 2 tes baru → total **983 tes**):
