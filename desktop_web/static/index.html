@@ -16,9 +16,10 @@
   <script src="/static/vendor/qrcode.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261128c" />
 </head>
 <body class="h-screen flex flex-col overflow-hidden select-none">
+  <a href="#main-content" class="skip-link visually-hidden">Lewati ke konten utama</a>
 
   <!-- TOP INDETERMINATE LOADING BAR -->
   <div id="top-loading-bar" class="hidden fixed top-0 inset-x-0 h-[2px] z-50 overflow-hidden bg-sky-500/10">
@@ -77,6 +78,12 @@
         <span>HP</span>
       </button>
 
+      <button id="btn-density" onclick="toggleCompactUi()" title="Ubah Kepadatan Tampilan (Nyaman / Padat)"
+        class="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700/80 bg-slate-900 text-xs font-medium text-slate-300 hover:bg-slate-800 transition cursor-pointer">
+        <i data-lucide="rows-3" class="w-3.5 h-3.5 text-slate-400"></i>
+        <span id="density-txt">Nyaman</span>
+      </button>
+
       <button id="btn-syariah" onclick="toggleSyariah()" title="Filter Saham Syariah (ISSI / DES OJK)"
         class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700/80 bg-slate-900 text-xs font-medium text-slate-300 hover:bg-slate-800 transition cursor-pointer">
         <span id="syariah-dot" class="w-2 h-2 rounded-full bg-slate-600"></span>
@@ -114,7 +121,7 @@
     <!-- SIDEBAR (Desktop Pinned / Mobile Drawer) -->
     <aside id="app-sidebar" class="fixed inset-y-0 left-0 z-40 w-60 lg:w-56 shrink-0 border-r border-slate-800/80 bg-[#070b15] lg:bg-[#070b15]/95 flex flex-col justify-between py-3 transform -translate-x-full lg:static lg:translate-x-0 transition-transform duration-200">
       <div class="overflow-y-auto px-2 space-y-4">
-        <nav class="space-y-0.5">
+        <nav aria-label="Menu Utama" class="space-y-0.5">
           <div class="px-3 pb-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">Pasar &amp; Ide</div>
           <button data-tab="pasar" onclick="switchTab('pasar')" class="nav-btn w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium text-slate-300 hover:bg-slate-800/60 cursor-pointer">
             <span class="flex items-center gap-2.5"><i data-lucide="activity" class="w-4 h-4"></i> Pasar &amp; Rezim</span>
@@ -180,7 +187,7 @@
     </aside>
 
     <!-- MAIN CONTENT VIEWPORT -->
-    <main class="flex-1 overflow-y-auto p-3.5 sm:p-5 pb-20 lg:pb-5 space-y-4 sm:space-y-5">
+    <main id="main-content" tabindex="-1" class="flex-1 overflow-y-auto p-3.5 sm:p-5 pb-20 lg:pb-5 space-y-4 sm:space-y-5">
 
       <!-- TAB 1: PASAR & REZIM -->
       <section id="view-pasar" class="tab-view space-y-5">
@@ -1094,8 +1101,11 @@
           <div class="grid grid-cols-3 gap-1.5 text-xs">
             <button onclick="closeCmdPalette();switchTab('pasar')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Pasar &amp; Rezim</button>
             <button onclick="closeCmdPalette();switchTab('sinyal')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Sinyal Pasar</button>
+            <button onclick="closeCmdPalette();switchTab('paket')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Paket Beli</button>
+            <button onclick="closeCmdPalette();switchTab('cek')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Cek Emiten</button>
             <button onclick="closeCmdPalette();switchTab('compare')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Bandingkan</button>
             <button onclick="closeCmdPalette();switchTab('backtest')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Backtest</button>
+            <button onclick="closeCmdPalette();switchTab('watchlist')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Watchlist</button>
             <button onclick="closeCmdPalette();switchTab('portofolio')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Portofolio &amp; Tesis</button>
             <button onclick="closeCmdPalette();switchTab('jurnal')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Jurnal &amp; Akurasi</button>
             <button onclick="closeCmdPalette();switchTab('alerts')" class="px-2.5 py-2 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-left text-slate-200 cursor-pointer">Alert &amp; Radar</button>
@@ -1109,7 +1119,7 @@
   <datalist id="idx-tickers-datalist"></datalist>
 
   <!-- TOAST -->
-  <div id="toast" class="fixed bottom-5 right-5 z-50 hidden flex items-center gap-2 px-4 py-3 rounded-xl bg-slate-900/95 backdrop-blur border border-sky-500/45 text-xs text-slate-100 shadow-2xl"></div>
+  <div id="toast" role="status" aria-live="polite" aria-atomic="true" class="fixed bottom-5 right-5 z-50 hidden flex items-center gap-2 px-4 py-3 rounded-xl bg-slate-900/95 backdrop-blur border border-sky-500/45 text-xs text-slate-100 shadow-2xl"></div>
 
 <script>
   window.esc = window.esc || function esc(v) {
@@ -1118,6 +1128,6 @@
     });
   };
 </script>
-<script src="/static/app.js?v=20261128b"></script>
+<script src="/static/app.js?v=20261128c"></script>
 </body>
 </html>

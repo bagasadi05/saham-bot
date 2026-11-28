@@ -287,18 +287,60 @@ async function unlockMobilePin() {
   }
 }
 
+const _TAB_TITLES = {
+  pasar: 'Pasar & Rezim',
+  sinyal: 'Sinyal Pasar',
+  paket: 'Paket Beli',
+  cek: 'Cek Emiten',
+  compare: 'Bandingkan',
+  backtest: 'Backtest',
+  watchlist: 'Watchlist',
+  portofolio: 'Portofolio & Tesis',
+  jurnal: 'Jurnal & Akurasi',
+  alerts: 'Alert & Radar',
+};
+
+function applyCompactUi(compact) {
+  document.body.classList.toggle('compact-ui', Boolean(compact));
+  const lbl = document.getElementById('density-txt');
+  const btn = document.getElementById('btn-density');
+  if (lbl) lbl.textContent = compact ? 'Padat' : 'Nyaman';
+  if (btn) {
+    btn.setAttribute('aria-pressed', compact ? 'true' : 'false');
+    btn.classList.toggle('border-sky-500/50', Boolean(compact));
+    btn.classList.toggle('text-sky-300', Boolean(compact));
+  }
+}
+
+function toggleCompactUi() {
+  const next = !document.body.classList.contains('compact-ui');
+  try { localStorage.setItem('sahambot_compact_ui', next ? '1' : '0'); } catch (_) {}
+  applyCompactUi(next);
+  showToast(next ? 'Tampilan Padat aktif (lebih banyak baris terlihat)' : 'Tampilan Nyaman aktif');
+}
+
+try {
+  if (localStorage.getItem('sahambot_compact_ui') === '1') applyCompactUi(true);
+} catch (_) {}
+
 function switchTab(name) {
   state.tab = name;
   closeMobileDrawer();
+  document.title = `${_TAB_TITLES[name] || 'Terminal BEI'} | SahamBot`;
   document.querySelectorAll('.tab-view').forEach(el => el.classList.add('hidden'));
   document.getElementById(`view-${name}`)?.classList.remove('hidden');
   document.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.classList.toggle('nav-active', btn.dataset.tab === name);
+    const active = btn.dataset.tab === name;
+    btn.classList.toggle('nav-active', active);
+    if (active) btn.setAttribute('aria-current', 'page');
+    else btn.removeAttribute('aria-current');
   });
   document.querySelectorAll('.mnav-btn').forEach(btn => {
     const active = btn.dataset.tab === name;
     btn.classList.toggle('text-sky-400', active);
     btn.classList.toggle('text-slate-400', !active);
+    if (active) btn.setAttribute('aria-current', 'page');
+    else btn.removeAttribute('aria-current');
   });
   if (name === 'pasar') loadMarket();
   else if (name === 'watchlist') loadWatchlist();
