@@ -471,6 +471,7 @@
 
         <div id="porto-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-4"></div>
         <div id="porto-action-summary" class="hidden glass-card rounded-xl p-4 space-y-2.5 border-sky-500/30"></div>
+        <div id="porto-risk-audit" class="hidden glass-card rounded-xl p-4 space-y-2 border-amber-500/30"></div>
         <div id="porto-alloc" class="hidden glass-card rounded-xl p-4 space-y-2"></div>
         <div id="porto-bench-card" class="hidden glass-card rounded-xl p-4 space-y-2">
           <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -633,8 +634,9 @@
             <div id="cek-title" class="text-lg font-bold text-white tracking-tight">Masukkan kode saham untuk analisis</div>
             <div id="cek-meta" class="text-xs text-slate-400">Teknikal, Fundamental, Forensik Kas/4Q, POC, Sentimen Berita &amp; Sizing</div>
             <!-- Visual PowerScore Gauge -->
-            <div id="cek-ps-gauge-wrap" class="hidden flex items-center gap-2.5 pt-0.5 max-w-xs">
+            <div id="cek-ps-gauge-wrap" class="hidden flex items-center gap-2.5 pt-0.5 max-w-sm">
               <span class="text-[10px] uppercase tracking-wider text-slate-500 font-semibold shrink-0">PowerScore</span>
+              <span class="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-[9px] font-semibold text-amber-300 shrink-0" title="Skor gabungan heuristik (teknikal + fundamental &amp; berita saat ini)">Heuristik</span>
               <div class="flex-1 h-2 rounded-full bg-slate-800/90 overflow-hidden">
                 <div id="cek-ps-bar" class="h-full rounded-full transition-all duration-500 bg-sky-400" style="width:50%"></div>
               </div>
@@ -658,6 +660,44 @@
 
         <!-- Analisator Pro: Konfluensi 6 Pilar, Struktur VCP/Squeeze, Skenario & Kill Criteria -->
         <div id="cek-pro-card" class="hidden glass-card rounded-xl p-4 space-y-3 border-indigo-500/30"></div>
+
+        <!-- Kalkulator BEI Interaktif (TERP Right Issue · Reverse DCF · Dividen PMK 18/2021) -->
+        <details id="cek-calc-details" class="glass-card rounded-xl p-4 space-y-3 border-slate-700/80">
+          <summary class="cursor-pointer flex items-center justify-between text-xs font-bold text-slate-200 select-none">
+            <span>Kalkulator BEI Interaktif · TERP Right Issue · Reverse DCF · Dividen PMK 18/2021</span>
+            <span class="text-[11px] font-normal text-sky-400">Klik buka/tutup</span>
+          </summary>
+          <div class="pt-2 space-y-3">
+            <div class="inline-flex rounded-lg bg-slate-900 p-1 border border-slate-800 text-xs">
+              <button type="button" onclick="setBeiCalcMode('terp')" data-bcalc="terp" class="bcalc-btn px-3 py-1 rounded-md font-semibold bg-sky-600 text-white cursor-pointer">TERP Right Issue</button>
+              <button type="button" onclick="setBeiCalcMode('dcf')" data-bcalc="dcf" class="bcalc-btn px-3 py-1 rounded-md font-semibold text-slate-300 cursor-pointer">Reverse DCF</button>
+              <button type="button" onclick="setBeiCalcMode('div')" data-bcalc="div" class="bcalc-btn px-3 py-1 rounded-md font-semibold text-slate-300 cursor-pointer">Dividen PMK 18/2021</button>
+            </div>
+            <div id="bcalc-terp" class="flex flex-wrap items-end gap-2.5 text-xs">
+              <div><label for="bc-cum" class="block text-[11px] text-slate-400 mb-1">Harga Cum (Rp)</label><input id="bc-cum" type="number" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-28" placeholder="1200" /></div>
+              <div><label for="bc-ex" class="block text-[11px] text-slate-400 mb-1">Harga Tebus (Rp)</label><input id="bc-ex" type="number" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-28" placeholder="1000" /></div>
+              <div><label for="bc-old" class="block text-[11px] text-slate-400 mb-1">Rasio Lama</label><input id="bc-old" type="number" value="5" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-20" /></div>
+              <div><label for="bc-new" class="block text-[11px] text-slate-400 mb-1">Rasio Baru</label><input id="bc-new" type="number" value="2" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-20" /></div>
+              <button type="button" onclick="runBeiCalc()" class="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer">Hitung TERP</button>
+            </div>
+            <div id="bcalc-dcf" class="hidden flex flex-wrap items-end gap-2.5 text-xs">
+              <div><label for="bc-dcf-px" class="block text-[11px] text-slate-400 mb-1">Harga Pasar</label><input id="bc-dcf-px" type="number" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-28" /></div>
+              <div><label for="bc-fcf" class="block text-[11px] text-slate-400 mb-1">FCF / Saham (Rp)</label><input id="bc-fcf" type="number" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-28" placeholder="200" /></div>
+              <div><label for="bc-g" class="block text-[11px] text-slate-400 mb-1">Growth %</label><input id="bc-g" type="number" step="0.5" value="8" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-20" /></div>
+              <div><label for="bc-hr" class="block text-[11px] text-slate-400 mb-1">Hurdle %</label><input id="bc-hr" type="number" step="0.5" value="12" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-20" /></div>
+              <div><label for="bc-tg" class="block text-[11px] text-slate-400 mb-1">Terminal %</label><input id="bc-tg" type="number" step="0.5" value="4.5" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-20" /></div>
+              <button type="button" onclick="runBeiCalc()" class="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer">Hitung DCF</button>
+            </div>
+            <div id="bcalc-div" class="hidden flex flex-wrap items-end gap-2.5 text-xs">
+              <div><label for="bc-div-px" class="block text-[11px] text-slate-400 mb-1">Harga Saham</label><input id="bc-div-px" type="number" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-28" /></div>
+              <div><label for="bc-dps" class="block text-[11px] text-slate-400 mb-1">Dividen/Saham (Rp)</label><input id="bc-dps" type="number" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-28" placeholder="150" /></div>
+              <div><label for="bc-lots" class="block text-[11px] text-slate-400 mb-1">Lot</label><input id="bc-lots" type="number" value="5" class="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 mono text-white w-20" /></div>
+              <label class="flex items-center gap-1.5 text-emerald-300 pb-1.5 cursor-pointer"><input id="bc-reinv" type="checkbox" checked class="accent-emerald-500" /><span>Reinvestasi ID (0% PMK 18)</span></label>
+              <button type="button" onclick="runBeiCalc()" class="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold cursor-pointer">Hitung Dividen</button>
+            </div>
+            <div id="bcalc-output" class="hidden rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-xs text-slate-100 mono leading-relaxed"></div>
+          </div>
+        </details>
 
         <!-- Ringkasan Cepat Bahasa Sederhana (4 Pilar) -->
         <div id="cek-simple-card" class="hidden glass-card rounded-xl p-4 space-y-3 border-sky-500/30">

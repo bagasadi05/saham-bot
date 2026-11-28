@@ -652,6 +652,29 @@ def build(*, res: dict | None, fund: dict | None, fund_raw: dict | None,
         vetoes.append(f"DER {der_val:.0f}% > 300% (utang sangat tinggi)")
     if cf_pen >= 40:
         vetoes.append(f"risiko forensik arus kas/dividen berat (-{cf_pen} poin)")
+    # Fase 3c: deteksi saham gorengan / risiko manipulasi (RISIKO_SPEKULATIF)
+    from core import risk_flags
+    spec_info = risk_flags.detect_speculative_risk(
+        (res or {}).get("ind"), fund_raw, board=board,
+    )
+    if spec_info.get("veto_reason"):
+        vetoes.append(str(spec_info["veto_reason"]))
+    elif spec_info.get("flags"):
+        for sf_msg in spec_info["flags"]:
+            w_sf = f"Spekulatif: {sf_msg}"
+            if w_sf not in warnings:
+                warnings.append(w_sf)
+    sym_ov = (res or {}).get("ticker") or (fund_raw or {}).get("symbol")
+    corp_ov = (fund or {}).get("corp_override") or (
+        fundamental.load_corp_action_override(sym_ov) if sym_ov else None
+    )
+    if isinstance(corp_ov, dict):
+        if corp_ov.get("veto_reason"):
+            vetoes.append(str(corp_ov["veto_reason"]))
+        for cflag in corp_ov.get("corp_action_flags") or []:
+            msg_cf = f"Radar BEI/Korporasi: {cflag}"
+            if msg_cf not in warnings:
+                warnings.append(msg_cf)
 
     ret20d_v = _num(snap.get("ret20d"))
     ret1d_v = _num(snap.get("ret1d"))

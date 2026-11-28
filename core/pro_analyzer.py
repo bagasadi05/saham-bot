@@ -191,7 +191,7 @@ def build_confluence_matrix(
     weekly = res.get("weekly") or {}
     fund = detail.get("fund") or {}
     news = detail.get("news") or {}
-    regime = detail.get("market_regime") or {}
+    regime = detail.get("market_regime") or detail.get("regime") or {}
     cek_out = detail.get("cek") or {}
 
     pillars: list[dict[str, Any]] = []
@@ -260,7 +260,7 @@ def build_confluence_matrix(
     # Pilar 6: Sentimen Berita & Rezim IHSG
     n_pct = _sf(news.get("pct"))
     n_cnt = int(news.get("n") or 0)
-    reg_label = str(regime.get("regime") or regime.get("label") or "").upper()
+    reg_label = str(regime.get("regime") or regime.get("status") or regime.get("label") or "").upper()
     reg_defensive = "DEFENSIVE" in reg_label or "BEAR" in reg_label or "RISK_OFF" in reg_label
     if n_cnt == 0 and not reg_label:
         pillars.append({"key": "macro", "label": "Sentimen & Rezim IHSG", "status": "NA", "tone": "slate", "detail": "Sentimen berita & rezim belum tersedia"})

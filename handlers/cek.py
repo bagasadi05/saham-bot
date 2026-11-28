@@ -15,7 +15,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 
 from core import (analysis, bandar, banding, cek as cekmod, data, data_quality,
-                  fundamental, marketcal, news, rencana, reports as core_reports,
+                  fundamental, marketcal, news, pro_analyzer, rencana, reports as core_reports,
                   risk as riskmod, saran as saranmod, store, universe)
 from core.reports import esc
 from handlers import jurnal as jurnal_handler
@@ -232,6 +232,9 @@ def _cek_text(
         if modal and float(modal) > 0
         else f"<code>/rencana {t}</code>"
     )
+    pro_html = pro_analyzer.format_pro_summary_html(out.get("pro_analysis")) if out.get("pro_analysis") else ""
+    if pro_html:
+        out_lines += ["", pro_html]
     out_lines += [
         "",
         *lot_info_lines,
@@ -313,6 +316,20 @@ async def do(update: Update, args: list[str], deps, *, from_menu: bool = False):
                        bandar_row=bahan["bandar_row"], agenda=bahan["agenda"],
                        agenda_days=bahan["agenda_days"], peers=bahan["peers"],
                        value_avg20=bahan["value_avg20"], board=bahan["board"])
+    try:
+        cmf_v = None
+        rdiv = None
+        if ind is not None and len(ind) >= 20:
+            cmf_s = analysis.cmf(ind, 20).dropna()
+            if len(cmf_s):
+                cmf_v = round(float(cmf_s.iloc[-1]), 3)
+            rdiv = analysis.detect_rsi_divergence(ind)
+        out["pro_analysis"] = pro_analyzer.analyze_pro({
+            "res": res_d, "fund": bahan["fund"], "fund_raw": bahan["fund_raw"],
+            "news": bahan["nsent"], "cek": out, "cmf20": cmf_v, "rsi_divergence": rdiv,
+        })
+    except Exception:
+        pass
     # P23: posisi yang sudah ada tidak boleh diam-diam ditambah bila
     # melewati batas portofolio.
     positions = await asyncio.to_thread(store.real_positions,

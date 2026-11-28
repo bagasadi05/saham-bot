@@ -680,6 +680,139 @@ def analyze_quarterly_trend(f: dict | None) -> dict:
     }
 
 
+def compute_quality_gate(
+    f: dict | None,
+    *,
+    ov: dict | None = None,
+    cf: dict | None = None,
+    qt: dict | None = None,
+) -> dict:
+    """Gerbang kualitas fundamental terpisah: Skor Bank 6 Poin vs Piotroski F-Score (hingga 9 Poin).
+
+    Jujur terhadap data: hanya menghitung kriteria yang metriknya benar-benar tersedia,
+    dan melaporkan `passed / evaluated` (serta `max_score`) tanpa mengarang angka kosong.
+    """
+    if not isinstance(f, dict) or not f:
+        return {
+            "mode": "unknown",
+            "title": "Gerbang Kualitas",
+            "passed": 0,
+            "evaluated": 0,
+            "max_score": 0,
+            "label": "DATA TERBATAS",
+            "checks": [],
+        }
+
+    fin = is_financial_sector(f.get("sector"))
+    if fin:
+        br = (ov or {}).get("bank_ratios") or {}
+        roe = _finite_float(br.get("roe_pct"))
+        if roe is None:
+            roe = normalize_roe(f.get("roe"), unit=f.get("roe_unit"))
+        nim = _finite_float(br.get("nim_pct"))
+        npl = _finite_float(br.get("npl_gross_pct"))
+        if npl is None:
+            npl = _finite_float(br.get("npf_gross_pct"))
+        llc = _finite_float(br.get("llc_pct"))
+        car = _finite_float(br.get("car_pct"))
+        casa = _finite_float(br.get("casa_pct"))
+
+        raw_specs = [
+            ("ROE > 12%", roe, lambda x: x > 12.0, lambda x: f"{x:.1f}%"),
+            ("NIM > 4%", nim, lambda x: x > 4.0, lambda x: f"{x:.2f}%"),
+            ("NPL/NPF Gross < 3%", npl, lambda x: x < 3.0, lambda x: f"{x:.2f}%"),
+            ("Coverage (LLC) > 150%", llc, lambda x: x > 150.0, lambda x: f"{x:.0f}%"),
+            ("CAR > 15%", car, lambda x: x > 15.0, lambda x: f"{x:.1f}%"),
+            ("CASA > 50%", casa, lambda x: x > 50.0, lambda x: f"{x:.1f}%"),
+        ]
+        checks = []
+        passed = 0
+        evaluated = 0
+        for name, val, pred, fmt in raw_specs:
+            if val is None:
+                checks.append({"name": name, "status": "na", "value": "n/a"})
+            else:
+                ok = bool(pred(val))
+                evaluated += 1
+                if ok:
+                    passed += 1
+                checks.append({"name": name, "status": "ok" if ok else "fail", "value": fmt(val)})
+        ratio = (passed / evaluated) if evaluated > 0 else 0.0
+        if evaluated < 2:
+            lbl = "DATA TERBATAS"
+        elif ratio >= 0.80:
+            lbl = "KUAT"
+        elif ratio >= 0.60:
+            lbl = "SEDANG"
+        else:
+            lbl = "LEMAH"
+        return {
+            "mode": "bank",
+            "title": "Skor Kualitas Bank (6 Poin)",
+            "passed": passed,
+            "evaluated": evaluated,
+            "max_score": 6,
+            "label": lbl,
+            "checks": checks,
+        }
+
+    # Jalur A: Non-Keuangan — Piotroski F-Score adaptif (komponen terukur)
+    cf_d = cf if isinstance(cf, dict) else analyze_cashflow_quality(f)
+    qt_d = qt if isinstance(qt, dict) else analyze_quarterly_trend(f)
+    ni = _finite_float(f.get("net_income"))
+    ocf = _finite_float(f.get("operating_cashflow"))
+    fcf = _finite_float(f.get("free_cashflow"))
+    roe = normalize_roe(f.get("roe"), unit=f.get("roe_unit"))
+    margin = normalize_margin(f.get("margin"))
+    der = normalize_der(f.get("der"))
+    cr = _finite_float(f.get("current_ratio"))
+    rev_g = _finite_float(qt_d.get("rev_growth_pct"))
+    prof_g = _finite_float(qt_d.get("profit_growth_pct"))
+    ocf_ni = _finite_float(cf_d.get("ocf_to_ni"))
+
+    specs_nonfin = [
+        ("Laba bersih positif", ni if ni is not None else roe, lambda x: x > 0, lambda x: "positif" if x > 0 else "rugi"),
+        ("Arus kas operasi (OCF) > 0", ocf, lambda x: x > 0, lambda x: "positif" if x > 0 else "negatif"),
+        ("Kualitas laba (OCF ≥ Laba)", ocf_ni, lambda x: x >= 1.0, lambda x: f"{x:.2f}x"),
+        ("Free Cash Flow (FCF) > 0", fcf, lambda x: x > 0, lambda x: "positif" if x > 0 else "negatif"),
+        ("Leverage terkendali (DER ≤ 100%)", der, lambda x: x <= 100.0, lambda x: f"{x:.0f}%"),
+        ("Likuiditas (Current Ratio ≥ 1,0x)", cr, lambda x: x >= 1.0, lambda x: f"{x:.2f}x"),
+        ("Margin bersih sehat (≥ 8%)", margin, lambda x: x >= 8.0, lambda x: f"{x:.1f}%"),
+        ("Pertumbuhan pendapatan 4Q > 0%", rev_g, lambda x: x > 0, lambda x: f"{x:+.1f}%"),
+        ("Pertumbuhan laba 4Q > 0%", prof_g, lambda x: x > 0, lambda x: f"{x:+.1f}%"),
+    ]
+    checks = []
+    passed = 0
+    evaluated = 0
+    for name, val, pred, fmt in specs_nonfin:
+        if val is None:
+            checks.append({"name": name, "status": "na", "value": "n/a"})
+        else:
+            ok = bool(pred(val))
+            evaluated += 1
+            if ok:
+                passed += 1
+            checks.append({"name": name, "status": "ok" if ok else "fail", "value": fmt(val)})
+    ratio = (passed / evaluated) if evaluated > 0 else 0.0
+    if evaluated < 3:
+        lbl = "DATA TERBATAS"
+    elif ratio >= 0.75:
+        lbl = "KUAT"
+    elif ratio >= 0.50:
+        lbl = "SEDANG"
+    else:
+        lbl = "LEMAH"
+    return {
+        "mode": "piotroski",
+        "title": "Piotroski F-Score (9 Poin)",
+        "passed": passed,
+        "evaluated": evaluated,
+        "max_score": 9,
+        "label": lbl,
+        "checks": checks,
+    }
+
+
 def score_fundamentals(f: dict) -> dict:
     """Skor valuasi -100..+100 lewat poin per aspek (heuristik standar)."""
     points: list[float] = []
@@ -810,6 +943,11 @@ def score_fundamentals(f: dict) -> dict:
         verdicts.append(f"📐 EV/EBITDA: {ev_ebitda:.1f}x")
 
     filing_note = cf.get("filing_note") or build_filing_note(f)
+    qgate = compute_quality_gate(f, ov=ov, cf=cf, qt=qt)
+    if qgate["evaluated"] >= 2:
+        verdicts.append(
+            f"🏛️ {qgate['title']}: {qgate['passed']}/{qgate['evaluated']} lolos ({qgate['label']})"
+        )
     return {
         "pct": round(raw),
         "base_pct": round(base_raw),
@@ -818,6 +956,7 @@ def score_fundamentals(f: dict) -> dict:
         "notes": verdicts,
         "forensic": cf,
         "quarterly": qt,
+        "quality_gate": qgate,
         "forensic_penalty": forensic_penalty,
         "forensic_flags": list(cf.get("forensic_flags") or []) + list(qt.get("forensic_flags") or []) + (["corp_action_override"] if ov_flags else []),
         "corp_override": ov,

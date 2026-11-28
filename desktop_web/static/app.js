@@ -1145,6 +1145,30 @@ async function loadPortfolio() {
 
     renderPortfolioActionSummary(rows);
 
+    const ra = d.risk_audit || {};
+    const raEl = document.getElementById('porto-risk-audit');
+    if (raEl) {
+      const hasRiskData = rows.length > 0 && (ra.var95_pct != null || (ra.warnings || []).length > 0);
+      if (!hasRiskData) {
+        raEl.classList.add('hidden');
+      } else {
+        raEl.classList.remove('hidden');
+        const warnHtml = (ra.warnings || []).length
+          ? `<ul class="list-disc pl-4 text-[11px] text-amber-200 space-y-0.5">${ra.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul>`
+          : `<div class="text-[11px] text-emerald-300">Seluruh konsentrasi posisi (maks ${ra.max_pos_pct ?? 25}%) &amp; sektor (maks ${ra.max_sector_pct ?? 40}%) dalam batas aman.</div>`;
+        const stressHtml = (ra.stress_tests || []).length
+          ? `<div class="flex flex-wrap gap-2 pt-1 text-[11px]">${ra.stress_tests.map(st => `<span class="px-2 py-0.5 rounded bg-slate-900/90 border border-slate-800 text-slate-300 mono">${esc(st.scenario.split('(')[0].trim())}: <b class="text-rose-300">${fmtRp(st.est_loss_rp)}</b></span>`).join('')}</div>`
+          : '';
+        raEl.innerHTML = `
+          <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span class="font-bold text-amber-300">Audit Risiko Portofolio (VaR95 / ES95 · Stress Test · Batas Konsentrasi)</span>
+            <span class="mono text-[11px] text-slate-300">VaR95 1h: <b>${ra.var95_pct != null ? ra.var95_pct.toFixed(2) + '%' : '—'}</b> · ES95: <b>${ra.es95_pct != null ? ra.es95_pct.toFixed(2) + '%' : '—'}</b> · Vol: <b>${ra.vol_ann_pct != null ? ra.vol_ann_pct.toFixed(1) + '%' : '—'}</b></span>
+          </div>
+          ${warnHtml}
+          ${stressHtml}`;
+      }
+    }
+
     const allocEl = document.getElementById('porto-alloc');
     const totVal = Math.max(1, s.total_value || 0);
     if (rows.length && totVal > 1) {
@@ -1592,7 +1616,65 @@ async function renderCekHoldingAdvice(d) {
     </div>`;
 }
 
+let _beiCalcMode = 'terp';
+function setBeiCalcMode(mode) {
+  _beiCalcMode = mode;
+  ['terp', 'dcf', 'div'].forEach(m => {
+    document.getElementById(`bcalc-${m}`)?.classList.toggle('hidden', m !== mode);
+  });
+  document.querySelectorAll('.bcalc-btn').forEach(btn => {
+    const active = btn.dataset.bcalc === mode;
+    btn.classList.toggle('bg-sky-600', active);
+    btn.classList.toggle('text-white', active);
+    btn.classList.toggle('text-slate-300', !active);
+  });
+  document.getElementById('bcalc-output')?.classList.add('hidden');
+}
+
+async function runBeiCalc() {
+  const outEl = document.getElementById('bcalc-output');
+  const payload = { mode: _beiCalcMode };
+  if (_beiCalcMode === 'terp') {
+    payload.price = Number(document.getElementById('bc-cum')?.value || 0);
+    payload.exercise_price = Number(document.getElementById('bc-ex')?.value || 0);
+    payload.old_ratio = Number(document.getElementById('bc-old')?.value || 1);
+    payload.new_ratio = Number(document.getElementById('bc-new')?.value || 1);
+  } else if (_beiCalcMode === 'dcf') {
+    payload.price = Number(document.getElementById('bc-dcf-px')?.value || 0);
+    payload.fcf_per_share = Number(document.getElementById('bc-fcf')?.value || 0);
+    payload.growth_pct = Number(document.getElementById('bc-g')?.value || 8);
+    payload.hurdle_pct = Number(document.getElementById('bc-hr')?.value || 12);
+    payload.tg_pct = Number(document.getElementById('bc-tg')?.value || 4.5);
+  } else {
+    payload.price = Number(document.getElementById('bc-div-px')?.value || 0);
+    payload.dps = Number(document.getElementById('bc-dps')?.value || 0);
+    payload.lots = Number(document.getElementById('bc-lots')?.value || 1);
+    payload.reinvest_id = Boolean(document.getElementById('bc-reinv')?.checked);
+  }
+  try {
+    const res = await apiFetch('/api/calc/bei', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (outEl) {
+      outEl.classList.remove('hidden');
+      outEl.textContent = res.summary || 'Selesai';
+    }
+  } catch (e) {
+    showToast('Kalkulator BEI: ' + e.message);
+  }
+}
+
 function renderProAnalyzer(d) {
+  // Prefill harga pasar aktif ke kalkulator BEI
+  const curPx = Number(d?.res?.snap?.close || d?.price || 0);
+  if (curPx > 0) {
+    ['bc-cum', 'bc-dcf-px', 'bc-div-px'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = Math.round(curPx);
+    });
+  }
   const card = document.getElementById('cek-pro-card');
   if (!card) return;
   const pa = d?.pro_analysis;
@@ -1650,11 +1732,20 @@ function renderProAnalyzer(d) {
       </div>`
     : '';
 
+  const qg = d?.fund?.quality_gate;
+  const qgPill = (qg && qg.evaluated >= 2)
+    ? `<span class="px-2 py-1 rounded-lg border text-[11px] font-bold ${qg.label === 'KUAT' ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300' : (qg.label === 'LEMAH' ? 'border-rose-500/40 bg-rose-500/15 text-rose-300' : 'border-amber-500/40 bg-amber-500/15 text-amber-300')}">${esc(qg.title)}: ${qg.passed}/${qg.evaluated} (${esc(qg.label)})</span>`
+    : '';
+
   card.classList.remove('hidden');
   card.innerHTML = `
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div>
-        <div class="text-[10px] uppercase tracking-wider font-bold text-indigo-300">Analisator Pro · Konfluensi 6 Pilar &amp; Struktur Pasar</div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          <span class="text-[10px] uppercase tracking-wider font-bold text-indigo-300">Analisator Pro · Konfluensi 6 Pilar &amp; Struktur Pasar</span>
+          <span class="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-[9px] font-semibold text-amber-300" title="Konfluensi 6 pilar &amp; VCP adalah indikator heuristik (bukan hasil backtest point-in-time)">Heuristik</span>
+          <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] font-semibold text-emerald-300" title="Peringkat Relatif 12 Faktor tervalidasi OOS 2017–2026 (IC +0,0294 · Alpha Net +0,376%/20h)">Rank 12F: Tervalidasi OOS</span>
+        </div>
         <div class="flex flex-wrap items-center gap-2 mt-1">
           <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold ${cc.pill}">${esc(cf.conviction || '—')}</span>
           <span class="mono text-xs font-bold text-white">Konfluensi ${esc(scoreTxt)}</span>
@@ -1662,6 +1753,7 @@ function renderProAnalyzer(d) {
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-1.5">
+        ${qgPill}
         <span class="px-2.5 py-1 rounded-lg border text-[11px] font-semibold ${stc.border} ${stc.text}">${esc(st.phase || '—')}</span>
         ${st.squeeze ? `<span class="px-2 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 text-[11px] font-bold">VCP / SQUEEZE</span>` : ''}
       </div>

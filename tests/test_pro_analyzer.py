@@ -155,3 +155,91 @@ def test_score_candidate_precision_grades_and_penalties():
     assert "ANALISATOR PRO" in html_out
     assert "VCP/SQUEEZE" in html_out
     assert "88.0/100" in html_out
+
+
+def test_quality_gate_bank_piotroski_and_bei_red_flag_veto():
+    from core import cek, fundamental
+
+    # 1. Jalur Bank 6 poin (BRIS via override)
+    ov_bris = fundamental.load_corp_action_override("BRIS")
+    assert ov_bris is not None
+    qg_bank = fundamental.compute_quality_gate({"sector": "Financial Services", "symbol": "BRIS.JK"}, ov=ov_bris)
+    assert qg_bank["mode"] == "bank"
+    assert qg_bank["passed"] >= 4
+    assert qg_bank["label"] == "KUAT"
+
+    # 2. Jalur Non-Keuangan Piotroski F-Score
+    qg_nonfin = fundamental.compute_quality_gate({
+        "sector": "Consumer Defensive",
+        "net_income": 500e9,
+        "operating_cashflow": 650e9,
+        "free_cashflow": 450e9,
+        "der": 40.0,
+        "current_ratio": 2.1,
+        "margin": 14.0,
+        "roe": 18.0,
+        "roe_unit": "pct",
+        "rev_trend": [("Q1", 100), ("Q2", 110), ("Q3", 125)],
+        "profit_trend": [("Q1", 15), ("Q2", 18), ("Q3", 22)],
+    })
+    assert qg_nonfin["mode"] == "piotroski"
+    assert qg_nonfin["passed"] >= 7
+    assert qg_nonfin["label"] == "KUAT"
+
+    # 3. Radar Red Flag BEI 2026: suspensi free float Peng-S-00039 -> veto HINDARI di /cek
+    df = make_prices(np.linspace(1000, 1200, 60), volume=10_000_000)
+    ind = analysis.compute_indicators(df)
+    res_akku = {
+        "ticker": "AKKU",
+        "ind": ind,
+        "score": analysis.score_stock(ind),
+        "snap": analysis.last_snapshot(ind),
+        "weekly": {"direction": "naik"},
+    }
+    chk = cek.build(
+        res=res_akku, fund=None, fund_raw=None, nsent=None,
+        bandar_row=None, agenda=None, agenda_days=None,
+        peers=None, value_avg20=10_000_000_000.0,
+    )
+    assert chk["verdict"] == "HINDARI"
+    assert any("free float" in v.lower() for v in chk["vetoes"])
+
+
+def test_bei_calculator_endpoints_and_portfolio_risk_audit(tmp_store):
+    from fastapi.testclient import TestClient
+    from desktop_web import api as web_api
+
+    client = TestClient(web_api.app)
+
+    # TERP Right Issue
+    r_terp = client.post("/api/calc/bei", json={
+        "mode": "terp", "price": 1500, "exercise_price": 1000, "old_ratio": 5, "new_ratio": 2,
+    })
+    assert r_terp.status_code == 200
+    assert r_terp.json()["terp_tick"] == 1355.0 or 1350.0 <= r_terp.json()["terp_tick"] <= 1365.0
+    assert r_terp.json()["dilution_pct"] == 28.57
+
+    # Reverse DCF
+    r_dcf = client.post("/api/calc/bei", json={
+        "mode": "dcf", "price": 2480, "fcf_per_share": 250, "growth_pct": 8, "hurdle_pct": 12, "tg_pct": 4.5,
+    })
+    assert r_dcf.status_code == 200
+    b_dcf = r_dcf.json()
+    assert b_dcf["fair_bear"] < b_dcf["fair_base"] < b_dcf["fair_bull"]
+    assert "implied_growth_pct" in b_dcf
+
+    # Dividen PMK 18/2021 (0% pajak + deteksi yield >= 7% dividend trap)
+    r_div = client.post("/api/calc/bei", json={
+        "mode": "div", "price": 3000, "dps": 300, "lots": 2, "reinvest_id": True,
+    })
+    assert r_div.status_code == 200
+    b_div = r_div.json()
+    assert b_div["tax_rp"] == 0
+    assert b_div["net_rp"] == 60000
+    assert b_div["dividend_trap_risk"] is True
+
+    # Audit risiko portofolio tersedia di GET /api/portfolio
+    r_port = client.get("/api/portfolio?chat_id=risk-audit-test")
+    assert r_port.status_code == 200
+    assert "risk_audit" in r_port.json()
+    assert r_port.json()["risk_audit"]["max_pos_pct"] > 0

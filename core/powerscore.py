@@ -24,6 +24,7 @@ def combine(
     *,
     forensic_penalty: float = 0.0,
     vetoes: list[str] | None = None,
+    rel_pct: float | None = None,
 ) -> dict:
     """Gabungkan komponen yang tersedia dengan bobot dinormalisasi.
 
@@ -32,8 +33,14 @@ def combine(
     sehingga STRONG BUY praktis mustahil). Bila ``forensic_penalty > 0``
     disuplai, penalti risiko arus kas/neraca diturunkan secara proporsional
     terhadap bobot fundamental dan dicatat di ``components``.
+    Bila ``rel_pct`` (peringkat relatif 12 faktor OOS 0..100) diberikan,
+    komponen teknikal memakai kombinasi terkalibrasi & status validasi dicatat jujur.
     """
-    raw_weights = [("tech", tech_pct, W_TECH)]
+    eff_tech = float(tech_pct)
+    if rel_pct is not None:
+        rel_scaled = max(-100.0, min(100.0, (float(rel_pct) - 50.0) * 2.0))
+        eff_tech = 0.5 * eff_tech + 0.5 * rel_scaled
+    raw_weights = [("tech", eff_tech, W_TECH)]
     if fund_pct is not None:
         raw_weights.append(("fund", fund_pct, W_FUND))
     if news_pct is not None:
@@ -68,17 +75,27 @@ def combine(
         veto_capped = True
         trend_lbl = f"Dibatasi veto ({active_vetoes[0]})"
 
+    val_status = "TERVALIDASI_SEBAGIAN" if rel_pct is not None else "HEURISTIK"
+    val_badge = (
+        "Tervalidasi OOS (12F) + Heuristik"
+        if rel_pct is not None
+        else "Heuristik (50/30/20)"
+    )
+
     return {
         "pct": round(comp),
         "rating": rating,
         "trend_label": trend_lbl,
         "disclaimer": SCORE_DISCLAIMER,
+        "validation_status": val_status,
+        "validation_badge": val_badge,
         "emoji": emoji,
         "veto_capped": veto_capped,
         "veto_reasons": active_vetoes,
         "forensic_penalty": round(pen, 1) if pen else 0,
         "components": {
             "tech_pct": tech_pct,
+            "rel_pct": rel_pct,
             "fund_pct": fund_pct,
             "news_pct": news_pct,
             "weights": weights,

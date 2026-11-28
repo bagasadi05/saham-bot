@@ -300,7 +300,48 @@ def summarize(rows: list[dict], horizon: int = HORIZON) -> dict:
     result["edge"] = round(beli - base, 2) if beli is not None and base is not None else None
     result["jual_edge"] = round(jual - base, 2) if jual is not None and base is not None else None
     result["live_ic"] = live_ic(rows, horizon=horizon)
+    result["quintiles"] = summarize_by_quintile(rows)
     return result
+
+
+def _bootstrap_mean_ci95(vals: list[float], iters: int = 500) -> tuple[float | None, float | None]:
+    if len(vals) < 5:
+        return None, None
+    import random
+
+    rng = random.Random(42)
+    n = len(vals)
+    means = sorted(sum(vals[rng.randrange(n)] for _ in range(n)) / n for _ in range(iters))
+    lo = means[int(0.025 * (iters - 1))]
+    hi = means[int(0.975 * (iters - 1))]
+    return round(lo, 2), round(hi, 2)
+
+
+def summarize_by_quintile(rows: list[dict]) -> list[dict]:
+    """Pecah scorecard live per kuintil peringkat relatif (Q1..Q5) + CI 95%."""
+    buckets: dict[int, list[float]] = {q: [] for q in range(1, 6)}
+    for r in rows:
+        rp = _num(r.get("rel_pct"))
+        fwd = _num(r.get("fwd_ret"))
+        if rp is None or fwd is None:
+            continue
+        q = min(5, max(1, int(rp // 20) + 1)) if rp < 100 else 5
+        buckets[q].append(fwd)
+    out: list[dict] = []
+    for q in range(1, 6):
+        vals = buckets[q]
+        if not vals:
+            continue
+        wins = sum(1 for v in vals if v > 0)
+        lo, hi = _bootstrap_mean_ci95(vals)
+        out.append({
+            "quintile": q,
+            "n": len(vals),
+            "avg_fwd": _mean(vals),
+            "win": _pct(wins, len(vals)),
+            "ci95": [lo, hi] if lo is not None else None,
+        })
+    return out
 
 
 def _stat_line(label: str, value: str) -> str:
@@ -384,6 +425,19 @@ def format_summary(stats: dict, counts: dict | None = None) -> str:
         lines.append(f"Selisih BELI vs TAHAN: <b>{stats['edge']:+.2f}</b> poin persen")
     if stats.get("jual_edge") is not None:
         lines.append(f"Selisih JUAL vs TAHAN: <b>{stats['jual_edge']:+.2f}</b> poin persen")
+    qs = stats.get("quintiles") or []
+    if len(qs) >= 2:
+        lines.append("")
+        lines.append("<b>Breakdown Kuintil Live (Q1 terlemah → Q5 terkuat):</b>")
+        for qb in qs:
+            ci_txt = (
+                f" · CI95 [{qb['ci95'][0]:+.1f}%, {qb['ci95'][1]:+.1f}%]"
+                if qb.get("ci95")
+                else ""
+            )
+            lines.append(
+                f"  Q{qb['quintile']} (n={qb['n']}): {qb['avg_fwd']:+.2f}% · menang {qb['win']:.1f}%{ci_txt}"
+            )
     lines.append("")
     lines.append("<i>Ini pengukuran hasil sendiri, bukan janji. Sampel kecil "
                  "mudah didominasi kebetulan; baca angkanya sebagai indikasi.</i>")

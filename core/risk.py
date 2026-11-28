@@ -608,6 +608,45 @@ def check_limits(plan: dict, positions: list[dict], modal: float,
             "pos_value": round(pos_value), "sector_value": round(sector_value),
             "pos_limit": round(pos_limit), "sector_limit": round(sector_limit)}
 
+def days_to_exit(position_value_rp: float, adtv_rp: float | None, max_part: float = 0.20) -> float | None:
+    """Estimasi jumlah hari bursa untuk keluar posisi tanpa melampaui `max_part` ADTV (Fase 4)."""
+    if position_value_rp <= 0 or adtv_rp is None or adtv_rp <= 0 or max_part <= 0:
+        return None
+    daily_cap = float(adtv_rp) * float(max_part)
+    return round(float(position_value_rp) / daily_cap, 2)
+
+
+def stress_test_portfolio(
+    positions: list[dict],
+    *,
+    beta_default: float = 1.0,
+) -> list[dict]:
+    """Simulasi guncangan skenario historis & hipotetis pada portofolio aktif (Fase 4)."""
+    total_val = sum(
+        float(p.get("value_rp") or (float(p.get("lots") or 0) * 100.0 * float(p.get("price") or p.get("avg_price") or 0.0)))
+        for p in positions
+    )
+    if total_val <= 0:
+        return []
+    scenarios = [
+        ("Guncangan IHSG -10% (Koreksi Sedang)", -10.0),
+        ("Guncangan IHSG -20% (Stress Hipotetis / 2018)", -20.0),
+        ("Crash Maret 2020 (IHSG -35%)", -35.0),
+    ]
+    out = []
+    for name, mkt_shock in scenarios:
+        est_pct = round(mkt_shock * float(beta_default), 1)
+        est_loss_rp = round(total_val * (est_pct / 100.0))
+        out.append({
+            "scenario": name,
+            "market_shock_pct": mkt_shock,
+            "est_portfolio_pct": est_pct,
+            "est_loss_rp": est_loss_rp,
+            "est_remaining_rp": max(0, round(total_val + est_loss_rp)),
+        })
+    return out
+
+
 def position_fit(ticker: str, positions: list[dict], modal: float,
                  *,
                  max_pos_pct: float = MAX_POS_PCT,

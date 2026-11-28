@@ -17,5 +17,40 @@
       "Risiko outflow pasif: eksklusi HSC dari ISSI/JII (1 Des 2026) & penghapusan FTSE Russell (21 Des 2026)"
     ],
     "extra_penalty": 20
+  },
+  "AKKU": {
+    "as_of": "27 Nov 2026",
+    "source": "Pengumuman BEI Peng-S-00039/BEI.PLP/11-2026",
+    "veto_reason": "Suspensi BEI ketidaksesuaian data free float (Peng-S-00039/BEI.PLP/11-2026)",
+    "corp_action_flags": ["Suspensi BEI data free float (27 Nov 2026)"],
+    "extra_penalty": 40
+  },
+  "BAJA": {
+    "as_of": "27 Nov 2026",
+    "source": "Pengumuman BEI Peng-S-00039/BEI.PLP/11-2026",
+    "veto_reason": "Suspensi BEI ketidaksesuaian data free float (Peng-S-00039/BEI.PLP/11-2026)",
+    "corp_action_flags": ["Suspensi BEI data free float (27 Nov 2026)"],
+    "extra_penalty": 40
+  },
+  "FIRE": {
+    "as_of": "27 Nov 2026",
+    "source": "Pengumuman BEI Peng-S-00039/BEI.PLP/11-2026",
+    "veto_reason": "Suspensi BEI ketidaksesuaian data free float (Peng-S-00039/BEI.PLP/11-2026)",
+    "corp_action_flags": ["Suspensi BEI data free float (27 Nov 2026)"],
+    "extra_penalty": 40
+  },
+  "KING": {
+    "as_of": "27 Nov 2026",
+    "source": "Pengumuman BEI Peng-S-00039/BEI.PLP/11-2026",
+    "veto_reason": "Suspensi BEI ketidaksesuaian data free float (Peng-S-00039/BEI.PLP/11-2026)",
+    "corp_action_flags": ["Suspensi BEI data free float (27 Nov 2026)"],
+    "extra_penalty": 40
+  },
+  "KPIG": {
+    "as_of": "27 Nov 2026",
+    "source": "Pengumuman BEI Peng-S-00039/BEI.PLP/11-2026",
+    "veto_reason": "Suspensi BEI ketidaksesuaian data free float (Peng-S-00039/BEI.PLP/11-2026)",
+    "corp_action_flags": ["Suspensi BEI data free float (27 Nov 2026)"],
+    "extra_penalty": 40
   }
 }

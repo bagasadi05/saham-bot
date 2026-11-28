@@ -36,7 +36,10 @@ from core import (
     data as datamod,
     desktop_helpers as dh,
     desktop_monitor as dm,
+    health as healthmod,
+    pricing,
     pro_analyzer,
+    risk as riskmod,
     store_portfolio,
     store_profile,
     store_watchlist,
@@ -521,12 +524,140 @@ async def unlock_mobile(body: PinPayload, request: Request) -> JSONResponse:
     return resp
 
 
+class BeiCalcPayload(BaseModel):
+    mode: str = "terp"  # terp | dcf | div
+    price: float = 0.0
+    exercise_price: float = 0.0
+    old_ratio: float = 1.0
+    new_ratio: float = 1.0
+    fcf_per_share: float = 0.0
+    growth_pct: float = 8.0
+    hurdle_pct: float = 12.0
+    tg_pct: float = 4.5
+    dps: float = 0.0
+    lots: int = 1
+    reinvest_id: bool = True
+
+
+@app.post("/api/calc/bei")
+async def calc_bei(body: BeiCalcPayload) -> dict[str, Any]:
+    """Kalkulator deterministik BEI: TERP Right Issue, Reverse DCF (±200 bps), & Dividen PMK 18/2021."""
+    mode = (body.mode or "terp").strip().lower()
+    if mode == "terp":
+        cum = float(body.price or 0.0)
+        ex = float(body.exercise_price or 0.0)
+        old_r = float(body.old_ratio or 0.0)
+        new_r = float(body.new_ratio or 0.0)
+        if cum <= 0 or ex <= 0 or old_r <= 0 or new_r <= 0:
+            raise HTTPException(status_code=400, detail="Isi harga cum, harga tebus, rasio lama, dan rasio baru (> 0).")
+        terp_raw = (cum * old_r + ex * new_r) / (old_r + new_r)
+        terp_tick = pricing.round_tick(terp_raw)
+        dilution_pct = (new_r / (old_r + new_r)) * 100.0
+        discount_pct = ((cum - ex) / cum) * 100.0
+        return _json_safe({
+            "ok": True,
+            "mode": "terp",
+            "terp_raw": round(terp_raw, 2),
+            "terp_tick": terp_tick,
+            "dilution_pct": round(dilution_pct, 2),
+            "discount_vs_cum_pct": round(discount_pct, 2),
+            "arb_floor_post_terp": pricing.arb_floor_price(terp_tick),
+            "summary": (
+                f"TERP teoritis Rp{int(round(terp_tick)):,} (dilusi {dilution_pct:.2f}% jika tidak menebus · "
+                f"diskon harga tebus {discount_pct:+.1f}% vs cum)."
+            ),
+        })
+
+    if mode == "dcf":
+        px = float(body.price or 0.0)
+        fcf = float(body.fcf_per_share or 0.0)
+        g = float(body.growth_pct or 0.0) / 100.0
+        r_base = float(body.hurdle_pct or 12.0) / 100.0
+        tg = float(body.tg_pct or 4.5) / 100.0
+        if px <= 0 or fcf <= 0:
+            raise HTTPException(status_code=400, detail="Harga pasar dan FCF per saham harus > 0.")
+        if r_base <= tg + 0.005:
+            raise HTTPException(status_code=400, detail="Hurdle rate harus lebih besar dari terminal growth (+0,5%).")
+
+        def _dcf_val(growth: float, disc: float) -> float:
+            pv = 0.0
+            cf = fcf
+            for yr in range(1, 6):
+                cf = cf * (1.0 + growth)
+                pv += cf / ((1.0 + disc) ** yr)
+            tv = (cf * (1.0 + tg)) / max(0.01, disc - tg)
+            return pv + tv / ((1.0 + disc) ** 5)
+
+        val_base = pricing.round_tick(_dcf_val(g, r_base))
+        val_bear = pricing.round_tick(_dcf_val(g, r_base + 0.02))
+        val_bull = pricing.round_tick(_dcf_val(g, max(tg + 0.01, r_base - 0.02)))
+        mos_pct = ((val_base - px) / val_base * 100.0) if val_base > 0 else 0.0
+
+        # Reverse DCF: cari pertumbuhan FCF tersirat (bisection -20%..+60%)
+        lo, hi = -0.20, 0.60
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            if _dcf_val(mid, r_base) < px:
+                lo = mid
+            else:
+                hi = mid
+        implied_g_pct = round(((lo + hi) / 2.0) * 100.0, 2)
+        return _json_safe({
+            "ok": True,
+            "mode": "dcf",
+            "fair_bear": val_bear,
+            "fair_base": val_base,
+            "fair_bull": val_bull,
+            "mos_pct": round(mos_pct, 1),
+            "implied_growth_pct": implied_g_pct,
+            "summary": (
+                f"Kisaran DCF (±200 bps): Rp{int(round(val_bear)):,} – Rp{int(round(val_bull)):,} "
+                f"(Base Rp{int(round(val_base)):,}, MoS {mos_pct:+.1f}%) · Reverse DCF menyiratkan pertumbuhan FCF {implied_g_pct:+.1f}%/thn."
+            ),
+        })
+
+    if mode == "div":
+        px = float(body.price or 0.0)
+        dps = float(body.dps or 0.0)
+        lots = max(1, int(body.lots or 1))
+        if px <= 0 or dps <= 0:
+            raise HTTPException(status_code=400, detail="Harga saham dan DPS (dividen/saham) harus > 0.")
+        gross = dps * lots * 100.0
+        tax_rate = 0.0 if body.reinvest_id else 0.10
+        tax_rp = gross * tax_rate
+        net_rp = gross - tax_rp
+        yld_gross = (dps / px) * 100.0
+        yld_net = (dps * (1.0 - tax_rate) / px) * 100.0
+        ex_px = pricing.round_tick(max(1.0, px - dps))
+        trap_warn = yld_gross >= 7.0
+        return _json_safe({
+            "ok": True,
+            "mode": "div",
+            "gross_rp": round(gross),
+            "tax_rp": round(tax_rp),
+            "net_rp": round(net_rp),
+            "yield_gross_pct": round(yld_gross, 2),
+            "yield_net_pct": round(yld_net, 2),
+            "ex_date_theoretical": ex_px,
+            "dividend_trap_risk": trap_warn,
+            "summary": (
+                f"Dividen bersih {lots} lot: Rp{int(round(net_rp)):,} (yield {yld_net:.2f}% · "
+                f"pajak {'0% PMK 18/2021 — wajib reinvestasi ≥3 thn + lapor SPT' if body.reinvest_id else '10% PPh Final'}) · "
+                f"Ex-Date teoritis Rp{int(round(ex_px)):,}."
+                + (" ⚠️ Yield ≥7%: waspada risiko Dividend Trap (ARB 7%)!" if trap_warn else "")
+            ),
+        })
+
+    raise HTTPException(status_code=400, detail="Mode kalkulator harus 'terp', 'dcf', atau 'div'.")
+
+
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     vendor_ok = all(
         (STATIC_DIR / "vendor" / f).is_file()
         for f in ("tailwindcss.js", "lucide.min.js", "lightweight-charts.standalone.production.js", "qrcode.min.js")
     )
+    dh_info = await asyncio.to_thread(healthmod.check_data_health)
     return {
         "ok": True,
         "app": "sahambot-desktop",
@@ -534,6 +665,7 @@ async def health() -> dict[str, Any]:
         "eodhd_fallback": bool(os.environ.get("EODHD_API_KEY", "").strip()),
         "vendor_offline_ready": vendor_ok,
         "pro_analyzer": True,
+        "data_health": dh_info,
     }
 
 
@@ -1004,6 +1136,59 @@ async def get_portfolio(chat_id: str = Query(dm.DEFAULT_PROFILE_ID)) -> dict[str
         lots = int(r.get("lots") or 0)
         if sl and px and lots > 0:
             total_risk_sl += max(0.0, (float(px) - float(sl)) * lots * 100.0)
+
+    # Audit Risiko Portofolio: batas konsentrasi posisi/sektor & VaR95/ES95 (cache-only, fail-soft)
+    max_pos_lim, max_sec_lim = await asyncio.to_thread(store_portfolio.get_risk_limits, cid)
+    risk_warnings: list[str] = []
+    sec_totals: dict[str, float] = {}
+    if total_value > 0:
+        for r in rows:
+            val = float(r.get("value_rp") or 0.0)
+            w = val / total_value
+            tkr = str(r.get("ticker") or "")
+            sec = str(r.get("sector") or universe.sector_of(tkr) or "Lainnya")
+            sec_totals[sec] = sec_totals.get(sec, 0.0) + val
+            if w > max_pos_lim:
+                risk_warnings.append(
+                    f"Konsentrasi posisi {tkr} {w * 100:.1f}% melebihi batas {max_pos_lim * 100:.0f}%"
+                )
+        for sec, sval in sorted(sec_totals.items(), key=lambda x: -x[1]):
+            sw = sval / total_value
+            if sw > max_sec_lim and len(rows) > 1:
+                risk_warnings.append(
+                    f"Konsentrasi sektor {sec} {sw * 100:.1f}% melebihi batas {max_sec_lim * 100:.0f}%"
+                )
+
+    var95_pct = es95_pct = vol_ann_pct = None
+    if rows:
+        def _calc_cached_var() -> tuple[float | None, float | None, float | None]:
+            try:
+                pos_list = []
+                quotes_map = {}
+                for r in rows:
+                    tkr = str(r.get("ticker") or "")
+                    df_c = datamod.fetch_cached_history(tkr, "1y")
+                    pos_list.append({
+                        "ticker": tkr,
+                        "lots": int(r.get("lots") or 0),
+                        "avg_price": float(r.get("avg_price") or 0.0),
+                        "sector": r.get("sector") or universe.sector_of(tkr) or None,
+                    })
+                    quotes_map[tkr] = {
+                        "price": float(r.get("price") or r.get("avg_price") or 0.0),
+                        "close_series": df_c["close"] if isinstance(df_c, pd.DataFrame) and "close" in df_c else None,
+                    }
+                pr = riskmod.portfolio_risk(pos_list, quotes_map)
+                return (
+                    dh._safe_float(pr.get("var95_hist_pct") or pr.get("var95_pct")),
+                    dh._safe_float(pr.get("es95_pct")),
+                    dh._safe_float(pr.get("vol_ann_pct")),
+                )
+            except Exception:
+                return None, None, None
+
+        var95_pct, es95_pct, vol_ann_pct = await asyncio.to_thread(_calc_cached_var)
+
     return _json_safe({
         "ok": True,
         "rows": rows,
@@ -1014,6 +1199,15 @@ async def get_portfolio(chat_id: str = Query(dm.DEFAULT_PROFILE_ID)) -> dict[str
             "total_pnl_pct": round(total_pnl_pct, 2),
             "total_risk_sl": round(total_risk_sl),
             "count": len(rows),
+        },
+        "risk_audit": {
+            "max_pos_pct": round(max_pos_lim * 100.0, 1),
+            "max_sector_pct": round(max_sec_lim * 100.0, 1),
+            "var95_pct": round(var95_pct, 2) if var95_pct is not None else None,
+            "es95_pct": round(es95_pct, 2) if es95_pct is not None else None,
+            "vol_ann_pct": round(vol_ann_pct, 1) if vol_ann_pct is not None else None,
+            "stress_tests": riskmod.stress_test_portfolio(rows),
+            "warnings": risk_warnings,
         },
     })
 

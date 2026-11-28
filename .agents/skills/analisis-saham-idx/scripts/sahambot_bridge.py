@@ -366,6 +366,85 @@ def cmd_track_report(_args):
     print(json.dumps(tracker.summarize_accuracy(), indent=2, default=str))
 
 
+
+def cmd_pro(args):
+    import core.data as data
+    import core.analysis as analysis
+    import core.fundamental as fundamental
+    import core.cek as cek
+    import core.regime as regime_mod
+    import core.pro_analyzer as pro_analyzer
+
+    code = _clean_ticker(args.ticker)
+    yf_ticker = data.normalize_ticker(code)
+    board = universe.board_of(code)
+    sector = universe.sector_of(code)
+    df = data.fetch_history(yf_ticker, period=args.period)
+    if df is None or df.empty:
+        print(json.dumps({"ticker": code, "error": "Data OHLCV tidak tersedia"}, indent=2))
+        sys.exit(1)
+
+    res = analysis.analyze(code, df)
+    fraw = fundamental.fetch_fundamentals(yf_ticker)
+    fund = fundamental.score_fundamentals(fraw) if fraw else None
+    reg = regime_mod.fetch_ihsg_regime()
+    val_avg20 = None
+    try:
+        c_col = [c for c in df.columns if (c[0] if isinstance(c, tuple) else c).lower() == "close"][0]
+        v_col = [c for c in df.columns if (c[0] if isinstance(c, tuple) else c).lower() == "volume"][0]
+        val_avg20 = float((df[c_col] * df[v_col]).tail(20).mean())
+    except Exception:
+        pass
+    chk = cek.build(
+        res=res, fund=fund, fund_raw=fraw,
+        nsent=None, bandar_row=None, agenda=None, agenda_days=None,
+        peers=None, value_avg20=val_avg20, board=board,
+    )
+    snap = res.get("snap") or {}
+    ind = res.get("ind")
+    cmf20 = None
+    rsi_div = None
+    try:
+        if ind is not None and len(ind) >= 20:
+            cmf_s = analysis.cmf(ind, 20).dropna()
+            if len(cmf_s):
+                cmf20 = round(float(cmf_s.iloc[-1]), 3)
+            rsi_div = analysis.detect_rsi_divergence(ind)
+    except Exception:
+        pass
+    detail = {
+        "ticker": code,
+        "sector": (fraw or {}).get("sector") or sector,
+        "board": board,
+        "price": snap.get("close"),
+        "res": res,
+        "fund_raw": fraw,
+        "fund": fund,
+        "cek": chk,
+        "market_regime": reg or {},
+        "cmf20": cmf20,
+        "rsi_divergence": rsi_div,
+    }
+    fv = None
+    try:
+        import desktop_web.analysis_enhancer as enhancer
+        fv = enhancer.compute_fair_value(snap.get("close"), fraw, fund, detail["sector"])
+    except Exception:
+        pass
+    pro_out = pro_analyzer.analyze_pro(detail, fair_value=fv)
+    print(json.dumps({
+        "ticker": code,
+        "board": board,
+        "is_syariah": syariah.is_syariah(code),
+        "close": snap.get("close"),
+        "as_of": snap.get("as_of"),
+        "regime": (reg or {}).get("status") or (reg or {}).get("regime"),
+        "verdict_cek": chk.get("verdict"),
+        "fair_value": fv,
+        "pro_analysis": pro_out,
+    }, indent=2, default=str))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bridge CLI analisis-saham-idx <-> saham-bot")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -400,6 +479,11 @@ def main():
     p_cek.add_argument("ticker")
     p_cek.add_argument("--period", default="1y")
     p_cek.set_defaults(func=cmd_cek)
+
+    p_pro = sub.add_parser("pro", help="Jalankan Analisator Pro 6 pilar, VCP, skenario & Kill Criteria")
+    p_pro.add_argument("ticker")
+    p_pro.add_argument("--period", default="1y")
+    p_pro.set_defaults(func=cmd_pro)
 
     p_trk = sub.add_parser("track", help="Catat rekomendasi untuk audit akurasi H+5/H+20")
     p_trk.add_argument("ticker")
