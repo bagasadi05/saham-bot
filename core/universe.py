@@ -45,6 +45,11 @@ def codes() -> list[str]:
     return [s["code"] for s in stocks()]
 
 
+def main_board_codes() -> list[str]:
+    """Daftar kode emiten Papan Utama BEI (~293 emiten likuid/besar) untuk scan cepat."""
+    return [s["code"] for s in stocks() if (s.get("board") or "").strip().lower() == "utama"]
+
+
 @lru_cache(maxsize=1)
 def _index() -> dict[str, dict]:
     return {s["code"]: s for s in stocks()}

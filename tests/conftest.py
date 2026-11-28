@@ -50,6 +50,7 @@ def _isolated_caches(monkeypatch):
     # Jaga suite test tetap 100% offline meski `.env` lokal menyimpan API key live.
     monkeypatch.delenv("EODHD_API_KEY", raising=False)
     monkeypatch.delenv("ALPHAVANTAGE_API_KEY", raising=False)
+    monkeypatch.setenv("SAHAMBOT_LOCAL_ONLY", "1")
     import config as _cfg
     monkeypatch.setattr(_cfg, "BOT_DISPLAY_NAME", "SahamBuddy")
     monkeypatch.delenv("ADMIN_IDS", raising=False)

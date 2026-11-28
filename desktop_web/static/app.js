@@ -660,7 +660,11 @@ function renderSinyalRows() {
   document.querySelectorAll('[data-sort]').forEach(el => {
     el.textContent = el.dataset.sort === col ? (asc ? '▲' : '▼') : '';
   });
-  const rows = [...state.sinyalRows].sort((a, b) => {
+  const onlyGradeA = Boolean(document.getElementById('sinyal-grade-a')?.checked);
+  const filteredRows = onlyGradeA
+    ? state.sinyalRows.filter(r => r.precision_grade === 'A+' || r.precision_grade === 'A')
+    : state.sinyalRows;
+  const rows = [...filteredRows].sort((a, b) => {
     const va = a[col], vb = b[col];
     if (va == null && vb == null) return 0;
     if (va == null) return 1;
@@ -673,32 +677,82 @@ function renderSinyalRows() {
     tb.innerHTML = `<tr><td colspan="9" class="px-4 py-12 text-center text-slate-500">Tidak ada emiten yang lolos filter. Klik <b>Scan ~944 Emiten BEI</b> atau longgarkan filter.</td></tr>`;
     return;
   }
-  tb.innerHTML = rows.map(r => `<tr onclick="openCek('${esc(r.ticker)}')" class="hover:bg-slate-800/50 transition cursor-pointer">
+  tb.innerHTML = rows.map(r => {
+    const pg = r.precision_grade || '';
+    const pgCls = pg === 'A+' || pg === 'A' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/35'
+      : (pg === 'B' ? 'bg-sky-500/20 text-sky-300' : (pg === 'C' ? 'bg-amber-500/20 text-amber-300' : 'bg-rose-500/20 text-rose-300'));
+    const pgBadge = pg ? `<span class="ml-1 px-1.5 py-0.5 rounded text-[9px] font-bold ${pgCls}" title="Skor Presisi ${r.precision_score ?? '—'}/100 · ${esc(r.precision_note || '')}">${esc(pg)}</span>` : '';
+    return `<tr onclick="openCek('${esc(r.ticker)}')" class="hover:bg-slate-800/50 transition cursor-pointer">
       <td class="px-4 py-2.5 mono font-bold text-white"><span class="inline-flex items-center gap-1.5"><span>${esc(r.ticker)}</span>${r.syariah ? '<span class="px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-bold">ISSI</span>' : ''}</span></td>
       <td class="px-3 py-2.5 text-slate-300 truncate max-w-[180px]">${esc(r.name || '—')}</td>
       <td class="px-3 py-2.5 text-slate-400">${esc(r.sector || '—')}</td>
       <td class="px-3 py-2.5 text-right mono text-slate-100">${fmtNum(r.price)}</td>
       <td class="px-3 py-2.5 text-right mono ${(r.ret1d||0)>=0?'text-emerald-400':'text-rose-400'}">${fmtPct(r.ret1d)}</td>
-      <td class="px-3 py-2.5 text-center">${sigBadge(r.signal)}</td>
+      <td class="px-3 py-2.5 text-center whitespace-nowrap">${sigBadge(r.signal)}${pgBadge}</td>
       <td class="px-3 py-2.5 text-right mono text-sky-300">${r.rel_pct != null ? Math.round(r.rel_pct) : '—'}</td>
       <td class="px-3 py-2.5 text-right mono text-slate-300">${r.rsi != null ? Number(r.rsi).toFixed(1) : '—'}</td>
       <td class="px-3 py-2.5 text-slate-400 truncate max-w-xs">${san(r.reason || '—')}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 const SPINNER_SVG = `<svg class="w-3.5 h-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path class="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v3a5 5 0 00-5 5H4z"></path></svg>`;
 
-function setScanUiRunning(running, startedAtSec) {
+function updateScanProgress(st) {
+  if (!st) return;
+  const title = document.getElementById('scan-title');
+  const sub = document.getElementById('scan-subtitle');
+  const pctEl = document.getElementById('scan-pct');
+  const bar = document.getElementById('scan-bar-fill');
+  const mode = st.mode === 'fast' ? 'fast' : 'full';
+  const total = Number(st.total || 0);
+  const done = Number(st.done || 0);
+  const ok = Number(st.ok || 0);
+  const pct = Math.max(0, Math.min(100, Number(st.pct || 0)));
+
+  if (title) {
+    title.textContent = mode === 'fast'
+      ? `Scan Cepat Papan Utama (${total || '~293'} emiten)…`
+      : `Sedang Memindai ~${total || 944} Emiten BEI…`;
+  }
+  if (sub) {
+    if (st.phase === 'evaluating') {
+      sub.textContent = `Unduhan selesai (${ok}/${total} valid). Menghitung indikator 12 faktor & menyimpan ke SQLite…`;
+    } else if (done > 0 && total > 0) {
+      sub.textContent = `Mengunduh OHLCV paralel: ${done}/${total} emiten diproses (${ok} valid). Anda tetap bisa membuka tab lain.`;
+    } else {
+      sub.textContent = 'Mengunduh data OHLCV paralel (3 batch sekaligus)… Anda tetap bisa membuka tab lain.';
+    }
+  }
+  if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
+  if (bar) {
+    if (pct > 0) {
+      bar.style.animation = 'none';
+      bar.style.width = `${Math.max(4, pct)}%`;
+    } else {
+      bar.style.width = '33%';
+      bar.style.animation = 'topSlide 1.3s infinite ease-in-out';
+    }
+  }
+}
+
+function setScanUiRunning(running, startedAtSec, metaState) {
   const btn = document.getElementById('btn-scan-bei');
+  const btnFast = document.getElementById('btn-scan-fast');
   const banner = document.getElementById('scan-progress-banner');
   const elap = document.getElementById('scan-elapsed');
   if (running) {
     if (btn) {
       btn.disabled = true;
       btn.classList.add('opacity-75', 'cursor-wait');
-      btn.innerHTML = `${SPINNER_SVG}<span>Memindai BEI…</span>`;
+      btn.innerHTML = `${SPINNER_SVG}<span>Memindai…</span>`;
+    }
+    if (btnFast) {
+      btnFast.disabled = true;
+      btnFast.classList.add('opacity-60', 'cursor-wait');
     }
     if (banner) banner.classList.remove('hidden');
+    if (metaState) updateScanProgress(metaState);
     window._scanStartedAt = startedAtSec || window._scanStartedAt || (Date.now() / 1000);
     clearInterval(window._scanTick);
     const tick = () => {
@@ -718,30 +772,77 @@ function setScanUiRunning(running, startedAtSec) {
       btn.innerHTML = `<i data-lucide="zap" class="w-3.5 h-3.5"></i><span>Scan ~944 Emiten BEI</span>`;
       if (window.lucide) lucide.createIcons();
     }
+    if (btnFast) {
+      btnFast.disabled = false;
+      btnFast.classList.remove('opacity-60', 'cursor-wait');
+    }
     if (banner) banner.classList.add('hidden');
   }
 }
 
-function startScanPoll() {
+function _handleScanDone(st) {
+  clearInterval(window._scanPoll);
+  if (window._scanEs) {
+    try { window._scanEs.close(); } catch (_) {}
+    window._scanEs = null;
+  }
+  setScanUiRunning(false);
+  if (st && st.error) showToast('Scan gagal: ' + st.error);
+  else {
+    const label = st && st.mode === 'fast' ? 'Scan cepat Papan Utama selesai!' : 'Scan ~944 emiten BEI selesai!';
+    showToast(label);
+    loadSinyal();
+  }
+}
+
+function _startScanPollFallback() {
   clearInterval(window._scanPoll);
   window._scanPoll = setInterval(async () => {
     try {
       const st = await apiFetch('/api/scan/status');
-      if (!st.running) {
-        clearInterval(window._scanPoll);
-        setScanUiRunning(false);
-        if (st.error) showToast('Scan gagal: ' + st.error);
-        else { showToast('Scan ~944 emiten BEI selesai!'); loadSinyal(); }
-      }
+      if (st.running) updateScanProgress(st);
+      else _handleScanDone(st);
     } catch (_) {}
-  }, 3000);
+  }, 2000);
+}
+
+function startScanPoll() {
+  clearInterval(window._scanPoll);
+  if (window._scanEs) {
+    try { window._scanEs.close(); } catch (_) {}
+    window._scanEs = null;
+  }
+  if (typeof EventSource !== 'undefined') {
+    try {
+      const es = new EventSource('/api/scan/stream');
+      window._scanEs = es;
+      es.addEventListener('status', (ev) => {
+        try {
+          const st = JSON.parse(ev.data || '{}');
+          if (st.running) {
+            if (st.started_at && !window._scanStartedAt) setScanUiRunning(true, st.started_at, st);
+            else updateScanProgress(st);
+          } else {
+            _handleScanDone(st);
+          }
+        } catch (_) {}
+      });
+      es.onerror = () => {
+        try { es.close(); } catch (_) {}
+        if (window._scanEs === es) window._scanEs = null;
+        if (window._scanStartedAt) _startScanPollFallback();
+      };
+      return;
+    } catch (_) {}
+  }
+  _startScanPollFallback();
 }
 
 async function syncScanBanner() {
   try {
     const st = await apiFetch('/api/scan/status');
     if (st.running) {
-      setScanUiRunning(true, st.started_at);
+      setScanUiRunning(true, st.started_at, st);
       startScanPoll();
     } else {
       setScanUiRunning(false);
@@ -749,10 +850,11 @@ async function syncScanBanner() {
   } catch (_) {}
 }
 
-async function triggerScan() {
+async function triggerScan(mode = 'full') {
+  const m = mode === 'fast' ? 'fast' : 'full';
   try {
-    const res = await apiFetch('/api/scan', { method: 'POST' });
-    setScanUiRunning(true, res.started_at);
+    const res = await apiFetch(`/api/scan?mode=${encodeURIComponent(m)}`, { method: 'POST' });
+    setScanUiRunning(true, res.started_at, { mode: res.mode || m, total: res.total || 0, done: 0, ok: 0, pct: 0, phase: 'downloading' });
     showToast(res.message || 'Scan BEI dimulai di background…');
     startScanPoll();
   } catch (e) {
@@ -780,14 +882,19 @@ async function loadPaket() {
     if (!plans.length) {
       wrap.innerHTML = `<div class="col-span-full glass-card rounded-xl p-8 text-center text-sm text-slate-400">${esc(d.reason || 'Belum ada kandidat paket beli yang lolos saringan ketat untuk modal saat ini.')}<div class="text-xs text-slate-500 mt-2">Coba klik preset simulasi modal <b>5 Jt / 10 Jt / 25 Jt</b> di atas atau lihat daftar Kandidat Terdekat di bawah.</div></div>`;
     } else {
-      wrap.innerHTML = plans.map(p => `<div class="glass-card rounded-xl p-4 space-y-3 hover:border-sky-500/60 transition">
-      <div class="flex items-center justify-between">
+      wrap.innerHTML = plans.map(p => {
+        const pg = p.precision_grade || p.grade || '-';
+        const ps = p.precision_score != null ? ` · ${p.precision_score}/100` : '';
+        const pNote = p.precision_note ? `<div class="text-[11px] text-slate-400 leading-snug">${esc(p.precision_note)}</div>` : '';
+        return `<div class="glass-card rounded-xl p-4 space-y-3 hover:border-sky-500/60 transition">
+      <div class="flex items-center justify-between gap-2">
         <div>
           <span class="mono text-base font-bold text-white">${esc(p.ticker)}</span>
           <span class="ml-2 text-xs text-slate-400">${esc(p.sector || '')}</span>
         </div>
-        <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-sky-500/20 text-sky-300">Grade ${esc(p.grade || '-')}</span>
+        <span class="px-2.5 py-0.5 rounded-full text-xs font-bold ${pg === 'A+' || pg === 'A' ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/35' : 'bg-sky-500/20 text-sky-300'}">Grade ${esc(pg)}${esc(ps)}</span>
       </div>
+      ${pNote}
       <div class="grid grid-cols-3 gap-2 text-xs">
         <div class="p-2 rounded-lg bg-slate-900/80"><div class="text-slate-500 text-[10px]">ENTRY</div><div class="mono font-bold text-sky-300">${fmtNum(p.entry)}</div></div>
         <div class="p-2 rounded-lg bg-slate-900/80"><div class="text-slate-500 text-[10px]">SL</div><div class="mono font-bold text-rose-400">${fmtNum(p.sl)}</div></div>
@@ -801,7 +908,8 @@ async function loadPaket() {
         <button onclick="openCek('${esc(p.ticker)}')" class="flex-1 py-1.5 rounded-lg border border-slate-700 text-xs text-slate-200 hover:bg-slate-800 cursor-pointer">Detail</button>
         <button onclick="prefillExec('${esc(p.ticker)}', ${p.entry||0}, ${p.lots||1})" class="flex-1 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer">Catat Beli</button>
       </div>
-    </div>`).join('');
+    </div>`;
+      }).join('');
     }
     const near = d.near_candidates || [];
     const nearCard = document.getElementById('paket-near-card');
@@ -843,18 +951,139 @@ function prefillExec(ticker, price, lots) {
 
 function computeSellAdvice(r) {
   const px = Number(r.price || 0);
+  const avg = Number(r.avg_price || 0);
+  const lots = Number(r.lots || 0);
   const sl = Number(r.effective_sl || 0);
   const trl = Number(r.trailing_sl || 0);
   const tp1 = Number(r.scale_out_tp1 || 0);
   const tp = Number(r.tp || 0);
   const th = (r.thesis || 'TETAP').toUpperCase();
-  if (px > 0 && sl > 0 && px <= sl) return { label: 'CUT LOSS (SL)', cls: 'bg-rose-500/25 text-rose-200 border border-rose-500/40', note: `Harga menyentuh SL (${fmtRp(sl)}) — disiplin keluar.` };
-  if (px > 0 && tp > 0 && px >= tp) return { label: 'AMBIL PROFIT (TP)', cls: 'bg-emerald-500/25 text-emerald-200 border border-emerald-500/40', note: `Target TP (${fmtRp(tp)}) tercapai — jual amankan profit.` };
-  if (px > 0 && tp1 > 0 && px >= tp1) return { label: 'JUAL SEBAGIAN (TP1)', cls: 'bg-emerald-500/20 text-emerald-300', note: `TP1 (${fmtRp(tp1)}) tercapai — jual 50% atau geser SL ke BEP.` };
-  if (th === 'GUGUR') return { label: 'KELUAR (TESIS GUGUR)', cls: 'bg-rose-500/20 text-rose-300', note: 'Tesis posisi gugur — pertimbangkan jual di pantulan.' };
-  if (px > 0 && trl > 0 && px <= trl && (r.pnl_net_pct || 0) > 0) return { label: 'TRAILING EXIT', cls: 'bg-amber-500/20 text-amber-300', note: `Tembus trailing stop (${fmtRp(trl)}) — amankan sisa profit.` };
-  if (th === 'MELEMAH') return { label: 'HOLD KETAT / SIAP JUAL', cls: 'bg-amber-500/20 text-amber-300', note: `Pantau SL ketat ${fmtRp(sl)} & siap ambil untung dekat ${fmtRp(tp1 || tp)}.` };
-  return { label: 'HOLD (TAHAN)', cls: 'bg-sky-500/20 text-sky-300', note: `Tahan selama di atas SL ${fmtRp(sl)}; target jual ${fmtRp(tp1 || tp)}.` };
+  const bep = avg > 0 ? Math.ceil(avg * 1.004) : 0;
+  const distSlPct = (px > 0 && sl > 0) ? ((sl - px) / px * 100) : null;
+  const targetRef = tp1 || tp;
+  const distTpPct = (px > 0 && targetRef > 0) ? ((targetRef - px) / px * 100) : null;
+  const estSlRp = (avg > 0 && sl > 0 && lots > 0) ? Math.round((sl - avg) * lots * 100) : null;
+  const estTpRp = (avg > 0 && targetRef > 0 && lots > 0) ? Math.round((targetRef - avg) * lots * 100) : null;
+  const extra = { bep, distSlPct, distTpPct, estSlRp, estTpRp };
+
+  if (px > 0 && sl > 0 && px <= sl) {
+    return { ...extra, priority: 'urgent', label: 'CUT LOSS (SL)', cls: 'bg-rose-500/25 text-rose-200 border border-rose-500/40', note: `Harga (${fmtRp(px)}) menyentuh SL ${fmtRp(sl)} — disiplin keluar agar kerugian tidak melebar.` };
+  }
+  if (px > 0 && tp > 0 && px >= tp) {
+    return { ...extra, priority: 'profit', label: 'AMBIL PROFIT (TP)', cls: 'bg-emerald-500/25 text-emerald-200 border border-emerald-500/40', note: `Target TP penuh (${fmtRp(tp)}) tercapai — jual untuk kunci profit.` };
+  }
+  if (px > 0 && tp1 > 0 && px >= tp1) {
+    return { ...extra, priority: 'profit', label: 'JUAL 50% (TP1)', cls: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/35', note: `TP1 (${fmtRp(tp1)}) tercapai — jual 50% posisi & geser SL ke BEP ${fmtRp(bep)}.` };
+  }
+  if (th === 'GUGUR') {
+    return { ...extra, priority: 'urgent', label: 'KELUAR (TESIS GUGUR)', cls: 'bg-rose-500/20 text-rose-300 border border-rose-500/35', note: 'Tesis posisi gugur — prioritaskan keluar / kurangi di pantulan.' };
+  }
+  if (px > 0 && trl > 0 && px <= trl && (r.pnl_net_pct || 0) > 0) {
+    return { ...extra, priority: 'watch', label: 'TRAILING EXIT', cls: 'bg-amber-500/20 text-amber-300 border border-amber-500/35', note: `Tembus trailing stop (${fmtRp(trl)}) — amankan sisa profit.` };
+  }
+  if (th === 'MELEMAH') {
+    return { ...extra, priority: 'watch', label: 'HOLD KETAT / SIAP JUAL', cls: 'bg-amber-500/20 text-amber-300 border border-amber-500/35', note: `Tesis melemah: jaga SL ${fmtRp(sl)} (${distSlPct != null ? distSlPct.toFixed(1) + '%' : '—'}) & siap ambil profit dekat ${fmtRp(targetRef)}.` };
+  }
+  return { ...extra, priority: 'hold', label: 'HOLD (TAHAN)', cls: 'bg-sky-500/20 text-sky-300 border border-sky-500/30', note: `Tahan di atas SL ${fmtRp(sl)}${bep ? ` · BEP ${fmtRp(bep)}` : ''} · Target ${fmtRp(targetRef)}${distTpPct != null ? ` (+${distTpPct.toFixed(1)}%)` : ''}.` };
+}
+
+function renderPortfolioActionSummary(rows) {
+  const box = document.getElementById('porto-action-summary');
+  if (!box) return;
+  if (!rows.length) {
+    box.classList.add('hidden');
+    return;
+  }
+  const buckets = { urgent: [], profit: [], watch: [], hold: [] };
+  rows.forEach(r => {
+    const adv = computeSellAdvice(r);
+    (buckets[adv.priority] || buckets.hold).push({ r, adv });
+  });
+  const mkPill = (title, items, cls, hint) => `
+    <div class="rounded-lg border p-3 ${cls}">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-[11px] font-bold uppercase tracking-wide">${title}</span>
+        <span class="mono text-xs font-bold">${items.length} emiten</span>
+      </div>
+      <div class="mt-1.5 text-[11px] leading-relaxed">
+        ${items.length
+          ? items.map(({ r, adv }) => `<span class="inline-flex items-center gap-1 mr-2 mb-1 px-2 py-0.5 rounded bg-slate-950/60 mono"><b class="text-white">${esc(r.ticker)}</b> <span class="text-slate-300">${esc(adv.label)}</span></span>`).join('')
+          : `<span class="text-slate-500">${hint}</span>`}
+      </div>
+    </div>`;
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="text-xs font-bold text-white">Ringkasan Saran Jual / Tahan Portofolio</div>
+      <div class="text-[11px] text-slate-400">Otomatis menggabungkan SL, Trailing Stop, TP1/TP, dan Status Tesis</div>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2.5">
+      ${mkPill('Perlu Jual / SL', buckets.urgent, 'border-rose-500/35 bg-rose-500/10 text-rose-300', 'Tidak ada posisi kena SL / tesis gugur.')}
+      ${mkPill('Siap Ambil Profit', buckets.profit, 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300', 'Belum ada posisi menyentuh TP1/TP.')}
+      ${mkPill('Pantau Ketat', buckets.watch, 'border-amber-500/35 bg-amber-500/10 text-amber-300', 'Tidak ada posisi tesis melemah.')}
+      ${mkPill('Aman Ditahan', buckets.hold, 'border-sky-500/30 bg-sky-500/10 text-sky-300', 'Tidak ada posisi hold normal.')}
+    </div>`;
+}
+
+async function loadPortfolioRecentExecs() {
+  const tb = document.getElementById('porto-recent-execs-tbody');
+  if (!tb) return;
+  try {
+    const d = await apiFetch(`/api/jurnal?chat_id=${encodeURIComponent(state.chatId)}`);
+    const execs = (d.execs || []).slice(0, 10);
+    if (!execs.length) {
+      tb.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-slate-500">Belum ada riwayat inputan BELI atau JUAL.</td></tr>`;
+      return;
+    }
+    tb.innerHTML = execs.map(ex => {
+      const val = (ex.exec_price || 0) * (ex.lots || 0) * 100;
+      const isBuy = (ex.side || '').toUpperCase() === 'BELI';
+      const sideTxt = esc(ex.side || '');
+      const tkr = esc(ex.ticker || '');
+      return `<tr onclick="openCek('${tkr}')" class="hover:bg-slate-800/50 cursor-pointer">
+        <td class="px-4 py-2 mono text-slate-400">${esc(ex.trade_date || '—')}</td>
+        <td class="px-3 py-2 mono font-bold text-white">${tkr}</td>
+        <td class="px-3 py-2 text-center"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${isBuy ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${sideTxt}</span></td>
+        <td class="px-3 py-2 text-right mono">${ex.lots}</td>
+        <td class="px-3 py-2 text-right mono">${fmtRp(ex.exec_price)}</td>
+        <td class="px-3 py-2 text-right mono text-slate-200">${fmtRp(val)}</td>
+        <td class="px-3 py-2 text-right mono ${(ex.net_pnl||0)>=0?'text-emerald-400':'text-rose-400'}">${ex.net_pnl != null ? fmtRp(ex.net_pnl) : '—'}</td>
+        <td class="px-3 py-2 text-right" onclick="event.stopPropagation()">
+          <button onclick="deleteExecution(${Number(ex.id)}, '${tkr}', '${sideTxt}', ${Number(ex.lots || 0)}, ${Number(ex.exec_price || 0)})" class="px-2 py-0.5 rounded border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 text-[11px] font-semibold cursor-pointer" title="Hapus inputan ini jika salah catat">Hapus</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (_) {
+    tb.innerHTML = `<tr><td colspan="8" class="px-4 py-4 text-center text-slate-500">Gagal memuat riwayat transaksi.</td></tr>`;
+  }
+}
+
+async function deleteExecution(execId, ticker, side, lots, price) {
+  const ok = confirm(`Hapus inputan ${side} ${ticker} ${lots} lot @ ${fmtRp(price)}?\n\nPosisi portofolio & harga rata-rata ${ticker} akan otomatis dihitung ulang.`);
+  if (!ok) return;
+  try {
+    const res = await apiFetch(`/api/execution/${encodeURIComponent(execId)}?chat_id=${encodeURIComponent(state.chatId)}`, {
+      method: 'DELETE',
+    });
+    showToast(res.message || 'Inputan transaksi dihapus');
+    await Promise.all([loadPortfolio(), loadJurnal()]);
+  } catch (e) {
+    showToast('Gagal menghapus: ' + e.message);
+  }
+}
+
+async function deletePortfolioPosition(ticker, lots) {
+  const ok = confirm(`Hapus seluruh posisi ${ticker} (${lots} lot) beserta semua riwayat inputan BELI/JUAL ${ticker}?\n\nGunakan ini bila salah mencatat kode saham. Jika hanya salah 1 transaksi, hapus barisnya di Riwayat Inputan.`);
+  if (!ok) return;
+  try {
+    const res = await apiFetch(`/api/portfolio/${encodeURIComponent(ticker)}?chat_id=${encodeURIComponent(state.chatId)}`, {
+      method: 'DELETE',
+    });
+    showToast(res.message || `Posisi ${ticker} dihapus`);
+    await Promise.all([loadPortfolio(), loadJurnal()]);
+  } catch (e) {
+    showToast('Gagal menghapus posisi: ' + e.message);
+  }
 }
 
 async function loadPortfolio() {
@@ -872,6 +1101,8 @@ async function loadPortfolio() {
       ['Posisi Aktif', `${rows.length} emiten`, 'Pelacak tesis & saran jual aktif', 'text-sky-400'],
     ].map(([t,v,sub,cls]) => `<div class="glass-card rounded-xl p-4"><div class="text-[11px] uppercase text-slate-400 font-semibold">${t}</div><div class="mono text-xl font-bold mt-1 ${cls}">${v}</div><div class="text-xs text-slate-400 mt-0.5">${sub}</div></div>`).join('');
 
+    renderPortfolioActionSummary(rows);
+
     const allocEl = document.getElementById('porto-alloc');
     const totVal = Math.max(1, s.total_value || 0);
     if (rows.length && totVal > 1) {
@@ -887,29 +1118,36 @@ async function loadPortfolio() {
     const tb = document.getElementById('porto-tbody');
     if (!rows.length) {
       tb.innerHTML = `<tr><td colspan="11" class="px-4 py-12 text-center text-slate-500">Belum ada posisi terbuka. Catat eksekusi BELI manual Stockbit di form atas.</td></tr>`;
-      return;
+    } else {
+      tb.innerHTML = rows.map(r => {
+        const th = r.thesis || 'TETAP';
+        const thCls = th === 'GUGUR' ? 'bg-rose-500/20 text-rose-300' : (th === 'MELEMAH' ? 'bg-amber-500/20 text-amber-300' : (th === 'MENGUAT' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-300'));
+        const adv = computeSellAdvice(r);
+        const tkr = esc(r.ticker);
+        const slSub = adv.distSlPct != null ? `${adv.distSlPct.toFixed(1)}%` : '';
+        const tpSub = adv.distTpPct != null ? `+${adv.distTpPct.toFixed(1)}%` : '';
+        return `<tr onclick="openCek('${tkr}')" class="hover:bg-slate-800/50 cursor-pointer">
+          <td class="px-4 py-3 mono font-bold text-white">${tkr}</td>
+          <td class="px-3 py-3 text-right mono">${r.lots}</td>
+          <td class="px-3 py-3 text-right mono">${fmtNum(r.avg_price)}${adv.bep ? `<div class="text-[10px] text-slate-500">BEP ${fmtNum(adv.bep)}</div>` : ''}</td>
+          <td class="px-3 py-3 text-right mono">${fmtNum(r.price)}</td>
+          <td class="px-3 py-3 text-right mono ${(r.pnl_net_pct||0)>=0?'text-emerald-400':'text-rose-400'}">${fmtPct(r.pnl_net_pct)}<div class="text-[10px] text-slate-500">${fmtRp(r.pnl_rp)}</div></td>
+          <td class="px-3 py-3 text-right mono text-rose-300">${fmtNum(r.effective_sl)}<div class="text-[10px] text-slate-500">${r.trailing_sl ? `Trl ${fmtNum(r.trailing_sl)}` : slSub}</div></td>
+          <td class="px-3 py-3 text-right mono text-emerald-300">${r.scale_out_tp1 ? fmtNum(r.scale_out_tp1) : '—'} / ${r.tp ? fmtNum(r.tp) : '—'}${tpSub ? `<div class="text-[10px] text-slate-500">${tpSub}</div>` : ''}</td>
+          <td class="px-3 py-3 text-center"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${adv.cls}" title="${esc(adv.note)}">${esc(adv.label)}</span></td>
+          <td class="px-3 py-3 text-center"><span class="px-2 py-0.5 rounded-full text-[11px] font-bold ${thCls}">${esc(th)}</span></td>
+          <td class="px-3 py-3 text-slate-400 truncate max-w-xs" title="${esc(adv.note)}">${esc((r.reasons||[]).slice(0,2).join('; ') || adv.note)}</td>
+          <td class="px-3 py-3 text-right whitespace-nowrap" onclick="event.stopPropagation()">
+            <div class="inline-flex items-center gap-1.5">
+              <button onclick="prefillSell('${tkr}', ${Number(r.price||r.avg_price||0)}, ${Number(r.lots||1)})" class="px-2.5 py-1 rounded-md bg-rose-600/80 hover:bg-rose-500 text-white text-[11px] font-semibold cursor-pointer">Jual</button>
+              <button onclick="deletePortfolioPosition('${tkr}', ${Number(r.lots||0)})" class="px-2 py-1 rounded-md border border-slate-700 hover:border-rose-500/60 hover:bg-rose-500/15 text-slate-400 hover:text-rose-300 text-[11px] cursor-pointer" title="Hapus posisi salah input">Hapus</button>
+            </div>
+          </td>
+        </tr>`;
+      }).join('');
+      loadPortfolioBenchmark();
     }
-    tb.innerHTML = rows.map(r => {
-      const th = r.thesis || 'TETAP';
-      const thCls = th === 'GUGUR' ? 'bg-rose-500/20 text-rose-300' : (th === 'MELEMAH' ? 'bg-amber-500/20 text-amber-300' : (th === 'MENGUAT' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-300'));
-      const adv = computeSellAdvice(r);
-      return `<tr onclick="openCek('${esc(r.ticker)}')" class="hover:bg-slate-800/50 cursor-pointer">
-        <td class="px-4 py-3 mono font-bold text-white">${esc(r.ticker)}</td>
-        <td class="px-3 py-3 text-right mono">${r.lots}</td>
-        <td class="px-3 py-3 text-right mono">${fmtNum(r.avg_price)}</td>
-        <td class="px-3 py-3 text-right mono">${fmtNum(r.price)}</td>
-        <td class="px-3 py-3 text-right mono ${(r.pnl_net_pct||0)>=0?'text-emerald-400':'text-rose-400'}">${fmtPct(r.pnl_net_pct)}</td>
-        <td class="px-3 py-3 text-right mono text-rose-300">${fmtNum(r.effective_sl)}${r.trailing_sl ? `<div class="text-[10px] text-slate-500">Trl ${fmtNum(r.trailing_sl)}</div>` : ''}</td>
-        <td class="px-3 py-3 text-right mono text-emerald-300">${r.scale_out_tp1 ? fmtNum(r.scale_out_tp1) : '—'} / ${r.tp ? fmtNum(r.tp) : '—'}</td>
-        <td class="px-3 py-3 text-center"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${adv.cls}" title="${adv.note}">${adv.label}</span></td>
-        <td class="px-3 py-3 text-center"><span class="px-2 py-0.5 rounded-full text-[11px] font-bold ${thCls}">${th}</span></td>
-        <td class="px-3 py-3 text-slate-400 truncate max-w-xs" title="${adv.note}">${(r.reasons||[]).slice(0,2).join('; ') || adv.note}</td>
-        <td class="px-3 py-3 text-right" onclick="event.stopPropagation()">
-          <button onclick="prefillSell('${esc(r.ticker)}', ${r.price||r.avg_price||0}, ${r.lots||1})" class="px-2.5 py-1 rounded-md bg-rose-600/80 hover:bg-rose-500 text-white text-[11px] font-semibold cursor-pointer">Jual</button>
-        </td>
-      </tr>`;
-    }).join('');
-    loadPortfolioBenchmark();
+    loadPortfolioRecentExecs();
   } finally { setRefreshing(false); }
 }
 
@@ -983,10 +1221,12 @@ async function submitBulkImport() {
 }
 
 function prefillSell(ticker, price, lots) {
-  document.getElementById('tx-ticker').value = ticker;
+  const tEl = document.getElementById('tx-ticker');
+  tEl.value = ticker;
   document.getElementById('tx-side').value = 'JUAL';
   document.getElementById('tx-price').value = price || '';
   document.getElementById('tx-lots').value = lots || 1;
+  tEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
   document.getElementById('tx-notes').focus();
   showToast(`Form JUAL ${ticker} (${lots} lot) siap disimpan`);
 }
@@ -1008,7 +1248,7 @@ async function submitExecution() {
     document.getElementById('tx-ticker').value = '';
     document.getElementById('tx-price').value = '';
     document.getElementById('tx-lots').value = '';
-    loadPortfolio();
+    await Promise.all([loadPortfolio(), loadJurnal()]);
   } catch (e) { showToast(e.message); }
 }
 
@@ -1027,20 +1267,25 @@ async function loadJurnal() {
     const execs = d.execs || [];
     const tb = document.getElementById('jurnal-tbody');
     if (!execs.length) {
-      tb.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-slate-500">Belum ada eksekusi tercatat. Catat transaksi di tab Portofolio.</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="9" class="px-4 py-8 text-center text-slate-500">Belum ada eksekusi tercatat. Catat transaksi di tab Portofolio.</td></tr>`;
     } else {
       tb.innerHTML = execs.map(ex => {
         const val = (ex.exec_price || 0) * (ex.lots || 0) * 100;
         const isBuy = (ex.side || '').toUpperCase() === 'BELI';
-        return `<tr onclick="openCek('${ex.ticker}')" class="hover:bg-slate-800/50 cursor-pointer">
-          <td class="px-4 py-2.5 mono text-slate-400">${ex.trade_date || '—'}</td>
-          <td class="px-3 py-2.5 mono font-bold text-white">${ex.ticker}</td>
-          <td class="px-3 py-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-[11px] font-bold ${isBuy ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${ex.side}</span></td>
+        const tkr = esc(ex.ticker || '');
+        const sideTxt = esc(ex.side || '');
+        return `<tr onclick="openCek('${tkr}')" class="hover:bg-slate-800/50 cursor-pointer">
+          <td class="px-4 py-2.5 mono text-slate-400">${esc(ex.trade_date || '—')}</td>
+          <td class="px-3 py-2.5 mono font-bold text-white">${tkr}</td>
+          <td class="px-3 py-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-[11px] font-bold ${isBuy ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${sideTxt}</span></td>
           <td class="px-3 py-2.5 text-right mono">${ex.lots}</td>
           <td class="px-3 py-2.5 text-right mono">${fmtRp(ex.exec_price)}</td>
           <td class="px-3 py-2.5 text-right mono text-slate-200">${fmtRp(val)}</td>
           <td class="px-3 py-2.5 text-right mono ${(ex.net_pnl||0)>=0?'text-emerald-400':'text-rose-400'}">${ex.net_pnl != null ? fmtRp(ex.net_pnl) : '—'}</td>
-          <td class="px-3 py-2.5 text-slate-400">${ex.source || '—'}</td>
+          <td class="px-3 py-2.5 text-slate-400">${esc(ex.source || '—')}</td>
+          <td class="px-3 py-2.5 text-right" onclick="event.stopPropagation()">
+            <button onclick="deleteExecution(${Number(ex.id)}, '${tkr}', '${sideTxt}', ${Number(ex.lots || 0)}, ${Number(ex.exec_price || 0)})" class="px-2.5 py-1 rounded border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 text-[11px] font-semibold cursor-pointer" title="Hapus inputan salah catat">Hapus</button>
+          </td>
         </tr>`;
       }).join('');
     }
@@ -1264,7 +1509,135 @@ function _toneCls(tone) {
   return { text: 'text-slate-300', border: 'border-slate-700 bg-slate-900/70', pill: 'bg-slate-800 text-slate-300' };
 }
 
+async function renderCekHoldingAdvice(d) {
+  const box = document.getElementById('cek-holding-banner');
+  if (!box) return;
+  const tkr = (d?.ticker || '').toUpperCase();
+  if (!tkr) {
+    box.classList.add('hidden');
+    return;
+  }
+  let rows = state.portoRows || [];
+  if (!rows.length) {
+    try {
+      const p = await apiFetch(`/api/portfolio?chat_id=${encodeURIComponent(state.chatId)}`);
+      rows = p.rows || [];
+      state.portoRows = rows;
+    } catch (_) {}
+  }
+  const pos = rows.find(r => (r.ticker || '').toUpperCase() === tkr);
+  if (!pos) {
+    box.classList.add('hidden');
+    return;
+  }
+  const adv = computeSellAdvice(pos);
+  const pnlCls = (pos.pnl_net_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400';
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="space-y-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-[10px] uppercase tracking-wider font-bold text-emerald-300">Posisi Anda di Portofolio</span>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${adv.cls}">${esc(adv.label)}</span>
+          <span class="mono text-xs text-slate-300">${pos.lots} lot @ ${fmtRp(pos.avg_price)} · BEP ${fmtRp(adv.bep)}</span>
+          <span class="mono text-xs font-bold ${pnlCls}">PnL ${fmtPct(pos.pnl_net_pct)} (${fmtRp(pos.pnl_rp)})</span>
+        </div>
+        <div class="text-xs text-slate-200">${esc(adv.note)}</div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="switchTab('portofolio'); prefillSell('${esc(tkr)}', ${Number(pos.price || d.price || pos.avg_price || 0)}, ${Number(pos.lots || 1)})" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer">Catat Jual ${esc(tkr)}</button>
+      </div>
+    </div>`;
+}
+
+function renderProAnalyzer(d) {
+  const card = document.getElementById('cek-pro-card');
+  if (!card) return;
+  const pa = d?.pro_analysis;
+  if (!pa) {
+    card.classList.add('hidden');
+    return;
+  }
+  const st = pa.structure || {};
+  const cf = pa.confluence || {};
+  const sc = pa.scenarios || {};
+  const cc = _toneCls(cf.tone);
+  const stc = _toneCls(st.tone);
+  const scoreTxt = cf.score != null ? `${cf.score}/100` : '—';
+  const cnt = cf.counts || {};
+
+  const pillarsHtml = (cf.pillars || []).map(p => {
+    const pc = _toneCls(p.tone);
+    return `<div class="rounded-lg border p-2.5 ${pc.border}">
+      <div class="flex items-center justify-between gap-1">
+        <span class="text-[10px] uppercase text-slate-400 font-semibold">${esc(p.label)}</span>
+        <span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${pc.pill}">${esc(p.status)}</span>
+      </div>
+      <div class="text-[11px] text-slate-200 mt-1 leading-snug">${esc(p.detail)}</div>
+    </div>`;
+  }).join('');
+
+  const conflictsHtml = (cf.conflicts || []).length
+    ? `<div class="rounded-lg border border-amber-500/35 bg-amber-500/10 p-2.5 space-y-1">
+        <div class="text-[10px] uppercase tracking-wider font-bold text-amber-300">Konflik Sinyal Terdeteksi</div>
+        <ul class="list-disc pl-4 text-[11px] text-amber-100/90 space-y-0.5">${cf.conflicts.map(c => `<li>${esc(c)}</li>`).join('')}</ul>
+      </div>`
+    : '';
+
+  const scenHtml = sc.available && (sc.scenarios || []).length
+    ? `<div class="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+        ${sc.scenarios.map(s => {
+          const sCls = _toneCls(s.tone);
+          const pctTxt = `${s.pct >= 0 ? '+' : ''}${Number(s.pct).toFixed(1)}%`;
+          return `<div class="rounded-lg border p-2.5 ${sCls.border}">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[10px] uppercase font-bold ${sCls.text}">${esc(s.case)}</span>
+              <span class="mono text-[11px] font-bold ${sCls.text}">${esc(pctTxt)}</span>
+            </div>
+            <div class="mono text-base font-bold text-white mt-0.5">${fmtRp(s.price)}</div>
+            <div class="text-[11px] text-slate-300 mt-0.5 leading-snug">${esc(s.note)}</div>
+          </div>`;
+        }).join('')}
+      </div>`
+    : '';
+
+  const killHtml = (sc.kill_criteria || []).length
+    ? `<div class="rounded-lg border border-rose-500/25 bg-rose-500/5 p-2.5 space-y-1">
+        <div class="text-[10px] uppercase tracking-wider font-bold text-rose-300">Kill Criteria (Syarat Batal Tesis)</div>
+        <ul class="list-disc pl-4 text-[11px] text-slate-300 space-y-0.5">${sc.kill_criteria.map(k => `<li>${esc(k)}</li>`).join('')}</ul>
+      </div>`
+    : '';
+
+  card.classList.remove('hidden');
+  card.innerHTML = `
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <div class="text-[10px] uppercase tracking-wider font-bold text-indigo-300">Analisator Pro · Konfluensi 6 Pilar &amp; Struktur Pasar</div>
+        <div class="flex flex-wrap items-center gap-2 mt-1">
+          <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold ${cc.pill}">${esc(cf.conviction || '—')}</span>
+          <span class="mono text-xs font-bold text-white">Konfluensi ${esc(scoreTxt)}</span>
+          <span class="text-[11px] text-slate-400">(${cnt.bullish || 0} Bullish · ${cnt.neutral || 0} Netral · ${cnt.bearish || 0} Bearish dari ${cnt.valid || 0} pilar)</span>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-1.5">
+        <span class="px-2.5 py-1 rounded-lg border text-[11px] font-semibold ${stc.border} ${stc.text}">${esc(st.phase || '—')}</span>
+        ${st.squeeze ? `<span class="px-2 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 text-[11px] font-bold">VCP / SQUEEZE</span>` : ''}
+      </div>
+    </div>
+    <div class="text-[11px] text-slate-300 flex flex-wrap gap-x-4 gap-y-1">
+      <span><b class="text-slate-400">Struktur:</b> ${esc(st.structure || '—')}</span>
+      <span><b class="text-slate-400">Volatilitas:</b> ${esc(st.squeeze_label || '—')}</span>
+      <span><b class="text-slate-400">Breakout:</b> ${esc(st.breakout_state || '—')}</span>
+    </div>
+    <div class="grid grid-cols-2 lg:grid-cols-3 gap-2.5">${pillarsHtml}</div>
+    ${conflictsHtml}
+    ${scenHtml}
+    ${killHtml}`;
+}
+
 function renderSimpleAndFairValue(d) {
+  renderCekHoldingAdvice(d);
+  renderProAnalyzer(d);
   // 1. Ringkasan 4 Pilar Bahasa Sederhana
   const ss = d.simple_summary;
   const card = document.getElementById('cek-simple-card');

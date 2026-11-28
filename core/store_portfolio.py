@@ -568,6 +568,169 @@ def real_executions(chat_id: int | str, limit: int = 50) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def _rebuild_position_from_executions_conn(
+    conn,
+    chat_id: int | str,
+    ticker: str,
+    now: str,
+) -> tuple[int, float]:
+    """Hitung ulang real_positions & PnL realisasi JUAL dari sisa real_executions.
+
+    Mengembalikan (lots_tersisa, avg_price). Melempar ValueError jika urutan
+    sisa eksekusi tidak valid (mis. ada JUAL yang melebihi lot yang dimiliki).
+    """
+    from core import jurnal
+
+    cid = str(chat_id)
+    t = str(ticker).upper()
+    old_pos = conn.execute(
+        "SELECT sector FROM real_positions WHERE chat_id=? AND ticker=?",
+        (cid, t),
+    ).fetchone()
+    old_sector = old_pos["sector"] if old_pos else None
+
+    execs = conn.execute(
+        "SELECT id, side, lots, exec_price FROM real_executions"
+        " WHERE chat_id=? AND ticker=? ORDER BY id ASC",
+        (cid, t),
+    ).fetchall()
+
+    held = 0
+    avg = 0.0
+    for r in execs:
+        side = str(r["side"] or "").upper()
+        n = int(r["lots"] or 0)
+        p = float(r["exec_price"] or 0.0)
+        if side == "BELI":
+            new_held = held + n
+            avg = ((held * avg) + (n * p)) / new_held if new_held > 0 else 0.0
+            held = new_held
+        elif side == "JUAL":
+            if n > held:
+                raise ValueError(
+                    f"Tidak bisa menghapus BELI {t} ini karena ada transaksi JUAL "
+                    f"sesudahnya ({n} lot > sisa {held} lot). Hapus transaksi JUAL terkait lebih dulu."
+                )
+            gross_pnl, net_pnl, net_pnl_pct = jurnal.calc_realized_pnl(n, p, avg)
+            conn.execute(
+                "UPDATE real_executions SET avg_entry=?, gross_pnl=?, net_pnl=?, net_pnl_pct=?"
+                " WHERE id=?",
+                (round(avg, 4), gross_pnl, net_pnl, net_pnl_pct, int(r["id"])),
+            )
+            held -= n
+            if held <= 0:
+                held = 0
+                avg = 0.0
+
+    if held > 0:
+        conn.execute(
+            "INSERT INTO real_positions(chat_id, ticker, lots, avg_price, sector, updated_at)"
+            " VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(chat_id, ticker) DO UPDATE SET"
+            " lots=excluded.lots, avg_price=excluded.avg_price,"
+            " sector=COALESCE(real_positions.sector, excluded.sector),"
+            " updated_at=excluded.updated_at",
+            (cid, t, held, avg, old_sector, now),
+        )
+    else:
+        conn.execute(
+            "DELETE FROM real_positions WHERE chat_id=? AND ticker=?",
+            (cid, t),
+        )
+        conn.execute(
+            "DELETE FROM chat_settings WHERE chat_id=? AND key=?",
+            (cid, _store._thesis_key(t)),
+        )
+    return held, round(avg, 4)
+
+
+def delete_execution(chat_id: int | str, exec_id: int) -> dict:
+    """Hapus satu catatan eksekusi BELI/JUAL salah input & sinkronkan portofolio.
+
+    Seluruh perubahan dijalankan atomik: jika penghapusan BELI menyebabkan JUAL
+    sesudahnya kekurangan lot, transaksi dibatalkan (rollback) dengan pesan jelas.
+    """
+    cid = str(chat_id)
+    try:
+        eid = int(exec_id)
+    except (TypeError, ValueError):
+        raise ValueError("ID eksekusi tidak valid") from None
+    now = _stamp()
+    with _store._db() as conn:
+        row = conn.execute(
+            "SELECT id, ticker, side, lots, exec_price, trade_date, created_at"
+            " FROM real_executions WHERE chat_id=? AND id=?",
+            (cid, eid),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Catatan eksekusi #{eid} tidak ditemukan")
+        t = str(row["ticker"]).upper()
+        side = str(row["side"]).upper()
+        lots = int(row["lots"])
+        px = float(row["exec_price"])
+        created_at = str(row["created_at"] or "")
+
+        conn.execute("DELETE FROM real_executions WHERE chat_id=? AND id=?", (cid, eid))
+
+        # Hapus juga 1 baris pasangan di real_trades agar riwayat tetap sinkron.
+        tr_row = conn.execute(
+            "SELECT id FROM real_trades"
+            " WHERE chat_id=? AND ticker=? AND side=? AND lots=? AND ABS(price - ?) < 1e-6"
+            " ORDER BY CASE WHEN created_at=? THEN 0 ELSE 1 END, id DESC LIMIT 1",
+            (cid, t, side, lots, px, created_at),
+        ).fetchone()
+        if tr_row:
+            conn.execute("DELETE FROM real_trades WHERE id=?", (int(tr_row["id"]),))
+
+        lots_left, avg_price = _rebuild_position_from_executions_conn(conn, cid, t, now)
+        return {
+            "deleted_id": eid,
+            "ticker": t,
+            "side": side,
+            "lots": lots,
+            "exec_price": px,
+            "lots_left": lots_left,
+            "avg_price": avg_price,
+        }
+
+
+def delete_real_position(chat_id: int | str, ticker: str) -> dict:
+    """Hapus seluruh posisi terbuka & riwayat eksekusi satu emiten (salah input)."""
+    cid = str(chat_id)
+    t = str(ticker or "").strip().upper()
+    if not t:
+        raise ValueError("Kode saham tidak boleh kosong")
+    with _store._db() as conn:
+        cur_pos = conn.execute(
+            "DELETE FROM real_positions WHERE chat_id=? AND ticker=?",
+            (cid, t),
+        )
+        cur_exec = conn.execute(
+            "DELETE FROM real_executions WHERE chat_id=? AND ticker=?",
+            (cid, t),
+        )
+        cur_tr = conn.execute(
+            "DELETE FROM real_trades WHERE chat_id=? AND ticker=?",
+            (cid, t),
+        )
+        conn.execute(
+            "DELETE FROM chat_settings WHERE chat_id=? AND key=?",
+            (cid, _store._thesis_key(t)),
+        )
+        conn.execute(
+            "DELETE FROM signal_context WHERE chat_id=? AND ticker=?",
+            (cid, t),
+        )
+        if cur_pos.rowcount == 0 and cur_exec.rowcount == 0 and cur_tr.rowcount == 0:
+            raise KeyError(f"Tidak ada posisi atau catatan eksekusi untuk {t}")
+        return {
+            "ticker": t,
+            "deleted_positions": int(cur_pos.rowcount),
+            "deleted_executions": int(cur_exec.rowcount),
+            "deleted_trades": int(cur_tr.rowcount),
+        }
+
+
 def open_execution_lots(chat_id: int | str, ticker: str) -> int:
     """Sisa lot yang pernah dicatat di real_executions (BELI minus JUAL)."""
     with _store._db() as conn:

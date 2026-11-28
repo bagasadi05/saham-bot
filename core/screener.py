@@ -18,6 +18,7 @@ Batas kejujuran:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime as dt
 import logging
 import math
@@ -31,8 +32,9 @@ from core import analysis, data as datamod, data_quality, marketcal, pricing, re
 log = logging.getLogger("sahambuddy.screener")
 
 PERIOD = os.getenv("FULL_SCAN_PERIOD", "1y")
-CHUNK = max(10, int(os.getenv("FULL_SCAN_CHUNK", "80") or 80))
-PAUSE = float(os.getenv("FULL_SCAN_PAUSE", "1.0") or 0)
+CHUNK = max(10, int(os.getenv("FULL_SCAN_CHUNK", "100") or 100))
+PAUSE = float(os.getenv("FULL_SCAN_PAUSE", "0.25") or 0)
+WORKERS = max(1, min(6, int(os.getenv("FULL_SCAN_WORKERS", "3") or 3)))
 MIN_BARS = 30            # bar harian minimum agar indikator masuk akal
 MAX_STALE_DAYS = max(
     1,
@@ -89,43 +91,73 @@ def _download_chunk(symbols: list[str], period: str) -> pd.DataFrame | None:
     )
 
 
+def _fetch_one_batch(start: int, batch: list[str], period: str, retries: int) -> dict[str, pd.DataFrame]:
+    raw = None
+    for attempt in range(retries + 1):
+        try:
+            raw = _download_chunk(batch, period)
+            break
+        except Exception as exc:  # rate limit / jaringan
+            log.warning("batch %d-%d gagal (%s), coba lagi %d/%d",
+                        start, start + len(batch), type(exc).__name__,
+                        attempt + 1, retries)
+            if attempt < retries:
+                time.sleep(2.0 * (attempt + 1))
+    out: dict[str, pd.DataFrame] = {}
+    if raw is not None:
+        for sym in batch:
+            sub = _slice(raw, f"{sym}.JK")
+            if sub is not None and len(sub) >= MIN_BARS:
+                out[sym] = sub
+    return out
+
+
 def fetch_frames(symbols: list[str], period: str = PERIOD, chunk: int = CHUNK,
                  pause: float = PAUSE, retries: int = RETRIES,
-                 progress=None) -> dict[str, pd.DataFrame]:
-    """Unduh harga harian semua emiten secara borongan.
+                 progress=None, workers: int = WORKERS) -> dict[str, pd.DataFrame]:
+    """Unduh harga harian semua emiten secara borongan (paralel ringan per batch).
 
     Return {kode: DataFrame(open/high/low/close/volume)}. Emiten yang gagal
     atau datanya < MIN_BARS tidak dimasukkan — pemanggil melaporkannya.
     """
     frames: dict[str, pd.DataFrame] = {}
     total = len(symbols)
+    if total == 0:
+        return frames
+    batches = [(start, symbols[start:start + chunk]) for start in range(0, total, chunk)]
     done = 0
-    for start in range(0, total, chunk):
-        batch = symbols[start:start + chunk]
-        raw = None
-        for attempt in range(retries + 1):
+    max_w = max(1, min(int(workers or 1), len(batches)))
+
+    if max_w <= 1:
+        for idx, (start, batch) in enumerate(batches):
+            frames.update(_fetch_one_batch(start, batch, period, retries))
+            done += len(batch)
+            if progress:
+                try:
+                    progress(done, total, len(frames))
+                except Exception:
+                    pass
+            if pause > 0 and idx + 1 < len(batches):
+                time.sleep(pause)
+        return frames
+
+    with ThreadPoolExecutor(max_workers=max_w) as pool:
+        fut_to_len = {
+            pool.submit(_fetch_one_batch, start, batch, period, retries): len(batch)
+            for start, batch in batches
+        }
+        for fut in as_completed(fut_to_len):
+            batch_len = fut_to_len[fut]
             try:
-                raw = _download_chunk(batch, period)
-                break
-            except Exception as exc:  # rate limit / jaringan
-                log.warning("batch %d-%d gagal (%s), coba lagi %d/%d",
-                            start, start + len(batch), type(exc).__name__,
-                            attempt + 1, retries)
-                if attempt < retries:
-                    time.sleep(2.0 * (attempt + 1))
-        if raw is not None:
-            for sym in batch:
-                sub = _slice(raw, f"{sym}.JK")
-                if sub is not None and len(sub) >= MIN_BARS:
-                    frames[sym] = sub
-        done += len(batch)
-        if progress:
-            try:
-                progress(done, total, len(frames))
-            except Exception:
-                pass
-        if pause > 0 and start + chunk < total:
-            time.sleep(pause)
+                frames.update(fut.result())
+            except Exception as exc:
+                log.warning("worker batch gagal: %s", type(exc).__name__)
+            done += batch_len
+            if progress:
+                try:
+                    progress(done, total, len(frames))
+                except Exception:
+                    pass
     return frames
 
 

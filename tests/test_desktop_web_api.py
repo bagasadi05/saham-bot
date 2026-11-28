@@ -573,3 +573,139 @@ def test_scan_lock_tersinkronisasi_antara_api_dan_core(tmp_store, monkeypatch):
     st_final = client.get("/api/scan/status").json()
     assert st_final["running"] is False
     assert st_final["last_result"]["scanned"] == 12
+
+
+def test_scan_stream_sse_dan_aset_vendor_lokal(tmp_store):
+    """SSE /api/scan/stream mengirim event status dan aset vendor statis tersedia offline."""
+    from core import desktop_monitor as dm
+
+    dm.finish_market_scan(result={"scanned": 42})
+    client = TestClient(web_api.app)
+
+    with client.stream("GET", "/api/scan/stream") as resp:
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "")
+        body = "".join(resp.iter_text())
+    assert "event: status" in body
+    assert '"running": false' in body
+    assert '"scanned": 42' in body
+
+    for fname in (
+        "tailwindcss.js",
+        "lucide.min.js",
+        "lightweight-charts.standalone.production.js",
+        "qrcode.min.js",
+    ):
+        r = client.get(f"/static/vendor/{fname}")
+        assert r.status_code == 200, f"Vendor {fname} gagal disajikan"
+        assert len(r.content) > 1000
+
+
+def test_scan_mode_cepat_dan_progres_paralel(tmp_store, monkeypatch):
+    """POST /api/scan?mode=fast memakai Papan Utama, melacak progres live, & fetch_frames paralel."""
+    import time
+    import numpy as np
+    from core import desktop_monitor as dm, screener, universe
+    from tests.conftest import make_prices
+
+    dm.finish_market_scan()
+    main_codes = universe.main_board_codes()
+    assert len(main_codes) > 100
+    assert len(main_codes) < len(universe.codes())
+
+    captured: dict = {}
+
+    def _fake_scan(force=True, symbols=None, progress=None):
+        captured["symbols"] = list(symbols or [])
+        if progress:
+            progress(len(captured["symbols"]) // 2, len(captured["symbols"]), 10)
+            progress(len(captured["symbols"]), len(captured["symbols"]), 20)
+        return {"scanned": len(captured["symbols"]), "beli": 3}
+
+    monkeypatch.setattr(dm.screener, "scan", _fake_scan)
+    client = TestClient(web_api.app)
+
+    r = client.post("/api/scan?mode=fast")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "fast"
+    assert body["total"] == len(main_codes)
+
+    for _ in range(50):
+        st = client.get("/api/scan/status").json()
+        if not st["running"]:
+            break
+        time.sleep(0.02)
+
+    assert captured["symbols"] == main_codes
+    st_end = client.get("/api/scan/status").json()
+    assert st_end["running"] is False
+    assert st_end["phase"] == "done"
+    assert st_end["pct"] == 100.0
+    assert st_end["ok"] == 20
+
+    # Uji fetch_frames paralel (workers=2) secara offline
+    df_syn = make_prices(np.linspace(1000, 1200, 40))
+
+    def _fake_dl(batch, period):
+        import pandas as pd
+        return pd.concat({f"{s}.JK": df_syn for s in batch}, axis=1)
+
+    monkeypatch.setattr(screener, "_download_chunk", _fake_dl)
+    ticks: list[tuple[int, int, int]] = []
+    out = screener.fetch_frames(
+        ["BBCA", "BBRI", "BMRI", "TLKM"], chunk=2, pause=0, workers=2,
+        progress=lambda d, t, o: ticks.append((d, t, o)),
+    )
+    assert set(out.keys()) == {"BBCA", "BBRI", "BMRI", "TLKM"}
+    assert ticks[-1] == (4, 4, 4)
+
+
+def test_hapus_inputan_beli_jual_dan_posisi_sinkron(tmp_store):
+    """DELETE /api/execution/{id} & DELETE /api/portfolio/{ticker} menjaga integritas ledger."""
+    from core import store_portfolio
+
+    client = TestClient(web_api.app)
+    cid = "hapus-test"
+
+    # 1. Catat BELI 10 lot @ 1000, lalu BELI lagi 10 lot @ 1200 (avg=1100, total=20 lot)
+    r1 = client.post("/api/execution", json={"chat_id": cid, "ticker": "BBCA", "side": "BELI", "lots": 10, "price": 1000})
+    r2 = client.post("/api/execution", json={"chat_id": cid, "ticker": "BBCA", "side": "BELI", "lots": 10, "price": 1200})
+    assert r1.status_code == 200 and r2.status_code == 200
+
+    # Catat JUAL 15 lot @ 1300 (sisa 5 lot @ 1100)
+    r3 = client.post("/api/execution", json={"chat_id": cid, "ticker": "BBCA", "side": "JUAL", "lots": 15, "price": 1300})
+    assert r3.status_code == 200
+
+    execs = store_portfolio.real_executions(cid, limit=10)
+    assert len(execs) == 3
+    sell_id = next(e["id"] for e in execs if e["side"] == "JUAL")
+    buy2_id = next(e["id"] for e in execs if e["side"] == "BELI" and e["exec_price"] == 1200)
+
+    # 2. Hapus BELI kedua saat masih ada JUAL 15 lot -> harus ditolak (400) karena 15 > 10 lot tersisa
+    r_bad = client.delete(f"/api/execution/{buy2_id}?chat_id={cid}")
+    assert r_bad.status_code == 400
+    assert len(store_portfolio.real_executions(cid, limit=10)) == 3
+
+    # 3. Hapus JUAL salah input -> posisi kembali pulih ke 20 lot @ avg 1100
+    r_del_sell = client.delete(f"/api/execution/{sell_id}?chat_id={cid}")
+    assert r_del_sell.status_code == 200
+    body_sell = r_del_sell.json()
+    assert body_sell["result"]["lots_left"] == 20
+    assert body_sell["result"]["avg_price"] == 1100.0
+
+    # 4. Sekarang hapus BELI kedua (10 lot @ 1200) -> sisa 10 lot @ avg 1000
+    r_del_buy = client.delete(f"/api/execution/{buy2_id}?chat_id={cid}")
+    assert r_del_buy.status_code == 200
+    assert r_del_buy.json()["result"]["lots_left"] == 10
+    assert r_del_buy.json()["result"]["avg_price"] == 1000.0
+
+    # 5. Hapus seluruh posisi & riwayat BBCA via DELETE /api/portfolio/BBCA
+    r_del_pos = client.delete(f"/api/portfolio/BBCA?chat_id={cid}")
+    assert r_del_pos.status_code == 200
+    assert store_portfolio.real_positions(cid) == []
+    assert store_portfolio.real_executions(cid, limit=10) == []
+
+    # 6. Hapus lagi -> 404
+    assert client.delete(f"/api/portfolio/BBCA?chat_id={cid}").status_code == 404
+    assert client.delete(f"/api/execution/999999?chat_id={cid}").status_code == 404

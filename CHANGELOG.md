@@ -17,6 +17,20 @@ Rangkaian di bawah: **25 commit**, `e93e2d0` … `202ec2b` (2026-11-12).
   - **Whitelist tool read-only di bridge Stockbit**: `ALLOWED_TOOLS = {quote, orderbook, bandar_detector, keystats}`; `call_tool` menolak nama lain (defense-in-depth agar tidak pernah ada jalur order).
   - Risiko supply-chain/ToS paket eksternal `stockbit-mcp` dicatat di `docs/KENDALA.md`.
 
+## [Unreleased] — 2026-11-28
+
+- **Analisator Pro Multi-Faktor (`core/pro_analyzer.py`, `desktop_web/api.py`, `desktop_web/static/`)**:
+  - Deteksi struktur pasar (pivot fractal HH/HL vs LH/LL), pola kontraksi volatilitas (**VCP / Bollinger Squeeze**), fase pasar (*Markup*, *Konsolidasi VCP*, *Akumulasi*, *Pullback*, *Markdown*), dan konfirmasi volume breakout.
+  - Matriks konfluensi **6 pilar independen** (Tren Harian, Tren Mingguan MTF, Aliran Dana CMF20/RSI, Fundamental/Forensik 4Q, Valuasi/MoS, Sentimen/Rezim IHSG) dengan skor `0–100` & deteksi konflik sinyal eksplisit.
+  - Proyeksi 3 skenario deterministik (**Bear / Base / Bull**) dibulatkan ke fraksi tick BEI beserta daftar **Kill Criteria** objektif, terintegrasi langsung di kartu Analisator Pro tab Cek Emiten.
+- **Hapus Inputan BELI/JUAL Salah Catat & Penyempurnaan Saran Jual-Beli (`core/store_portfolio.py`, `desktop_web/`, `handlers/jurnal.py`, `core/jurnal.py`)**:
+  - `store_portfolio.delete_execution` & `delete_real_position`: penghapusan atomik dengan hitung ulang otomatis `real_positions` (lot & harga rata-rata) serta `net_pnl` transaksi JUAL tersisa, dilengkapi proteksi *rollback* bila penghapusan BELI melanggar urutan JUAL sesudahnya.
+  - Endpoint `DELETE /api/execution/{exec_id}` & `DELETE /api/portfolio/{ticker}`, tombol Hapus di Portofolio (termasuk panel Riwayat Inputan Terakhir) dan Jurnal, serta perintah Telegram `/jurnal hapus <id>` (dengan `#ID` di `/jurnal riwayat`).
+  - Panel Ringkasan Saran Aksi Portofolio (4 prioritas), tampilan BEP (+0,40% fee BEI) & jarak % SL/TP, serta banner **Posisi Anda & Saran Jual** di Cek Emiten saat memeriksa saham yang sedang dimiliki.
+- **Percepatan Scan Pasar & Offline-Ready Desktop Modern (`core/screener.py`, `core/universe.py`, `core/desktop_monitor.py`, `desktop_web/`)**:
+  - Unduhan batch paralel `ThreadPoolExecutor` (`WORKERS=3`, `CHUNK=100`, `PAUSE=0.25`), mode **Scan Cepat Papan Utama (~293 emiten)** via `POST /api/scan?mode=fast`, dan **SSE Live Progress** `GET /api/scan/stream` (`done/total/ok/pct/phase`) lengkap dengan *progress bar* di UI.
+  - Self-host aset frontend (`tailwindcss.js`, `lucide.min.js`, `lightweight-charts`, `qrcode.min.js`) di `desktop_web/static/vendor/`, sinkronisasi `config` (`.env`) & status fitur di `/api/health`, serta isolasi `SAHAMBOT_LOCAL_ONLY=1` di `tests/conftest.py`.
+
 ## [Unreleased] — 2026-11-26
 
 - **Perbaikan robustness aplikasi Desktop hasil fuzz audit** (10 crash ditemukan & diperbaiki, 2 tes baru → total **983 tes**):

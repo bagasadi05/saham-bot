@@ -24,7 +24,8 @@ _JURNAL_USAGE = (
     "<code>/jurnal</code> — slippage, win rate &amp; profit factor (asli vs paper)\n"
     "<code>/jurnal beli BBCA 5 9050 [sinyal]</code> — catat beli manual\n"
     "<code>/jurnal jual BBCA 5 9500 [sinyal]</code> — catat jual &amp; realisasi\n"
-    "<code>/jurnal riwayat</code> — 15 eksekusi terakhir beserta slippage\n\n"
+    "<code>/jurnal riwayat</code> — 15 eksekusi terakhir beserta ID &amp; slippage\n"
+    "<code>/jurnal hapus 12</code> — hapus inputan BELI/JUAL #12 jika salah catat\n\n"
     "<i>Atau ketuk tombol 📝 Sudah beli di Stockbit setelah /rencana, /cek, "
     "/beli, atau /sinyal KODE. Bot tidak pernah login/order di Stockbit.</i>"
 )
@@ -341,6 +342,31 @@ async def do_jurnal(update: Update, args: list[str], deps,
             msg,
             jurnalmod.format_journal_history(execs),
             reply_markup=_riwayat_jurnal_markup(),
+        )
+        return
+
+    if sub in ("hapus", "del", "delete", "rm"):
+        raw_id = (args[1] if len(args) > 1 else "").lstrip("#").strip()
+        if not raw_id.isdigit():
+            await msg.reply_text(
+                "Format: <code>/jurnal hapus &lt;id&gt;</code> (cek ID di <code>/jurnal riwayat</code>).",
+                parse_mode=ParseMode.HTML, reply_markup=j_kb,
+            )
+            return
+        try:
+            res = await asyncio.to_thread(store.delete_execution, chat_id, int(raw_id))
+        except (KeyError, ValueError) as exc:
+            await msg.reply_text(
+                f"❌ Gagal menghapus: {esc(str(exc).strip(chr(39) + chr(34)))}",
+                parse_mode=ParseMode.HTML, reply_markup=j_kb,
+            )
+            return
+        await msg.reply_text(
+            f"🗑️ Inputan <b>{esc(res['side'])} {esc(res['ticker'])}</b> "
+            f"{int(res['lots'])} lot @ Rp{int(round(res['exec_price'])):,} (#{int(res['deleted_id'])}) dihapus.\n"
+            f"Posisi tersisa: <b>{int(res['lots_left'])} lot</b>"
+            + (f" (avg Rp{int(round(res['avg_price'])):,})" if res["lots_left"] > 0 else " (posisi ditutup)") + ".",
+            parse_mode=ParseMode.HTML, reply_markup=j_kb,
         )
         return
 

@@ -21,8 +21,9 @@ import socket
 import threading
 from typing import Any
 
+import config  # noqa: F401 — muat .env saat dijalankan langsung via uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import pandas as pd
 from pydantic import BaseModel
@@ -35,6 +36,8 @@ from core import (
     data as datamod,
     desktop_helpers as dh,
     desktop_monitor as dm,
+    pro_analyzer,
+    store_portfolio,
     store_profile,
     store_watchlist,
     syariah as syariahmod,
@@ -520,10 +523,17 @@ async def unlock_mobile(body: PinPayload, request: Request) -> JSONResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
+    vendor_ok = all(
+        (STATIC_DIR / "vendor" / f).is_file()
+        for f in ("tailwindcss.js", "lucide.min.js", "lightweight-charts.standalone.production.js", "qrcode.min.js")
+    )
     return {
         "ok": True,
         "app": "sahambot-desktop",
         "stockbit_mcp": stockbit_bridge.is_enabled(),
+        "eodhd_fallback": bool(os.environ.get("EODHD_API_KEY", "").strip()),
+        "vendor_offline_ready": vendor_ok,
+        "pro_analyzer": True,
     }
 
 
@@ -840,36 +850,91 @@ async def get_sinyal(
         search=q or None,
         limit=max(10, min(500, limit)),
     )
+    for row in (res or {}).get("rows") or []:
+        prec = pro_analyzer.score_candidate_precision(row)
+        row["precision_score"] = prec["score"]
+        row["precision_grade"] = prec["grade"]
+        row["precision_tone"] = prec["tone"]
+        row["precision_note"] = prec["note"]
     return _json_safe(res)
 
 
 @app.post("/api/scan")
-async def trigger_scan() -> dict[str, Any]:
+async def trigger_scan(mode: str = Query("full")) -> dict[str, Any]:
+    clean_mode = "fast" if str(mode or "").strip().lower() == "fast" else "full"
+    target_syms = universe.main_board_codes() if clean_mode == "fast" else None
+    est_total = len(target_syms) if target_syms is not None else len(universe.codes())
     started_at = dt.datetime.now(dt.timezone.utc).timestamp()
-    acquired, st = dm.try_begin_market_scan(started_at=started_at)
+    acquired, st = dm.try_begin_market_scan(started_at=started_at, mode=clean_mode, total=est_total)
     if not acquired:
         return {
             "ok": True,
             "running": True,
+            "mode": st.get("mode", clean_mode),
+            "total": st.get("total", est_total),
             "started_at": st.get("started_at"),
             "message": "Scan BEI sedang berjalan.",
         }
 
     def _run() -> None:
         try:
-            res = dm.run_full_market_scan(force=True, _lock_acquired=True)
+            res = dm.run_full_market_scan(
+                force=True,
+                _lock_acquired=True,
+                symbols=target_syms,
+                mode=clean_mode,
+            )
             with dm._SCAN_LOCK:
                 dm._SCAN_STATE["last_result"] = _json_safe(res)
         except Exception as exc:
             dm.finish_market_scan(error=str(exc))
 
     threading.Thread(target=_run, daemon=True).start()
-    return {"ok": True, "running": True, "started_at": started_at, "message": "Scan ~944 emiten dimulai di background."}
+    label = (
+        f"Scan cepat {est_total} emiten Papan Utama dimulai…"
+        if clean_mode == "fast"
+        else f"Scan penuh ~{est_total} emiten BEI dimulai (3 batch paralel)…"
+    )
+    return {
+        "ok": True,
+        "running": True,
+        "mode": clean_mode,
+        "total": est_total,
+        "started_at": started_at,
+        "message": label,
+    }
 
 
 @app.get("/api/scan/status")
 async def get_scan_status() -> dict[str, Any]:
     return _json_safe(dm.get_scan_state())
+
+
+_SCAN_STREAM_INTERVAL_S = 0.8
+
+
+@app.get("/api/scan/stream")
+async def stream_scan_status(request: Request) -> StreamingResponse:
+    """Server-Sent Events (SSE) untuk progres /scan secara live tanpa polling."""
+    async def _gen():
+        while True:
+            if await request.is_disconnected():
+                break
+            st = _json_safe(dm.get_scan_state())
+            yield f"event: status\ndata: {json.dumps(st, ensure_ascii=False)}\n\n"
+            if not st.get("running"):
+                break
+            await asyncio.sleep(_SCAN_STREAM_INTERVAL_S)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/paket")
@@ -973,6 +1038,50 @@ async def post_execution(body: ExecutionPayload) -> dict[str, Any]:
     return _json_safe({
         "ok": True,
         "message": f"Eksekusi {body.side.upper()} {body.ticker.upper()} {body.lots} lot @ {dh._fmt_rp(body.price)} tersimpan.",
+        "result": res,
+    })
+
+
+@app.delete("/api/execution/{exec_id}")
+async def remove_execution(
+    exec_id: int,
+    chat_id: str = Query(dm.DEFAULT_PROFILE_ID),
+) -> dict[str, Any]:
+    cid = chat_id.strip() or dm.DEFAULT_PROFILE_ID
+    try:
+        res = await asyncio.to_thread(store_portfolio.delete_execution, cid, exec_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'\"")) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _json_safe({
+        "ok": True,
+        "message": (
+            f"Inputan {res['side']} {res['ticker']} {res['lots']} lot "
+            f"@ {dh._fmt_rp(res['exec_price'])} dihapus (sisa {res['lots_left']} lot)."
+        ),
+        "result": res,
+    })
+
+
+@app.delete("/api/portfolio/{ticker}")
+async def remove_portfolio_position(
+    ticker: str,
+    chat_id: str = Query(dm.DEFAULT_PROFILE_ID),
+) -> dict[str, Any]:
+    cid = chat_id.strip() or dm.DEFAULT_PROFILE_ID
+    sym = ticker.strip().upper()
+    try:
+        res = await asyncio.to_thread(store_portfolio.delete_real_position, cid, sym)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'\"")) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _json_safe({
+        "ok": True,
+        "message": (
+            f"Posisi & {res['deleted_executions']} riwayat eksekusi {sym} dihapus."
+        ),
         "result": res,
     })
 
@@ -1183,6 +1292,7 @@ async def get_cek(
         detail.get("sector"),
     )
     payload["fair_value"] = _json_safe(fv)
+    payload["pro_analysis"] = _json_safe(pro_analyzer.analyze_pro(detail, fair_value=fv))
     payload["simple_summary"] = _json_safe(analysis_enhancer.build_simple_summary(detail, fv))
     news_corp = analysis_enhancer.detect_corp_action_news(detail.get("news"))
     payload["news_corp_alerts"] = _json_safe(news_corp)

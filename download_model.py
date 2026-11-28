@@ -8,7 +8,12 @@ import time
 
 MODEL_REVISION = os.environ.get("SAHAMBOT_MODEL_REVISION", "").strip() or "main"
 BASE = f"https://huggingface.co/will702/indo-roBERTa-financial-sentiment-v2/resolve/{MODEL_REVISION}"
-DEST = os.environ.get("SAHAMBOT_LOCAL_MODEL", "/app/models/indo-fin-roberta")
+_DEFAULT_DEST = (
+    "/app/models/indo-fin-roberta"
+    if os.path.isdir("/app")
+    else os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "indo-fin-roberta")
+)
+DEST = os.environ.get("SAHAMBOT_LOCAL_MODEL", _DEFAULT_DEST)
 CHUNK = int(os.environ.get("DOWNLOAD_CHUNK", "4")) * 1024 * 1024
 FILES = ["config.json", "tokenizer_config.json", "special_tokens_map.json",
          "tokenizer.json", "vocab.json", "merges.txt", "model.safetensors"]

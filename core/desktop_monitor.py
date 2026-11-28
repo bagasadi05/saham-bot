@@ -1012,6 +1012,12 @@ _SCAN_LOCK = threading.Lock()
 _SCAN_STATE: dict[str, Any] = {
     "running": False,
     "started_at": None,
+    "mode": "full",
+    "phase": "idle",
+    "done": 0,
+    "total": 0,
+    "ok": 0,
+    "pct": 0.0,
     "last_result": None,
     "error": None,
 }
@@ -1023,14 +1029,55 @@ def get_scan_state() -> dict[str, Any]:
         return dict(_SCAN_STATE)
 
 
-def try_begin_market_scan(started_at: float | None = None) -> tuple[bool, dict[str, Any]]:
+def try_begin_market_scan(
+    started_at: float | None = None,
+    *,
+    mode: str = "full",
+    total: int = 0,
+) -> tuple[bool, dict[str, Any]]:
     """Klaim lock scan pasar secara atomik; False jika scan lain sedang berjalan."""
     ts = float(started_at) if started_at is not None else time.time()
+    clean_mode = "fast" if str(mode or "").strip().lower() == "fast" else "full"
     with _SCAN_LOCK:
         if _SCAN_STATE["running"]:
             return False, dict(_SCAN_STATE)
-        _SCAN_STATE.update({"running": True, "started_at": ts, "error": None})
+        _SCAN_STATE.update({
+            "running": True,
+            "started_at": ts,
+            "mode": clean_mode,
+            "phase": "downloading",
+            "done": 0,
+            "total": max(0, int(total or 0)),
+            "ok": 0,
+            "pct": 0.0,
+            "error": None,
+        })
         return True, dict(_SCAN_STATE)
+
+
+def update_market_scan_progress(
+    done: int,
+    total: int,
+    ok: int,
+    *,
+    phase: str | None = None,
+) -> dict[str, Any]:
+    """Perbarui progres live scan pasar (done/total/ok/pct/phase) secara thread-safe."""
+    tot = max(0, int(total or 0))
+    dn = max(0, min(tot, int(done or 0))) if tot > 0 else max(0, int(done or 0))
+    ok_n = max(0, int(ok or 0))
+    # 0-85% untuk fase unduh, 85-99% saat evaluasi indikator
+    raw_pct = (dn / tot * 85.0) if tot > 0 else 0.0
+    cur_phase = phase or ("evaluating" if tot > 0 and dn >= tot else "downloading")
+    if cur_phase == "evaluating":
+        raw_pct = max(raw_pct, 90.0)
+    with _SCAN_LOCK:
+        _SCAN_STATE["done"] = dn
+        _SCAN_STATE["total"] = tot
+        _SCAN_STATE["ok"] = ok_n
+        _SCAN_STATE["pct"] = round(min(99.0, raw_pct), 1)
+        _SCAN_STATE["phase"] = cur_phase
+        return dict(_SCAN_STATE)
 
 
 def finish_market_scan(
@@ -1044,8 +1091,13 @@ def finish_market_scan(
         _SCAN_STATE["started_at"] = None
         if error is not None:
             _SCAN_STATE["error"] = str(error)
+            _SCAN_STATE["phase"] = "error"
         else:
             _SCAN_STATE["error"] = None
+            _SCAN_STATE["phase"] = "done"
+            if _SCAN_STATE.get("total", 0) > 0:
+                _SCAN_STATE["done"] = _SCAN_STATE["total"]
+                _SCAN_STATE["pct"] = 100.0
             if result is not None:
                 _SCAN_STATE["last_result"] = result
         return dict(_SCAN_STATE)
@@ -1056,14 +1108,23 @@ def run_full_market_scan(
     force: bool = True,
     screener_mod=screener,
     _lock_acquired: bool = False,
+    symbols: list[str] | None = None,
+    mode: str = "full",
 ) -> dict[str, Any]:
-    """Jalankan scan penuh seluruh pasar BEI (~944 emiten) ke snapshot SQLite.
+    """Jalankan scan pasar BEI (penuh ~944 atau cepat Papan Utama) ke snapshot SQLite.
 
     Tersinkronisasi lewat ``_SCAN_LOCK`` agar pemanggilan paralel dari UI desktop
     maupun ``POST /api/scan`` tidak menjalankan dua scan pasar sekaligus.
     """
+    import inspect
+
+    clean_mode = "fast" if str(mode or "").strip().lower() == "fast" else "full"
+    target_syms = list(symbols) if symbols is not None else (
+        universe.main_board_codes() if clean_mode == "fast" else None
+    )
+    est_total = len(target_syms) if target_syms is not None else len(universe.codes())
     if not _lock_acquired:
-        ok, st = try_begin_market_scan()
+        ok, st = try_begin_market_scan(mode=clean_mode, total=est_total)
         if not ok:
             return {
                 "ok": False,
@@ -1071,8 +1132,27 @@ def run_full_market_scan(
                 "started_at": st.get("started_at"),
                 "reason": "Scan BEI sedang berjalan.",
             }
+    else:
+        with _SCAN_LOCK:
+            if _SCAN_STATE.get("total", 0) <= 0 and est_total > 0:
+                _SCAN_STATE["total"] = est_total
+
+    def _on_progress(done: int, total: int, ok_count: int) -> None:
+        update_market_scan_progress(done, total, ok_count)
+
     try:
-        res = screener_mod.scan(force=force)
+        scan_fn = screener_mod.scan
+        kwargs: dict[str, Any] = {"force": force}
+        try:
+            sig = inspect.signature(scan_fn)
+            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if has_var_kw or "progress" in sig.parameters:
+                kwargs["progress"] = _on_progress
+            if target_syms is not None and (has_var_kw or "symbols" in sig.parameters):
+                kwargs["symbols"] = target_syms
+        except (TypeError, ValueError):
+            pass
+        res = scan_fn(**kwargs)
     except Exception as exc:
         finish_market_scan(error=str(exc))
         raise
@@ -1132,7 +1212,19 @@ def build_paket_picks(
             },
         )
         if item is not None:
+            from core import pro_analyzer as _pa
+            prec = _pa.score_candidate_precision({**c, **item}, fund=fund, nsent=nsent)
+            item["precision_score"] = prec["score"]
+            item["precision_grade"] = prec["grade"]
+            item["precision_tone"] = prec["tone"]
+            item["precision_note"] = prec["note"]
             enriched.append(item)
+
+    # Prioritaskan kandidat dengan Skor Presisi tertinggi (Grade A+/A dulu)
+    enriched.sort(
+        key=lambda x: (float(x.get("precision_score") or 0.0), float(x.get("rel_pct") or 0.0)),
+        reverse=True,
+    )
 
     final = rencana_mod.finalize(
         enriched,

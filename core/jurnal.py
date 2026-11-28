@@ -323,8 +323,9 @@ def format_journal_history(execs: list[dict]) -> str:
         side = str(row.get("side") or "?")
         icon = "🟢" if side == "BELI" else "🔴"
         ticker = esc(row.get("ticker") or "?")
+        id_tag = f"<code>#{int(row['id'])}</code> " if row.get("id") is not None else ""
         line = (
-            f"{icon} {esc(row.get('trade_date') or '')} · <b>{ticker}</b> "
+            f"{icon} {id_tag}{esc(row.get('trade_date') or '')} · <b>{ticker}</b> "
             f"{side} {int(row.get('lots') or 0)} lot @ {rupiah(row.get('exec_price'))}"
         )
         if row.get("source") and row.get("source") != "manual":
@@ -338,7 +339,11 @@ def format_journal_history(execs: list[dict]) -> str:
                 f"   Realisasi neto: <b>{_fmt_delta_rp(float(row['net_pnl']))}</b> "
                 f"({_fmt_pct_id(pct)} setelah fee 0,40%)"
             )
-    out += ["", "Ringkasan Win Rate &amp; PF: <code>/jurnal</code>"]
+    out += [
+        "",
+        "Ringkasan Win Rate &amp; PF: <code>/jurnal</code> · "
+        "Hapus salah input: <code>/jurnal hapus &lt;id&gt;</code>",
+    ]
     return "\n".join(out)
 
 
